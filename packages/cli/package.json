@@ -1,6 +1,6 @@
 {
   "name": "gleip",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Command-line interface for Gleip.",
   "license": "Apache-2.0",
   "type": "module",
@@ -36,10 +36,16 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@gleip/config": "workspace:0.1.0",
-    "@gleip/controller": "workspace:0.1.0",
-    "@gleip/core": "workspace:0.1.0",
-    "@gleip/planner": "workspace:0.1.0",
+    "@gleip/config": "workspace:0.1.1",
+    "@gleip/controller": "workspace:0.1.1",
+    "@gleip/core": "workspace:0.1.1",
+    "@gleip/planner": "workspace:0.1.1",
     "commander": "^12.0.0"
-  }
+  },
+  "bundledDependencies": [
+    "@gleip/config",
+    "@gleip/controller",
+    "@gleip/core",
+    "@gleip/planner"
+  ]
 }

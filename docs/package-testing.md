@@ -2,6 +2,8 @@
 
 Use these flows before publishing anything. They verify the built CLI can run outside the source TypeScript entrypoint. For the full local-only preview release pass, see [docs/release-checklist.md](release-checklist.md).
 
+Current patch release target: `0.1.1`.
+
 ## Flow A: npm pack
 
 From the Gleip repository:
@@ -13,6 +15,7 @@ pnpm pack:cli
 ```
 
 This writes tarballs for the CLI and its runtime workspace packages to `dist-pack/`.
+The CLI tarball bundles the internal runtime packages so it can be installed by itself.
 
 The public preview install target is:
 
@@ -28,7 +31,7 @@ mkdir %TEMP%\gleip-pack-test
 cd %TEMP%\gleip-pack-test
 git init
 npm init -y
-npm install <path-to-repo>\dist-pack\gleip-config-0.1.0.tgz <path-to-repo>\dist-pack\gleip-planner-0.1.0.tgz <path-to-repo>\dist-pack\gleip-core-0.1.0.tgz <path-to-repo>\dist-pack\gleip-controller-0.1.0.tgz <path-to-repo>\dist-pack\gleip-0.1.0.tgz
+npm install -D <path-to-repo>\dist-pack\gleip-0.1.1.tgz
 ```
 
 On macOS or Linux, use a temp directory such as `/tmp/gleip-pack-test` and the matching tarball path.

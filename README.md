@@ -44,6 +44,8 @@ Install the generated tarballs from `dist-pack/` in a target repository and run 
 
 For preview release verification, see [docs/release-checklist.md](docs/release-checklist.md).
 
+Current patch release target: `0.1.1`.
+
 ## Common Commands
 
 - `gleip init` creates repo-local Gleip files and AGENTS instructions.

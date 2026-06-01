@@ -2,6 +2,8 @@
 
 Use this checklist for the local-only developer preview.
 
+Current patch release target: `0.1.1`.
+
 ## Package
 
 - Confirm package name and version.

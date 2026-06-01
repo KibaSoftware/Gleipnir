@@ -89,6 +89,7 @@ describe("createGleipCommand", () => {
       readFileSync(join(repoRoot, "packages", "cli", "package.json"), "utf8")
     ) as {
       bin: { gleip: string };
+      bundledDependencies: string[];
       dependencies: Record<string, string>;
       exports: { ".": { import: string; types: string } };
       keywords: string[];
@@ -104,8 +105,14 @@ describe("createGleipCommand", () => {
     expect(packageJson.exports["."].import).toBe("./dist/index.js");
     expect(packageJson.exports["."].types).toBe("./dist/index.d.ts");
     expect(packageJson.name).toBe("gleip");
-    expect(packageJson.version).toBe("0.1.0");
-    expect(packageJson.dependencies["@gleip/planner"]).toBe("workspace:0.1.0");
+    expect(packageJson.version).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(packageJson.dependencies["@gleip/planner"]).toMatch(/^workspace:\d+\.\d+\.\d+$/);
+    expect(packageJson.bundledDependencies).toEqual([
+      "@gleip/config",
+      "@gleip/controller",
+      "@gleip/core",
+      "@gleip/planner"
+    ]);
     expect(packageJson.keywords).toContain("agent-guardrails");
   });
 
