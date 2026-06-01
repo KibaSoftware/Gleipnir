@@ -1,0 +1,44 @@
+version: 1
+mode: advisory
+
+principles:
+  - Keep generated code lean, scoped, tested, and merge-ready.
+  - Avoid speculative refactors and unnecessary dependencies.
+
+limits:
+  max_files_changed_warning: 12
+  max_lines_added_warning: 500
+  max_lines_deleted_warning: 250
+
+checks:
+  skipped_tests: true
+  deleted_tests: true
+  dependency_bloat: true
+  ci_weakening: true
+  risky_files: true
+  secrets: true
+
+risky_files:
+  - package.json
+  - pnpm-lock.yaml
+  - .github/**
+  - "**/*.config.*"
+  - "**/*secret*"
+
+protected_paths:
+  - LICENSE
+  - SECURITY.md
+
+allowed_paths: []
+
+approval_required_for:
+  - dependency_changes
+  - ci_changes
+  - security_policy_changes
+
+agent_behavior:
+  minimal_scoped_changes: true
+  avoid_speculative_refactors: true
+  avoid_unnecessary_dependencies: true
+  preserve_tests_and_ci: true
+  explain_changed_files: true

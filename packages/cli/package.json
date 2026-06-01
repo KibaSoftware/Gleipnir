@@ -1,0 +1,45 @@
+{
+  "name": "gleip",
+  "version": "0.1.0",
+  "description": "Command-line interface for Gleip.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "gleip": "./dist/index.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "keywords": [
+    "ai",
+    "coding-agents",
+    "code-review",
+    "cli",
+    "agent-guardrails",
+    "developer-tools"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --clean",
+    "dev": "tsx src/index.ts",
+    "test": "vitest run",
+    "lint": "eslint src --ext .ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@gleip/config": "workspace:0.1.0",
+    "@gleip/controller": "workspace:0.1.0",
+    "@gleip/core": "workspace:0.1.0",
+    "@gleip/planner": "workspace:0.1.0",
+    "commander": "^12.0.0"
+  }
+}

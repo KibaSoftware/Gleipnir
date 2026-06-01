@@ -1,0 +1,20 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Gleip local session state
+.gleip/
+.gleip/session.json
+.gleip/brief.md
+.gleip/scope-budget.json
+.gleip/status.md
+.gleip/baseline.json
+.gleip/state.json
+
+# Legacy Argus local session state
+.argus/
+
+# Package verification output
+dist-pack/
+*.tgz

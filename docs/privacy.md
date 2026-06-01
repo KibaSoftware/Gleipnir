@@ -1,0 +1,30 @@
+# Privacy
+
+Gleip runs locally in the repository. It does not send code, diffs, prompts, file paths, telemetry, or metadata to external services.
+
+Gleip does not make network calls, does not call LLM APIs, does not require an account, does not use a hosted dashboard, and does not collect telemetry. All generated files stay inside the repository.
+
+## What Gleip Reads Locally
+
+- `.gleip.yml`
+- `GLEIP.md` and `AGENTS.md` when relevant
+- Local file paths
+- Selected local file contents for repo context discovery
+- Git working-tree diff
+- Dependency file paths
+- CI file paths
+- `.gleip/session` files
+
+## What Gleip Writes Locally
+
+- `.gleip.yml`
+- `GLEIP.md`
+- `AGENTS.md` Gleip-managed section
+- `.gleip/session.json`
+- `.gleip/brief.md`
+- `.gleip/scope-budget.json`
+- `.gleip/status.md`
+- `.gleip/baseline.json`
+- `.gleip/state.json`
+
+The `.gleip/` directory contains local session state and should generally be ignored.
