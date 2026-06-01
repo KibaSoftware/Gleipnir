@@ -2,7 +2,20 @@
 
 Gleip is a control layer for AI coding agents. It keeps generated code lean, scoped, tested, and merge-ready from the first prompt to the final pull request.
 
-The project is intentionally early, but the local CLI can be built and tested from packaged output.
+## Install
+
+```bash
+npm install -D gleip
+npx gleip init
+```
+
+Then run Gleip from the repository where you want local guardrails:
+
+```bash
+npx gleip preflight "Add CSV export to users table"
+npx gleip validate-plan "Modify UserTable, reuse csv utility, add tests"
+npx gleip status
+```
 
 ## Local-only by default
 
@@ -18,14 +31,7 @@ Gleip uses local deterministic checks:
 
 See [docs/privacy.md](docs/privacy.md) for details.
 
-## Installation
-
-Preview install target:
-
-```sh
-npm install -D gleip
-npx gleip init
-```
+## Local Package Testing
 
 For local package testing, build and pack the CLI package:
 
