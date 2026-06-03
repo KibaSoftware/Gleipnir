@@ -19,6 +19,13 @@ const LEGACY_ARGUS_SECTION_START = "<!-- ARGUS:START -->";
 const LEGACY_ARGUS_SECTION_END = "<!-- ARGUS:END -->";
 const LEGACY_ARGUS_WORKFLOW_SECTION_START = "<!-- ARGUS:AGENT-WORKFLOW:START -->";
 const LEGACY_ARGUS_WORKFLOW_SECTION_END = "<!-- ARGUS:AGENT-WORKFLOW:END -->";
+const SUPPORTED_AGENT_TARGETS = ["auto", "generic", "codex", "claude", "cursor"] as const;
+const AGENT_INSTRUCTION_TARGETS = ["generic", "claude", "cursor"] as const;
+const NO_AGENT_SETUP_MESSAGE =
+  "No specific agent setup detected. Created generic AGENTS.md. To prepare all supported agents, run `gleip init --all-agents`.";
+
+type AgentTarget = (typeof SUPPORTED_AGENT_TARGETS)[number];
+type AgentInstructionTarget = (typeof AGENT_INSTRUCTION_TARGETS)[number];
 
 type LoadConfig = (cwd: string) => Promise<unknown> | unknown;
 
@@ -94,7 +101,17 @@ interface CommandRuntime {
 }
 
 interface InitOptions {
+  agent?: string;
+  allAgents?: boolean;
   force?: boolean;
+}
+
+interface DoctorOptions {
+  agents?: boolean;
+}
+
+interface RepairAgentsOptions {
+  all?: boolean;
 }
 
 interface StopOptions {
@@ -377,7 +394,7 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
   program
     .name("gleip")
     .description("Run local-only preflight, scope budget, and status guardrails for coding-agent work.")
-    .version("0.1.1")
+    .version("0.2.0")
     .option("--cwd <path>", "Run Gleip against a target repository.", options.cwd)
     .addHelpText(
       "after",
@@ -398,8 +415,10 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
   program
     .command("init")
     .description("Create local-only Gleip config, policy docs, and agent workflow files.")
+    .option("--agent <name>", "Create instructions for auto, generic, codex, claude, or cursor.", "auto")
+    .option("--all-agents", "Create instructions for generic/Codex, Claude, and Cursor.")
     .option("--force", "Overwrite generated Gleip files.")
-    .addHelpText("after", '\nExample:\n  $ gleip init')
+    .addHelpText("after", '\nExamples:\n  $ gleip init --all-agents\n  $ gleip init --agent claude')
     .action((commandOptions: InitOptions) => {
       initRepository(runtime, commandOptions);
     });
@@ -507,8 +526,17 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
   program
     .command("doctor")
     .description("Verify this repository can run local-only Gleip commands.")
-    .action(async () => {
-      await doctor(runtime);
+    .option("--agents", "Check supported coding-agent instruction files.")
+    .action(async (commandOptions: DoctorOptions) => {
+      await doctor(runtime, commandOptions);
+    });
+
+  program
+    .command("repair-agents")
+    .description("Repair Gleip-managed sections in coding-agent instruction files.")
+    .option("--all", "Create or repair all supported agent instruction files.")
+    .action((commandOptions: RepairAgentsOptions) => {
+      repairAgents(runtime, commandOptions);
     });
 
   program
@@ -789,25 +817,34 @@ async function loadPlannerFromSource(error: unknown | undefined): Promise<{
 
 function initRepository(runtime: CommandRuntime, options: InitOptions): void {
   const force = options.force === true;
+  const selection = initAgentInstructionFiles(runtime.cwd, options);
+  const agentInstructions = selection.files;
+  const agentInstructionFiles = agentInstructions.map((file) => file.path);
 
   ensureGleipDirectory(runtime.cwd);
   writeGleipStateIfMissing(runtime.cwd, getDefaultGleipState(runtime.now().toISOString()), force);
   writeGeneratedFile(join(runtime.cwd, ".gleip.yml"), defaultConfigContent(), force);
   writeGeneratedFile(join(runtime.cwd, "GLEIP.md"), defaultGleipReadmeContent(), force);
-  writeAgentsFile(join(runtime.cwd, "AGENTS.md"));
+  for (const file of agentInstructions) {
+    writeAgentInstructionFile(join(runtime.cwd, file.path), file.defaultContent, file.target);
+  }
 
-  runtime.stdout(
-    [
-      "Gleip initialized.",
-      "",
-      "Coding agents should now follow AGENTS.md.",
-      "",
-      "Next normal flow:",
-      '1. Agent runs `gleip preflight "<task>"`.',
-      "2. Agent validates its plan with `gleip validate-plan`.",
-      "3. Agent runs `gleip status` before final response."
-    ].join("\n")
+  const output = [
+    "Gleip initialized.",
+    `Agent instructions created/updated: ${agentInstructionFiles.join(", ")}.`
+  ];
+
+  if (selection.noAgentSetupDetected) {
+    output.push(NO_AGENT_SETUP_MESSAGE);
+  }
+
+  output.push(
+    "",
+    "Continue using your coding agent normally.",
+    "The agent should run Gleip preflight, validate-plan, and status automatically."
   );
+
+  runtime.stdout(output.join("\n"));
 }
 
 async function preflight(runtime: CommandRuntime, task: string): Promise<void> {
@@ -1143,7 +1180,12 @@ async function printCheckWithoutSession(
   );
 }
 
-async function doctor(runtime: CommandRuntime): Promise<void> {
+async function doctor(runtime: CommandRuntime, options: DoctorOptions = {}): Promise<void> {
+  if (options.agents === true) {
+    doctorAgents(runtime);
+    return;
+  }
+
   const checks: string[] = [];
   let failed = false;
 
@@ -1186,6 +1228,61 @@ async function doctor(runtime: CommandRuntime): Promise<void> {
   if (failed) {
     process.exitCode = 1;
   }
+}
+
+function doctorAgents(runtime: CommandRuntime): void {
+  const reports = AGENT_INSTRUCTION_TARGETS.map((target) => {
+    const file = agentInstructionFile(target);
+    const filePath = join(runtime.cwd, file.path);
+    const present = existsSync(filePath);
+    const workflowPresent = present && hasGleipWorkflow(readFileSync(filePath, "utf8"));
+
+    return {
+      path: file.path,
+      present,
+      workflowPresent
+    };
+  });
+  const hasAnyAgentFile = reports.some((report) => report.present);
+  const lines = [
+    "gleip doctor --agents",
+    ...reports.map(
+      (report) =>
+        `${report.path}: ${report.present ? "present" : "missing"}; Gleip workflow: ${
+          report.workflowPresent ? "yes" : "no"
+        }`
+    ),
+    "",
+    "Suggestions:",
+    "- Run `gleip init --all-agents` to prepare all supported agent files.",
+    "- Run `gleip init --agent <name>` for one target."
+  ];
+
+  if (!hasAnyAgentFile) {
+    lines.push(
+      "",
+      "No supported agent files exist yet. This is valid; `gleip init --all-agents` can prepare the repo before any agent is installed."
+    );
+  }
+
+  runtime.stdout(lines.join("\n"));
+}
+
+function repairAgents(runtime: CommandRuntime, options: RepairAgentsOptions): void {
+  const files = options.all === true ? allAgentInstructionFiles() : existingAgentInstructionFiles(runtime.cwd);
+
+  if (files.length === 0) {
+    runtime.stdout(
+      "No existing supported agent instruction files found. Run `gleip repair-agents --all` to create all supported files."
+    );
+    return;
+  }
+
+  for (const file of files) {
+    writeAgentInstructionFile(join(runtime.cwd, file.path), file.defaultContent, file.target);
+  }
+
+  runtime.stdout(`Agent instructions repaired: ${files.map((file) => file.path).join(", ")}.`);
 }
 
 function stop(runtime: CommandRuntime, options: StopOptions): void {
@@ -1300,31 +1397,116 @@ function formatCommandOutput(
   return `${output}\n\n${note}`;
 }
 
-function writeAgentsFile(filePath: string): void {
-  const existing = existsSync(filePath) ? readFileSync(filePath, "utf8") : "# Agent Instructions\n";
-  writeFileSync(filePath, upsertGleipSection(existing));
+interface AgentInstructionFile {
+  defaultContent: string;
+  path: string;
+  target: AgentInstructionTarget;
 }
 
-function upsertGleipSection(content: string): string {
-  const section = `${GLEIP_SECTION_START}
-## Gleip Workflow
+interface InitAgentInstructionSelection {
+  files: AgentInstructionFile[];
+  noAgentSetupDetected: boolean;
+}
 
-- This repository uses Gleip.
-- Gleip is local-only; use Gleip commands in this repository.
-- Gleip performs no external review.
-- Before editing code, check \`.gleip/state.json\`.
-- If \`enabled\` is true, run \`gleip preflight "<task>"\`.
-- Read \`.gleip/brief.md\`.
-- Follow \`.gleip/scope-budget.json\`.
-- Draft a short implementation plan, then run \`gleip validate-plan "<plan>"\` or \`gleip validate-plan --file <file>\`.
-- Proceed only if the plan is \`approved\`.
-- If Gleip returns \`needs_revision\`, revise the plan and validate it again.
-- If Gleip returns \`requires_approval\`, ask the user before proceeding.
-- If \`enabled\` is false, ask: "Gleip is currently inactive. Do you want me to proceed without Gleip guardrails? y/n".
-- Do not proceed while disabled unless the user confirms; if confirmed, mention in the final response that Gleip was inactive and no Gleip validation was performed.
-- Run \`gleip status\` before the final response when Gleip is enabled.
-- Stop and ask for approval if Gleip reports \`approval_required\` or \`blocked\`.
-${GLEIP_SECTION_END}`;
+function initAgentInstructionFiles(cwd: string, options: InitOptions): InitAgentInstructionSelection {
+  if (options.allAgents === true) {
+    return {
+      files: allAgentInstructionFiles(),
+      noAgentSetupDetected: false
+    };
+  }
+
+  const target = parseAgentTarget(options.agent);
+
+  if (target === "auto") {
+    const detectedFiles = detectedAgentInstructionFiles(cwd);
+
+    return {
+      files: detectedFiles.length > 0 ? detectedFiles : [agentInstructionFile("generic")],
+      noAgentSetupDetected: detectedFiles.length === 0
+    };
+  }
+
+  return {
+    files: [agentInstructionFile(target === "codex" ? "generic" : target)],
+    noAgentSetupDetected: false
+  };
+}
+
+function parseAgentTarget(value: string | undefined): AgentTarget {
+  const target = value ?? "auto";
+
+  if (SUPPORTED_AGENT_TARGETS.includes(target as AgentTarget)) {
+    return target as AgentTarget;
+  }
+
+  throw new Error(
+    `Unsupported agent target "${target}". Supported values: ${SUPPORTED_AGENT_TARGETS.join(", ")}.`
+  );
+}
+
+function allAgentInstructionFiles(): AgentInstructionFile[] {
+  return AGENT_INSTRUCTION_TARGETS.map((target) => agentInstructionFile(target));
+}
+
+function detectedAgentInstructionFiles(cwd: string): AgentInstructionFile[] {
+  const files: AgentInstructionFile[] = [];
+
+  if (existsSync(join(cwd, "AGENTS.md"))) {
+    files.push(agentInstructionFile("generic"));
+  }
+
+  if (existsSync(join(cwd, "CLAUDE.md"))) {
+    files.push(agentInstructionFile("claude"));
+  }
+
+  if (existsSync(join(cwd, ".cursor")) || existsSync(join(cwd, ".cursor", "rules"))) {
+    files.push(agentInstructionFile("cursor"));
+  }
+
+  return files;
+}
+
+function existingAgentInstructionFiles(cwd: string): AgentInstructionFile[] {
+  return allAgentInstructionFiles().filter((file) => existsSync(join(cwd, file.path)));
+}
+
+function agentInstructionFile(target: AgentInstructionTarget): AgentInstructionFile {
+  if (target === "claude") {
+    return {
+      path: "CLAUDE.md",
+      defaultContent: "# Claude Instructions\n",
+      target
+    };
+  }
+
+  if (target === "cursor") {
+    return {
+      path: ".cursor/rules/gleip.mdc",
+      defaultContent: "---\ndescription: Gleip workflow\nalwaysApply: true\n---\n",
+      target
+    };
+  }
+
+  return {
+    path: "AGENTS.md",
+    defaultContent: "# Agent Instructions\n",
+    target
+  };
+}
+
+function writeAgentInstructionFile(
+  filePath: string,
+  defaultContent: string,
+  target: AgentInstructionTarget
+): void {
+  mkdirSync(dirname(filePath), { recursive: true });
+  const existing = existsSync(filePath) ? readFileSync(filePath, "utf8") : defaultContent;
+  writeFileSync(filePath, upsertGleipSection(existing, target));
+}
+
+function upsertGleipSection(content: string, target: AgentInstructionTarget): string {
+  const section = gleipSectionContent(target);
   const markerPattern = new RegExp(
     `${escapeRegExp(GLEIP_SECTION_START)}[\\s\\S]*?${escapeRegExp(GLEIP_SECTION_END)}`
   );
@@ -1334,6 +1516,49 @@ ${GLEIP_SECTION_END}`;
   }
 
   return `${content.trimEnd()}\n\n${section}\n`;
+}
+
+function gleipSectionContent(target: AgentInstructionTarget): string {
+  const targetLine =
+    target === "claude"
+      ? "Claude Code must run Gleip commands itself before editing code; ask the developer only if the `gleip` command is unavailable."
+      : target === "cursor"
+        ? "This Cursor rule is always on for coding tasks in this repository."
+        : "Codex-style and generic coding agents must run Gleip before editing code.";
+
+  return `${GLEIP_SECTION_START}
+## Gleip Workflow
+
+- This repository uses Gleip local guardrails. ${targetLine}
+- If the \`gleip\` command is unavailable, ask: "Gleip is configured for this repository, but the \`gleip\` command is unavailable. Do you want me to proceed without Gleip guardrails? y/n". Do not proceed without confirmation.
+- Before editing code, check \`.gleip/state.json\`. If \`enabled\` is false, ask: "Gleip is currently inactive. Do you want me to proceed without Gleip guardrails? y/n". Do not proceed without confirmation.
+- If enabled, run \`gleip preflight "<user task>"\`.
+- Read \`.gleip/brief.md\` and \`.gleip/scope-budget.json\`.
+- Draft a short implementation plan and run \`gleip validate-plan "<plan>"\`.
+- Proceed only if validation is \`approved\`; if \`needs_revision\`, revise and validate again; if \`requires_approval\`, stop and ask the user.
+- During implementation, stay inside \`.gleip/scope-budget.json\`.
+- Before the final response, run \`gleip status\`. If status is \`warning\`, \`approval_required\`, or \`blocked\`, report it clearly. Stop if status is \`approval_required\` or \`blocked\`.
+- Final response must include Gleip status, files changed, tests run, and risks.
+
+### Gleip checklist for every coding task
+
+- [ ] Check \`.gleip/state.json\`
+- [ ] Run \`gleip preflight "<task>"\`
+- [ ] Read \`.gleip/brief.md\`
+- [ ] Validate plan with \`gleip validate-plan\`
+- [ ] Implement within \`.gleip/scope-budget.json\`
+- [ ] Run \`gleip status\`
+- [ ] Report status, files changed, tests run
+${GLEIP_SECTION_END}`;
+}
+
+function hasGleipWorkflow(content: string): boolean {
+  return (
+    content.includes(GLEIP_SECTION_START) ||
+    (content.includes("gleip preflight") &&
+      content.includes("gleip validate-plan") &&
+      content.includes("gleip status"))
+  );
 }
 
 function ensureGleipDirectory(cwd: string): void {

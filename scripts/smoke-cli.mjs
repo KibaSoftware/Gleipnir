@@ -28,13 +28,15 @@ writeRepoFile(
 );
 
 run("node", [cliEntry, "--help"], repo);
-run("node", [cliEntry, "--cwd", repo, "init"], repo);
+run("node", [cliEntry, "--cwd", repo, "init", "--all-agents"], repo);
 run("node", [cliEntry, "--cwd", repo, "preflight", "Add CSV export to users table"], repo);
 const validation = run("node", [cliEntry, "--cwd", repo, "validate-plan", "--file", join(repo, "plan.md")], repo);
 run("node", [cliEntry, "--cwd", repo, "status"], repo);
 
 for (const path of [
   "AGENTS.md",
+  "CLAUDE.md",
+  ".cursor/rules/gleip.mdc",
   "GLEIP.md",
   ".gleip.yml",
   ".gleip/session.json",

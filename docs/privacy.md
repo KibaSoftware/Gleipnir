@@ -7,7 +7,7 @@ Gleip does not make network calls, does not call LLM APIs, does not require an a
 ## What Gleip Reads Locally
 
 - `.gleip.yml`
-- `GLEIP.md` and `AGENTS.md` when relevant
+- `GLEIP.md`, `AGENTS.md`, `CLAUDE.md`, and `.cursor/rules/gleip.mdc` when relevant
 - Local file paths
 - Selected local file contents for repo context discovery
 - Git working-tree diff
@@ -20,6 +20,8 @@ Gleip does not make network calls, does not call LLM APIs, does not require an a
 - `.gleip.yml`
 - `GLEIP.md`
 - `AGENTS.md` Gleip-managed section
+- `CLAUDE.md` Gleip-managed section
+- `.cursor/rules/gleip.mdc` Gleip-managed section
 - `.gleip/session.json`
 - `.gleip/brief.md`
 - `.gleip/scope-budget.json`

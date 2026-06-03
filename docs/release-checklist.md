@@ -2,7 +2,7 @@
 
 Use this checklist for the local-only developer preview.
 
-Current patch release target: `0.1.1`.
+Current release target: `0.2.0`.
 
 ## Package
 
@@ -23,7 +23,10 @@ Current patch release target: `0.1.1`.
 - Install the packed tarballs into a clean external temp repo.
 - Verify:
   - `npx gleip --help`
-  - `npx gleip init`
+  - `npx gleip --version`
+  - `npx gleip init --all-agents`
+  - `npx gleip doctor --agents`
+  - `npx gleip repair-agents --all`
   - `npx gleip state`
   - `npx gleip preflight "Add CSV export to users table"`
   - `npx gleip brief`
@@ -38,3 +41,4 @@ Current patch release target: `0.1.1`.
 - Confirm no network/API/account/dashboard/telemetry behavior exists.
 - Confirm `.gleip/` is ignored.
 - Confirm `.gleip.yml` is not ignored.
+- Confirm generated agent instructions make agents run `gleip preflight`, `gleip validate-plan`, and `gleip status` automatically.

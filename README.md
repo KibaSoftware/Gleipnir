@@ -6,16 +6,12 @@ Gleip is a control layer for AI coding agents. It keeps generated code lean, sco
 
 ```bash
 npm install -D gleip
-npx gleip init
+npx gleip init --all-agents
 ```
 
-Then run Gleip from the repository where you want local guardrails:
+Then continue using your coding agent normally. The generated instructions tell agents to run Gleip automatically before editing code.
 
-```bash
-npx gleip preflight "Add CSV export to users table"
-npx gleip validate-plan "Modify UserTable, reuse csv utility, add tests"
-npx gleip status
-```
+`init --all-agents` creates or updates `AGENTS.md`, `CLAUDE.md`, `.cursor/rules/gleip.mdc`, `GLEIP.md`, `.gleip.yml`, and `.gleip/state.json`.
 
 ## Local-only by default
 
@@ -44,25 +40,37 @@ Install the generated tarballs from `dist-pack/` in a target repository and run 
 
 For preview release verification, see [docs/release-checklist.md](docs/release-checklist.md).
 
-Current patch release target: `0.1.1`.
+Current release target: `0.2.0`.
 
 ## Common Commands
 
-- `gleip init` creates repo-local Gleip files and AGENTS instructions.
+- `gleip init --all-agents` creates repo-local Gleip files and instructions for common coding agents.
+- `gleip init --agent <name>` creates instructions for `auto`, `generic`, `codex`, `claude`, or `cursor`.
 - `gleip preflight "<task>"` creates the active brief, scope budget, status file, and baseline.
 - `gleip validate-plan "<plan>"` checks an intended implementation plan before edits.
 - `gleip status` checks current changes against the active scope budget.
 - `gleip check` runs a non-mutating scope check.
+- `gleip doctor --agents` reports supported agent instruction files and Gleip workflow presence.
+- `gleip repair-agents` repairs existing agent instruction files; `--all` creates all supported files.
 - `gleip enable`, `gleip disable`, and `gleip state` manage repo-local guardrail state.
 
-## Agent-Aware Workflow
+## Agent Auto-Usage
 
-Coding agents should follow the Gleip-managed section in `AGENTS.md`:
+- Codex and generic coding agents use `AGENTS.md`.
+- Claude Code uses `CLAUDE.md`.
+- Cursor uses `.cursor/rules/gleip.mdc`.
+- `gleip init --agent auto` detects existing agent files and updates those; if none exist, it creates generic `AGENTS.md`.
+- `gleip init --all-agents` is recommended when Gleip is installed before any coding agent is configured in VS Code.
+- `gleip doctor --agents` checks agent instruction readiness.
+- `gleip repair-agents` repairs Gleip-managed sections without replacing unrelated content.
 
-1. Run `gleip preflight "<task>"`.
-2. Draft a short plan and validate it with `gleip validate-plan`.
-3. Implement only after approval or explicit user approval.
-4. Run `gleip status` before the final response.
+See [docs/agent-auto-usage.md](docs/agent-auto-usage.md).
+
+## Commands Agents Are Instructed To Run
+
+- `gleip preflight`
+- `gleip validate-plan`
+- `gleip status`
 
 ## Development
 

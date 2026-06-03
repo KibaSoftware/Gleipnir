@@ -19,8 +19,8 @@ Run Gleip from this repository against the temporary target:
 
 ```sh
 cd /path/to/Gleip
-pnpm gleip --cwd /tmp/gleip-test init
-pnpm gleip --cwd /tmp/gleip-test init
+pnpm gleip --cwd /tmp/gleip-test init --all-agents
+pnpm gleip --cwd /tmp/gleip-test init --all-agents
 pnpm gleip --cwd /tmp/gleip-test preflight "Add CSV export to users table"
 pnpm gleip --cwd /tmp/gleip-test brief
 pnpm gleip --cwd /tmp/gleip-test status
@@ -34,6 +34,8 @@ Inspect the generated files:
 ls -la /tmp/gleip-test
 ls -la /tmp/gleip-test/.gleip
 cat /tmp/gleip-test/AGENTS.md
+cat /tmp/gleip-test/CLAUDE.md
+cat /tmp/gleip-test/.cursor/rules/gleip.mdc
 cat /tmp/gleip-test/.gleip/brief.md
 cat /tmp/gleip-test/.gleip/status.md
 ```
@@ -44,6 +46,8 @@ Expected results:
 - `GLEIP.md` exists.
 - `.gleip/` exists.
 - `AGENTS.md` contains exactly one Gleip-managed section.
+- `CLAUDE.md` contains exactly one Gleip-managed section.
+- `.cursor/rules/gleip.mdc` contains exactly one Gleip-managed section.
 - Re-running `init` does not duplicate the section.
 - `preflight` creates `session.json`, `brief.md`, `scope-budget.json`, and `status.md`.
 
@@ -76,6 +80,6 @@ After large working tree changes, start from a fresh session:
 ```sh
 gleip stop
 rm -rf .gleip
-gleip init
+gleip init --all-agents
 gleip preflight "<task>"
 ```
