@@ -114,8 +114,8 @@ describe("createGleipCommand", () => {
     expect(packageJson.exports["."].import).toBe("./dist/index.js");
     expect(packageJson.exports["."].types).toBe("./dist/index.d.ts");
     expect(packageJson.name).toBe("gleip");
-    expect(packageJson.version).toBe("0.2.0");
-    expect(packageJson.dependencies["@gleip/planner"]).toBe("workspace:0.2.0");
+    expect(packageJson.version).toBe("0.2.1");
+    expect(packageJson.dependencies["@gleip/planner"]).toBe("workspace:0.2.1");
     expect(packageJson.bundledDependencies).toEqual([
       "@gleip/config",
       "@gleip/controller",

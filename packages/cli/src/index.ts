@@ -394,7 +394,7 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
   program
     .name("gleip")
     .description("Run local-only preflight, scope budget, and status guardrails for coding-agent work.")
-    .version("0.2.0")
+    .version("0.2.1")
     .option("--cwd <path>", "Run Gleip against a target repository.", options.cwd)
     .addHelpText(
       "after",

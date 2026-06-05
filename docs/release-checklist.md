@@ -2,7 +2,7 @@
 
 Use this checklist for the local-only developer preview.
 
-Current release target: `0.2.0`.
+Current release target: `0.2.1`.
 
 ## Package
 

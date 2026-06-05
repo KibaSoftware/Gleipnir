@@ -1,6 +1,6 @@
 {
   "name": "@gleip/planner",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Planning and scope-budget primitives for Gleip.",
   "license": "Apache-2.0",
   "type": "module",

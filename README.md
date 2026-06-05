@@ -1,6 +1,8 @@
 # Gleip
 
-Gleip is a control layer for AI coding agents. It keeps generated code lean, scoped, tested, and merge-ready from the first prompt to the final pull request.
+Local-only guardrails for AI coding agents.
+
+Gleip helps coding agents stay scoped, validate plans before editing, and check implementation drift before final response. It runs locally in your repository and does not send code, diffs, prompts, telemetry, or metadata to external services.
 
 ## Install
 
@@ -9,68 +11,81 @@ npm install -D gleip
 npx gleip init --all-agents
 ```
 
-Then continue using your coding agent normally. The generated instructions tell agents to run Gleip automatically before editing code.
+Continue using your coding agent normally. The generated instructions tell agents to use Gleip automatically.
 
-`init --all-agents` creates or updates `AGENTS.md`, `CLAUDE.md`, `.cursor/rules/gleip.mdc`, `GLEIP.md`, `.gleip.yml`, and `.gleip/state.json`.
+## Why Gleip?
 
-## Local-only by default
+AI coding agents can over-edit, add unnecessary dependencies, weaken tests, or drift from the requested task. Gleip gives agents a local preflight workflow: it creates an implementation brief, scope budget, plan validation, and status check. It is deterministic and local-only.
 
-Gleip uses local deterministic checks:
+## How It Works
 
-- No external services.
-- No network calls.
-- No telemetry.
-- No LLM calls.
-- No dashboard.
-- No account.
-- Data stays in the repo.
-
-See [docs/privacy.md](docs/privacy.md) for details.
-
-## Local Package Testing
-
-For local package testing, build and pack the CLI package:
-
-```sh
-pnpm build
-pnpm pack:cli
-```
-
-Install the generated tarballs from `dist-pack/` in a target repository and run `npx gleip`. See [docs/package-testing.md](docs/package-testing.md) for the full workflow.
-
-For preview release verification, see [docs/release-checklist.md](docs/release-checklist.md).
-
-Current release target: `0.2.0`.
-
-## Common Commands
-
-- `gleip init --all-agents` creates repo-local Gleip files and instructions for common coding agents.
-- `gleip init --agent <name>` creates instructions for `auto`, `generic`, `codex`, `claude`, or `cursor`.
-- `gleip preflight "<task>"` creates the active brief, scope budget, status file, and baseline.
-- `gleip validate-plan "<plan>"` checks an intended implementation plan before edits.
-- `gleip status` checks current changes against the active scope budget.
-- `gleip check` runs a non-mutating scope check.
-- `gleip doctor --agents` reports supported agent instruction files and Gleip workflow presence.
-- `gleip repair-agents` repairs existing agent instruction files; `--all` creates all supported files.
-- `gleip enable`, `gleip disable`, and `gleip state` manage repo-local guardrail state.
+1. Developer runs `npx gleip init --all-agents`.
+2. Gleip creates agent instruction files.
+3. Agent runs `gleip preflight "<task>"`.
+4. Agent reads `.gleip/brief.md` and `.gleip/scope-budget.json`.
+5. Agent validates its plan with `gleip validate-plan`.
+6. Agent implements the change.
+7. Agent runs `gleip status`.
+8. Agent reports status, files changed, tests run, and risks.
 
 ## Agent Auto-Usage
 
-- Codex and generic coding agents use `AGENTS.md`.
+- Codex and generic agents use `AGENTS.md`.
 - Claude Code uses `CLAUDE.md`.
 - Cursor uses `.cursor/rules/gleip.mdc`.
-- `gleip init --agent auto` detects existing agent files and updates those; if none exist, it creates generic `AGENTS.md`.
-- `gleip init --all-agents` is recommended when Gleip is installed before any coding agent is configured in VS Code.
-- `gleip doctor --agents` checks agent instruction readiness.
-- `gleip repair-agents` repairs Gleip-managed sections without replacing unrelated content.
 
-See [docs/agent-auto-usage.md](docs/agent-auto-usage.md).
+Useful setup and maintenance commands:
 
-## Commands Agents Are Instructed To Run
+- `npx gleip init --all-agents`
+- `npx gleip init --agent auto`
+- `npx gleip doctor --agents`
+- `npx gleip repair-agents --all`
 
+If no agent is installed yet, `init --all-agents` prepares the repo for future agent use. See [docs/agent-auto-usage.md](docs/agent-auto-usage.md).
+
+## Local-Only Guarantee
+
+- No telemetry.
+- No network calls.
+- No LLM/API calls.
+- No account.
+- No dashboard.
+- Generated session files stay inside `.gleip/`.
+
+See [docs/privacy.md](docs/privacy.md).
+
+## Commands
+
+These are commands agents are instructed to run; developers should not need to memorize them for normal use.
+
+- `gleip init --all-agents`
+- `gleip init --agent auto`
 - `gleip preflight`
 - `gleip validate-plan`
 - `gleip status`
+- `gleip check`
+- `gleip doctor --agents`
+- `gleip repair-agents`
+- `gleip enable`
+- `gleip disable`
+
+## Files Gleip Creates
+
+Tracked or intended repo files:
+
+- `.gleip.yml`
+- `GLEIP.md`
+- `AGENTS.md`
+- `CLAUDE.md` if generated
+- `.cursor/rules/gleip.mdc` if generated
+
+Local ignored state:
+
+- `.gleip/`
+
+## Known Limitations
+
+Agents must respect repo instructions. Gleip uses deterministic heuristics, does not prove correctness, and does not replace tests or human review. See [docs/known-limitations.md](docs/known-limitations.md).
 
 ## Development
 
@@ -82,24 +97,14 @@ pnpm build
 pnpm test
 pnpm typecheck
 pnpm lint
-pnpm format
 pnpm smoke:cli
+pnpm pack:cli
 ```
 
-## Local Development
+For package testing, see [docs/package-testing.md](docs/package-testing.md). For release verification, see [docs/release-checklist.md](docs/release-checklist.md).
 
-Run the CLI locally with `pnpm gleip` while developing. See [docs/local-testing.md](docs/local-testing.md) for the full temporary-repository verification workflow.
+## Status
 
-This repository intentionally tracks `.gleip.yml`, `GLEIP.md`, and `AGENTS.md` as Gleip project policy and agent instructions. The `.gleip/` directory contains local session state and is ignored.
-
-## Plan Validation
-
-Use `gleip validate-plan` after preflight and before editing code to check an agent's intended implementation plan against the active scope budget. See [docs/plan-validation.md](docs/plan-validation.md).
-
-## Known Limitations
-
-Gleip is a deterministic local guardrail, not a proof of correctness or a replacement for tests and review. See [docs/known-limitations.md](docs/known-limitations.md).
-
-## Agent State
-
-Gleip stores repo-local enabled/disabled state in `.gleip/state.json`. Use `gleip state`, `gleip enable`, and `gleip disable` to inspect or change it. See [docs/agent-state.md](docs/agent-state.md).
+- Local-only developer preview.
+- Current release: `0.2.1`.
+- No AI review, dashboard, telemetry, or cloud service.
