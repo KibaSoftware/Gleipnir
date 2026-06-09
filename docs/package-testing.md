@@ -2,7 +2,7 @@
 
 Use these flows before publishing anything. They verify the built CLI can run outside the source TypeScript entrypoint. For the full local-only preview release pass, see [docs/release-checklist.md](release-checklist.md).
 
-Current release target: `0.2.1`.
+Current release target: `0.2.2`.
 
 ## Flow A: npm pack
 
@@ -24,34 +24,17 @@ npm install -D gleip
 npx gleip init --all-agents
 ```
 
-Create a temporary repository and install the generated tarballs:
+Create a temporary repository and install the generated tarball:
 
 ```sh
 mkdir %TEMP%\gleip-pack-test
 cd %TEMP%\gleip-pack-test
 git init
 npm init -y
-npm install -D <path-to-repo>\dist-pack\gleip-0.2.1.tgz
+npm install -D <path-to-repo>\dist-pack\gleip-0.2.2.tgz
 ```
 
 On macOS or Linux, use a temp directory such as `/tmp/gleip-pack-test` and the matching tarball path.
-
-Create a small repo shape:
-
-```sh
-mkdir src\features\users src\utils
-echo export function UserTable() { return null; } > src\features\users\UserTable.tsx
-echo describe('UserTable', () => {}); > src\features\users\UserTable.test.tsx
-echo export function toCsv() { return ''; } > src\utils\csv.ts
-```
-
-Create `plan.md`:
-
-```md
-- Modify src/features/users/UserTable.tsx
-- Reuse src/utils/csv.ts
-- Add tests in src/features/users/UserTable.test.tsx
-```
 
 Run the packaged CLI:
 
@@ -60,17 +43,23 @@ npx gleip --help
 npx gleip --version
 npx gleip init --all-agents
 npx gleip doctor --agents
-npx gleip repair-agents --all
-npx gleip state
-npx gleip preflight "Add CSV export to users table"
+npx --no-install gleip uninstall --dry-run
+npx --no-install gleip uninstall
+```
+
+Expected result: help prints, the version is `0.2.2`, all supported agent instructions are created, agent diagnostics pass, dry-run changes nothing, and uninstall removes generated repository files without removing the npm dependency.
+
+## Testing the workflow manually
+
+The task workflow is intended for generated agent instructions. This optional flow verifies it directly with a focused task:
+
+```sh
+npx gleip preflight "Fix the checkout discount calculation bug without changing payment provider integration or checkout routing."
 npx gleip brief
-npx gleip validate-plan "Modify UserTable, reuse csv utility, add tests"
-npx gleip validate-plan --file plan.md
+npx gleip validate-plan "Update the discount calculation and its focused checkout tests."
 npx gleip status
 npx gleip check
 ```
-
-Expected result: help prints, Gleip files and agent instructions are created, plan validation is `approved`, and status runs without importing from the Gleip source tree.
 
 ## Flow B: Built CLI Smoke Script
 
@@ -81,7 +70,7 @@ pnpm build
 pnpm smoke:cli
 ```
 
-The script creates a temporary git repo, runs `node packages/cli/dist/index.js`, executes `init --all-agents`, `preflight`, `validate-plan`, and `status`, and checks that expected Gleip files exist.
+The script creates a temporary git repo, runs `node packages/cli/dist/index.js`, executes agent setup and the task workflow, and checks that expected Gleip files exist.
 
 ## Flow C: pnpm link
 

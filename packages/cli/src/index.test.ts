@@ -35,6 +35,7 @@ describe("createGleipCommand", () => {
       "state",
       "status",
       "stop",
+      "uninstall",
       "validate-plan"
     ]);
   });
@@ -55,7 +56,8 @@ describe("createGleipCommand", () => {
       "enable",
       "disable",
       "state",
-      "repair-agents"
+      "repair-agents",
+      "uninstall"
     ]) {
       expect(output).toContain(commandName);
     }
@@ -75,6 +77,7 @@ describe("createGleipCommand", () => {
     const initHelp = (await runHelpCommand(["init", "--help"])).join("\n");
     const doctorHelp = (await runHelpCommand(["doctor", "--help"])).join("\n");
     const repairHelp = (await runHelpCommand(["repair-agents", "--help"])).join("\n");
+    const uninstallHelp = (await runHelpCommand(["uninstall", "--help"])).join("\n");
 
     expect(validatePlanHelp).toContain("--file <path>");
     expect(validatePlanHelp).toContain("--json");
@@ -87,6 +90,11 @@ describe("createGleipCommand", () => {
     expect(initHelp).toContain("--all-agents");
     expect(doctorHelp).toContain("--agents");
     expect(repairHelp).toContain("--all");
+    expect(uninstallHelp).toContain("cleanup");
+    expect(uninstallHelp).toContain("--dry-run");
+    expect(uninstallHelp).toContain("--keep-agent-files");
+    expect(uninstallHelp).toContain("--force");
+    expect(uninstallHelp).toContain("npm uninstall gleip");
   });
 
   it("release checklist doc exists", () => {
@@ -114,8 +122,8 @@ describe("createGleipCommand", () => {
     expect(packageJson.exports["."].import).toBe("./dist/index.js");
     expect(packageJson.exports["."].types).toBe("./dist/index.d.ts");
     expect(packageJson.name).toBe("gleip");
-    expect(packageJson.version).toBe("0.2.1");
-    expect(packageJson.dependencies["@gleip/planner"]).toBe("workspace:0.2.1");
+    expect(packageJson.version).toBe("0.2.2");
+    expect(packageJson.dependencies["@gleip/planner"]).toBe("workspace:0.2.2");
     expect(packageJson.bundledDependencies).toEqual([
       "@gleip/config",
       "@gleip/controller",
@@ -123,6 +131,55 @@ describe("createGleipCommand", () => {
       "@gleip/planner"
     ]);
     expect(packageJson.keywords).toContain("agent-guardrails");
+  });
+
+  it("release metadata uses version 0.2.2 across packages", () => {
+    const packagePaths = [
+      "package.json",
+      "packages/cli/package.json",
+      "packages/config/package.json",
+      "packages/core/package.json",
+      "packages/controller/package.json",
+      "packages/planner/package.json",
+      "packages/adapters/package.json",
+      "packages/github-action/package.json"
+    ];
+
+    for (const packagePath of packagePaths) {
+      const packageJson = JSON.parse(readFileSync(join(repoRoot, packagePath), "utf8")) as {
+        version: string;
+      };
+      expect(packageJson.version).toBe("0.2.2");
+    }
+
+    const cliPackageJson = JSON.parse(
+      readFileSync(join(repoRoot, "packages", "cli", "package.json"), "utf8")
+    ) as { dependencies: Record<string, string> };
+
+    for (const packageName of [
+      "@gleip/config",
+      "@gleip/controller",
+      "@gleip/core",
+      "@gleip/planner"
+    ]) {
+      expect(cliPackageJson.dependencies[packageName]).toBe("workspace:0.2.2");
+    }
+  });
+
+  it("README files position agent auto-usage as the primary workflow", () => {
+    for (const readmePath of ["README.md", "packages/cli/README.md"]) {
+      const readme = readFileSync(join(repoRoot, readmePath), "utf8");
+
+      expect(readme).toContain("AI coding agents use automatically");
+      expect(readme).toContain("Codex / generic agents");
+      expect(readme).toContain("Claude Code");
+      expect(readme).toContain("Cursor");
+      expect(readme).toContain("npx --no-install gleip");
+      expect(readme).not.toContain("CSV export");
+      expect(readme).not.toContain("Add CSV");
+      expect(readme).not.toContain('npx gleip preflight "');
+      expect(readme).not.toContain("## Quick Start");
+    }
   });
 
   it("internal package exports point to built outputs", () => {
@@ -292,14 +349,19 @@ describe("createGleipCommand", () => {
     expect(agents).toContain("This repository uses Gleip");
     expect(agents).toContain("local guardrails");
     expect(agents).toContain("check `.gleip/state.json`");
-    expect(agents).toContain('run `gleip preflight "<user task>"`');
+    expect(agents).toContain('run `npx --no-install gleip preflight "<user task>"`');
     expect(agents).toContain("Read `.gleip/brief.md` and `.gleip/scope-budget.json`");
-    expect(agents).toContain("gleip validate-plan");
+    expect(agents).toContain("npx --no-install gleip validate-plan");
     expect(agents).toContain("needs_revision");
     expect(agents).toContain("requires_approval");
     expect(agents).toContain("Gleip is currently inactive");
     expect(agents).toContain("Gleip is configured for this repository");
-    expect(agents).toContain("Before the final response, run `gleip status`");
+    expect(agents).toContain(
+      "Gleip is configured for this repository, but I could not run it through the local package command. Do you want me to proceed without Gleip guardrails? y/n"
+    );
+    expect(agents).toContain(
+      "Before the final response, run `npx --no-install gleip status`"
+    );
     expect(agents).toContain("Stop if status is `approval_required` or `blocked`");
     expect(agents).toContain("Final response must include Gleip status, files changed, tests run, and risks");
     expect(agents).toContain("Gleip checklist for every coding task");
@@ -358,7 +420,7 @@ describe("createGleipCommand", () => {
     const output = await runCommand(repo, ["init", "--agent", "auto"]);
 
     expect(output.join("\n")).toContain(
-      "No specific agent setup detected. Created generic AGENTS.md. To prepare all supported agents, run `gleip init --all-agents`."
+      "No specific agent setup detected. Created generic AGENTS.md. To prepare all supported agents, run `npx gleip init --all-agents`."
     );
   });
 
@@ -420,6 +482,9 @@ describe("createGleipCommand", () => {
     assertGleipWorkflowInstructions(readFileSync(join(repo, ".cursor", "rules", "gleip.mdc"), "utf8"));
     expect(existsSync(join(repo, ".gleip.yml"))).toBe(true);
     expect(existsSync(join(repo, "GLEIP.md"))).toBe(true);
+    expect(readFileSync(join(repo, "GLEIP.md"), "utf8")).toContain(
+      'npx --no-install gleip preflight "<task>"'
+    );
     expect(existsSync(join(repo, ".gleip", "state.json"))).toBe(true);
   });
 
@@ -477,7 +542,7 @@ describe("createGleipCommand", () => {
 
     expect(output.join("\n")).toContain("Legacy Argus files detected");
     expect(output.join("\n")).toContain("renamed to Gleip");
-    expect(output.join("\n")).toContain("Re-run `gleip init`");
+    expect(output.join("\n")).toContain("Re-run `npx gleip init`");
   });
 
   it("doctor --agents reports missing files", async () => {
@@ -489,8 +554,8 @@ describe("createGleipCommand", () => {
     expect(report).toContain("AGENTS.md: missing; Gleip workflow: no");
     expect(report).toContain("CLAUDE.md: missing; Gleip workflow: no");
     expect(report).toContain(".cursor/rules/gleip.mdc: missing; Gleip workflow: no");
-    expect(report).toContain("gleip init --all-agents");
-    expect(report).toContain("gleip init --agent <name>");
+    expect(report).toContain("npx gleip init --all-agents");
+    expect(report).toContain("npx gleip init --agent <name>");
   });
 
   it("doctor --agents explains no agent files is valid", async () => {
@@ -499,7 +564,7 @@ describe("createGleipCommand", () => {
     const output = await runCommand(repo, ["doctor", "--agents"]);
 
     expect(output.join("\n")).toContain(
-      "No supported agent files exist yet. This is valid; `gleip init --all-agents` can prepare the repo before any agent is installed."
+      "No supported agent files exist yet. This is valid; `npx gleip init --all-agents` can prepare the repo before any agent is installed."
     );
   });
 
@@ -589,7 +654,7 @@ describe("createGleipCommand", () => {
 
     const output = await runCommand(repo, ["state"]);
 
-    expect(output.join("\n")).toContain("Run `gleip init` first.");
+    expect(output.join("\n")).toContain("Run `npx gleip init` first.");
   });
 
   it("enable and disable respect --cwd", async () => {
@@ -639,9 +704,13 @@ describe("createGleipCommand", () => {
 
     expect(preflightOutput).toContain("Gleip preflight is ready.");
     expect(preflightOutput).toContain("Read `.gleip/brief.md`.");
-    expect(preflightOutput).toContain("Validate the plan with `gleip validate-plan`.");
+    expect(preflightOutput).toContain(
+      "Validate the plan with `npx --no-install gleip validate-plan`."
+    );
     expect(preflightOutput).toContain("Implement within `.gleip/scope-budget.json`.");
-    expect(preflightOutput).toContain("Run `gleip status` before the final response.");
+    expect(preflightOutput).toContain(
+      "Run `npx --no-install gleip status` before the final response."
+    );
   });
 
   it("preflight stores baseline when no existing changes are present", async () => {
@@ -781,7 +850,9 @@ describe("createGleipCommand", () => {
     const repo = createTempRepo();
     const output = await runCommand(repo, ["brief"]);
 
-    expect(output.join("\n")).toContain('Run `gleip preflight "<task>"` first.');
+    expect(output.join("\n")).toContain(
+      'Run `npx --no-install gleip preflight "<task>"` first.'
+    );
   });
 
   it("brief reads from the target cwd", async () => {
@@ -800,7 +871,7 @@ describe("createGleipCommand", () => {
     const output = await runCommand(repo, ["status"]);
 
     expect(output.join("\n")).toContain(
-      'No active Gleip session found. Run `gleip preflight "<task>"` first.'
+      'No active Gleip session found. Run `npx --no-install gleip preflight "<task>"` first.'
     );
   });
 
@@ -856,7 +927,7 @@ describe("createGleipCommand", () => {
         "No working tree changes detected.",
         "",
         "Next action:",
-        "Begin implementation or run gleip preflight if this is not the intended session."
+        "Begin implementation or run npx --no-install gleip preflight if this is not the intended session."
       ].join("\n")
     );
   });
@@ -1525,6 +1596,123 @@ describe("createGleipCommand", () => {
     );
     expect(existsSync(join(processCwd, ".gleip"))).toBe(false);
   });
+
+  it("uninstall removes Gleip-owned repository files and generated agent files", async () => {
+    const repo = createTempRepo();
+    await runCommand(repo, ["init", "--all-agents"]);
+
+    const output = await runCommand(repo, ["uninstall"]);
+
+    expect(existsSync(join(repo, ".gleip"))).toBe(false);
+    expect(existsSync(join(repo, ".gleip.yml"))).toBe(false);
+    expect(existsSync(join(repo, "GLEIP.md"))).toBe(false);
+    expect(existsSync(join(repo, "AGENTS.md"))).toBe(false);
+    expect(existsSync(join(repo, "CLAUDE.md"))).toBe(false);
+    expect(existsSync(join(repo, ".cursor", "rules", "gleip.mdc"))).toBe(false);
+    expect(output.join("\n")).toContain(
+      "Next: run `npm uninstall gleip` to remove the package dependency."
+    );
+  });
+
+  it("uninstall removes managed sections while preserving unrelated agent instructions", async () => {
+    const repo = createTempRepo();
+    writeRepoFile(repo, "AGENTS.md", "# Existing Agent Rules\n\nKeep agent content.\n");
+    writeRepoFile(repo, "CLAUDE.md", "# Existing Claude Rules\n\nKeep Claude content.\n");
+    await runCommand(repo, ["init", "--all-agents"]);
+
+    await runCommand(repo, ["uninstall"]);
+
+    const agents = readFileSync(join(repo, "AGENTS.md"), "utf8");
+    const claude = readFileSync(join(repo, "CLAUDE.md"), "utf8");
+    expect(agents).toContain("Keep agent content.");
+    expect(agents).not.toContain("<!-- GLEIP:START -->");
+    expect(claude).toContain("Keep Claude content.");
+    expect(claude).not.toContain("<!-- GLEIP:START -->");
+  });
+
+  it("uninstall preserves a Cursor rule that contains unrelated content", async () => {
+    const repo = createTempRepo();
+    writeRepoFile(
+      repo,
+      ".cursor/rules/gleip.mdc",
+      "---\ndescription: Custom rule\nalwaysApply: true\n---\n\nKeep this rule.\n"
+    );
+    await runCommand(repo, ["init", "--agent", "cursor"]);
+
+    const output = await runCommand(repo, ["uninstall"]);
+
+    expect(readFileSync(join(repo, ".cursor", "rules", "gleip.mdc"), "utf8")).toContain(
+      "Keep this rule."
+    );
+    expect(output.join("\n")).toContain(
+      ".cursor/rules/gleip.mdc (preserved because it contains unrelated content)"
+    );
+  });
+
+  it("uninstall --keep-agent-files preserves all agent files", async () => {
+    const repo = createTempRepo();
+    await runCommand(repo, ["init", "--all-agents"]);
+    const agentsBefore = readFileSync(join(repo, "AGENTS.md"), "utf8");
+    const claudeBefore = readFileSync(join(repo, "CLAUDE.md"), "utf8");
+    const cursorBefore = readFileSync(join(repo, ".cursor", "rules", "gleip.mdc"), "utf8");
+
+    await runCommand(repo, ["uninstall", "--keep-agent-files"]);
+
+    expect(existsSync(join(repo, ".gleip"))).toBe(false);
+    expect(existsSync(join(repo, ".gleip.yml"))).toBe(false);
+    expect(existsSync(join(repo, "GLEIP.md"))).toBe(false);
+    expect(readFileSync(join(repo, "AGENTS.md"), "utf8")).toBe(agentsBefore);
+    expect(readFileSync(join(repo, "CLAUDE.md"), "utf8")).toBe(claudeBefore);
+    expect(readFileSync(join(repo, ".cursor", "rules", "gleip.mdc"), "utf8")).toBe(cursorBefore);
+  });
+
+  it("uninstall --dry-run reports actions without changing files", async () => {
+    const repo = createTempRepo();
+    writeRepoFile(repo, "AGENTS.md", "# Existing Rules\n\nKeep this.\n");
+    await runCommand(repo, ["init", "--all-agents"]);
+    const agentsBefore = readFileSync(join(repo, "AGENTS.md"), "utf8");
+
+    const output = await runCommand(repo, ["uninstall", "--dry-run"]);
+    const report = output.join("\n");
+
+    expect(report).toContain("Gleip uninstall dry run. No files changed.");
+    expect(report).toContain("Files/directories to remove:");
+    expect(report).toContain("Files whose Gleip section would be removed:");
+    expect(report).toContain("Files skipped/preserved:");
+    expect(report).toContain("- .gleip");
+    expect(report).toContain("- AGENTS.md");
+    expect(existsSync(join(repo, ".gleip"))).toBe(true);
+    expect(existsSync(join(repo, ".gleip.yml"))).toBe(true);
+    expect(existsSync(join(repo, "GLEIP.md"))).toBe(true);
+    expect(readFileSync(join(repo, "AGENTS.md"), "utf8")).toBe(agentsBefore);
+    expect(existsSync(join(repo, ".cursor", "rules", "gleip.mdc"))).toBe(true);
+  });
+
+  it("uninstall respects --cwd", async () => {
+    const processCwd = createTempRepo();
+    const targetCwd = createTempRepo();
+    await runCommand(processCwd, ["--cwd", targetCwd, "init", "--all-agents"]);
+
+    await runCommand(processCwd, ["--cwd", targetCwd, "uninstall"]);
+
+    expect(existsSync(join(targetCwd, ".gleip"))).toBe(false);
+    expect(existsSync(join(targetCwd, ".gleip.yml"))).toBe(false);
+    expect(existsSync(join(targetCwd, "GLEIP.md"))).toBe(false);
+    expect(existsSync(join(processCwd, ".gleip"))).toBe(false);
+  });
+
+  it("uninstall is idempotent when Gleip files are already absent", async () => {
+    const repo = createTempRepo();
+
+    const firstOutput = await runCommand(repo, ["uninstall"]);
+    const secondOutput = await runCommand(repo, ["uninstall", "--force"]);
+
+    expect(firstOutput.join("\n")).toContain(".gleip (not found)");
+    expect(secondOutput.join("\n")).toContain("Gleip repository cleanup complete.");
+    expect(secondOutput.join("\n")).toContain(
+      "Next: run `npm uninstall gleip` to remove the package dependency."
+    );
+  });
 });
 
 function createTempRepo(): string {
@@ -1650,18 +1838,21 @@ function countOccurrences(value: string, pattern: string): number {
 
 function assertGleipWorkflowInstructions(content: string): void {
   expect(content).toContain("<!-- GLEIP:START -->");
-  expect(content).toContain('gleip preflight "<task>"');
-  expect(content).toContain('gleip preflight "<user task>"');
-  expect(content).toContain("gleip validate-plan");
-  expect(content).toContain("gleip status");
+  expect(content).toContain('npx --no-install gleip preflight "<task>"');
+  expect(content).toContain('npx --no-install gleip preflight "<user task>"');
+  expect(content).toContain("npx --no-install gleip validate-plan");
+  expect(content).toContain("npx --no-install gleip status");
   expect(content).toContain("needs_revision");
   expect(content).toContain("requires_approval");
   expect(content).toContain("Gleip is currently inactive");
   expect(content).toContain("proceed without Gleip guardrails");
   expect(content).toContain("Gleip is configured for this repository");
+  expect(content).toContain(
+    "Gleip is configured for this repository, but I could not run it through the local package command. Do you want me to proceed without Gleip guardrails? y/n"
+  );
   expect(content).toContain("Gleip checklist for every coding task");
   expect(content).toContain("Check `.gleip/state.json`");
-  expect(content).toContain("Validate plan with `gleip validate-plan`");
+  expect(content).toContain("Validate plan with `npx --no-install gleip validate-plan`");
   expect(content).toContain("Final response must include Gleip status, files changed, tests run, and risks");
   expect(content).toContain("<!-- GLEIP:END -->");
 }

@@ -767,7 +767,7 @@ Implement the smallest safe change that satisfies the task. Stay inside the scop
 
 ## Before editing code
 1. Draft a short implementation plan.
-2. Run \`gleip validate-plan "<plan>"\` or \`gleip validate-plan --file <file>\`.
+2. Run \`npx --no-install gleip validate-plan "<plan>"\` or \`npx --no-install gleip validate-plan --file <file>\`.
 3. Proceed only if approved or the user explicitly approves.
 
 ## Repo context
@@ -817,11 +817,11 @@ ${formatRequiredTests(scopeBudget)}
 ${formatStringListForBrief(scopeBudget.stopConditions, 8)}
 
 ## Before final response
-1. Run \`gleip status\`.
+1. Run \`npx --no-install gleip status\`.
 2. Run relevant tests if available.
 3. Report files changed.
 4. Report tests run.
-5. Report whether gleip status is within scope, warning, approval_required, or blocked.
+5. Report whether Gleip status is within scope, warning, approval_required, or blocked.
 `;
 }
 
@@ -1374,7 +1374,7 @@ function planValidationNextAction(status: PlanValidationStatus): string {
   }
 
   if (status === "needs_revision") {
-    return "Revise the plan and run gleip validate-plan again before editing code.";
+    return "Revise the plan and run npx --no-install gleip validate-plan again before editing code.";
   }
 
   return "Ask the user for approval before proceeding, or revise the plan to avoid approval-required work.";

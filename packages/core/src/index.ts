@@ -168,7 +168,7 @@ export function createSessionBaseline(diff: GitDiffContext, createdAt: string): 
   return {
     ...base,
     note:
-      "Pre-existing working-tree changes were detected before this Gleip session. gleip status will focus on changes introduced after preflight."
+      "Pre-existing working-tree changes were detected before this Gleip session. npx --no-install gleip status will focus on changes introduced after preflight."
   };
 }
 

@@ -1,14 +1,14 @@
 # Drift Detection
 
-`gleip status` compares the current working tree against the active `.gleip/scope-budget.json`.
+`npx --no-install gleip status` compares the current working tree against the active `.gleip/scope-budget.json`.
 
-Gleip collects the local Git diff, including staged and unstaged changes, then checks it against the scope budget produced by `gleip preflight "<task>"`.
+Gleip collects the local Git diff, including staged and unstaged changes, then checks it against the scope budget produced by `npx --no-install gleip preflight "<task>"`.
 
 ## Session Baseline
 
-`gleip preflight "<task>"` captures a working-tree baseline before implementation starts.
+`npx --no-install gleip preflight "<task>"` captures a working-tree baseline before implementation starts.
 
-`gleip status` focuses on changes made after that preflight baseline. Pre-existing files are ignored when their diff has not changed since preflight.
+`npx --no-install gleip status` focuses on changes made after that preflight baseline. Pre-existing files are ignored when their diff has not changed since preflight.
 
 Pre-existing changes are included again when:
 
@@ -19,13 +19,13 @@ Pre-existing changes are included again when:
 Use `--include-baseline` to analyze the full current working tree:
 
 ```sh
-gleip status --include-baseline
-gleip check --include-baseline
+npx --no-install gleip status --include-baseline
+npx --no-install gleip check --include-baseline
 ```
 
 This is useful when you intentionally want Gleip to consider pre-existing changes as part of the active review.
 
-`gleip check` is non-mutating. If an active session and baseline exist, it uses the same baseline-filtered diff as `gleip status`. If no active session exists, it checks the whole working tree with a conservative default budget.
+`npx --no-install gleip check` is non-mutating. If an active session and baseline exist, it uses the same baseline-filtered diff as status. If no active session exists, it checks the whole working tree with a conservative default budget.
 
 ## Status Levels
 
@@ -36,7 +36,7 @@ This is useful when you intentionally want Gleip to consider pre-existing change
 
 ## How Agents Should Use It
 
-Run `gleip status` before the final response.
+Agents run `npx --no-install gleip status` before the final response.
 
 For each status:
 
@@ -69,8 +69,8 @@ The report ends with one next action so coding agents have a clear instruction.
 Use `--json` for future editor or agent integrations:
 
 ```sh
-gleip status --json
-gleip check --json
+npx --no-install gleip status --json
+npx --no-install gleip check --json
 ```
 
 JSON output includes:
@@ -81,7 +81,7 @@ JSON output includes:
 - `findings`
 - `nextAction`
 
-`gleip check --json` is non-mutating, like the text check command.
+`npx --no-install gleip check --json` is non-mutating, like the text check command.
 
 ## Limitations
 

@@ -1,42 +1,44 @@
 # Plan Validation
 
-Gleip plan validation is a proactive guardrail for coding agents. After `gleip preflight` creates the implementation brief and scope budget, the agent can validate its intended plan before editing code.
+Gleip plan validation is a proactive guardrail for coding agents. After local preflight creates the implementation brief and scope budget, the agent validates its intended plan before editing code.
 
 The goal is to catch obvious scope problems early: new dependencies, CI changes, skipped or deleted tests, broad rewrites, missing tests, and files outside the active allowed paths.
 
 ## Agent Workflow
 
-1. Run `gleip preflight "<task>"`.
+1. Run `npx --no-install gleip preflight "<task>"`.
 2. Draft a short implementation plan that names likely files and tests.
 3. Run plan validation.
 4. Proceed only when the status is `approved`.
 5. Revise the plan for `needs_revision`.
 6. Ask the user before proceeding on `requires_approval`.
 
-## Commands
+## Testing the workflow manually
+
+These commands are available for testing or fallback. Normal usage is for generated agent instructions to run them automatically.
 
 Validate inline text:
 
 ```sh
-gleip validate-plan "Modify src/features/users/UserTable.tsx and add tests in src/features/users/UserTable.test.tsx"
+npx --no-install gleip validate-plan "Update the checkout discount calculation and its focused tests"
 ```
 
 Validate a plan file:
 
 ```sh
-gleip validate-plan --file plan.md
+npx --no-install gleip validate-plan --file plan.md
 ```
 
 Validate from stdin:
 
 ```sh
-echo "Modify src/features/users/UserTable.tsx and run tests" | gleip validate-plan
+echo "Update the checkout discount calculation and run focused tests" | npx --no-install gleip validate-plan
 ```
 
 Use JSON output for automation:
 
 ```sh
-gleip validate-plan --json --file plan.md
+npx --no-install gleip validate-plan --json --file plan.md
 ```
 
 ## Statuses

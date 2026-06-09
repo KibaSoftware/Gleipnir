@@ -14,22 +14,36 @@ if (!existsSync(cliEntry)) {
 const repo = mkdtempSync(join(tmpdir(), "gleip-smoke-"));
 
 run("git", ["init"], repo);
-writeRepoFile("src/features/users/UserTable.tsx", "export function UserTable() { return null; }\n");
-writeRepoFile("src/features/users/UserTable.test.tsx", "describe('UserTable', () => {});\n");
-writeRepoFile("src/utils/csv.ts", "export function toCsv() { return ''; }\n");
+writeRepoFile(
+  "src/checkout/calculateDiscount.ts",
+  "export function calculateDiscount(total) { return total; }\n"
+);
+writeRepoFile(
+  "src/checkout/calculateDiscount.test.ts",
+  "describe('calculateDiscount', () => {});\n"
+);
 writeRepoFile(
   "plan.md",
   [
-    "- Modify src/features/users/UserTable.tsx",
-    "- Reuse src/utils/csv.ts",
-    "- Add tests in src/features/users/UserTable.test.tsx",
+    "- Modify src/checkout/calculateDiscount.ts",
+    "- Add focused tests in src/checkout/calculateDiscount.test.ts",
     ""
   ].join("\n")
 );
 
 run("node", [cliEntry, "--help"], repo);
 run("node", [cliEntry, "--cwd", repo, "init", "--all-agents"], repo);
-run("node", [cliEntry, "--cwd", repo, "preflight", "Add CSV export to users table"], repo);
+run(
+  "node",
+  [
+    cliEntry,
+    "--cwd",
+    repo,
+    "preflight",
+    "Fix the checkout discount calculation bug without changing payment provider integration or checkout routing."
+  ],
+  repo
+);
 const validation = run("node", [cliEntry, "--cwd", repo, "validate-plan", "--file", join(repo, "plan.md")], repo);
 run("node", [cliEntry, "--cwd", repo, "status"], repo);
 

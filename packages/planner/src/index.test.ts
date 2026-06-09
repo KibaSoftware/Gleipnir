@@ -721,11 +721,11 @@ describe("generateImplementationBrief", () => {
     const brief = generateImplementationBrief(sampleBriefInput());
 
     expect(brief).toContain("## Before final response");
-    expect(brief).toContain("1. Run `gleip status`.");
+    expect(brief).toContain("1. Run `npx --no-install gleip status`.");
     expect(brief).toContain("2. Run relevant tests if available.");
     expect(brief).toContain("3. Report files changed.");
     expect(brief).toContain("4. Report tests run.");
-    expect(brief).toContain("5. Report whether gleip status is within scope");
+    expect(brief).toContain("5. Report whether Gleip status is within scope");
   });
 });
 

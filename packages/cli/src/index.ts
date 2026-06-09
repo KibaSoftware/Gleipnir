@@ -4,6 +4,7 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
+  rmSync,
   statSync,
   unlinkSync,
   writeFileSync
@@ -22,7 +23,7 @@ const LEGACY_ARGUS_WORKFLOW_SECTION_END = "<!-- ARGUS:AGENT-WORKFLOW:END -->";
 const SUPPORTED_AGENT_TARGETS = ["auto", "generic", "codex", "claude", "cursor"] as const;
 const AGENT_INSTRUCTION_TARGETS = ["generic", "claude", "cursor"] as const;
 const NO_AGENT_SETUP_MESSAGE =
-  "No specific agent setup detected. Created generic AGENTS.md. To prepare all supported agents, run `gleip init --all-agents`.";
+  "No specific agent setup detected. Created generic AGENTS.md. To prepare all supported agents, run `npx gleip init --all-agents`.";
 
 type AgentTarget = (typeof SUPPORTED_AGENT_TARGETS)[number];
 type AgentInstructionTarget = (typeof AGENT_INSTRUCTION_TARGETS)[number];
@@ -116,6 +117,12 @@ interface RepairAgentsOptions {
 
 interface StopOptions {
   clean?: boolean;
+}
+
+interface UninstallOptions {
+  dryRun?: boolean;
+  force?: boolean;
+  keepAgentFiles?: boolean;
 }
 
 interface StateChangeOptions {
@@ -394,15 +401,15 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
   program
     .name("gleip")
     .description("Run local-only preflight, scope budget, and status guardrails for coding-agent work.")
-    .version("0.2.1")
+    .version("0.2.2")
     .option("--cwd <path>", "Run Gleip against a target repository.", options.cwd)
     .addHelpText(
       "after",
       [
         "",
         "Examples:",
-        '  $ gleip preflight "Add CSV export to users table"',
-        '  $ gleip validate-plan "Modify UserTable, reuse csv utility, add tests"',
+        '  $ gleip preflight "Fix the checkout discount calculation bug without changing payment provider integration or checkout routing"',
+        '  $ gleip validate-plan "Update the discount calculation and its focused checkout tests"',
         "  $ gleip status"
       ].join("\n")
     );
@@ -427,7 +434,10 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
     .command("preflight")
     .description("Create a local-only brief, scope budget, and status baseline for a task.")
     .argument("<task>", "Task the coding agent is about to implement.")
-    .addHelpText("after", '\nExample:\n  $ gleip preflight "Add CSV export to users table"')
+    .addHelpText(
+      "after",
+      '\nExample:\n  $ gleip preflight "Fix the checkout discount calculation bug without changing payment provider integration or checkout routing"'
+    )
     .action(async (task: string) => {
       await preflight(runtime, task);
     });
@@ -458,7 +468,7 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
       [
         "",
         "Examples:",
-        '  $ gleip validate-plan "Modify UserTable, reuse csv utility, add tests"',
+        '  $ gleip validate-plan "Update the discount calculation and its focused checkout tests"',
         "  $ gleip validate-plan --file plan.md",
         "  $ Get-Content plan.md | gleip validate-plan"
       ].join("\n")
@@ -545,6 +555,29 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
     .option("--clean", "Also remove generated brief, scope budget, and status files.")
     .action((commandOptions: StopOptions) => {
       stop(runtime, commandOptions);
+    });
+
+  program
+    .command("uninstall")
+    .description("Remove Gleip-generated files and managed agent sections.")
+    .option("--dry-run", "Print planned cleanup actions without changing files.")
+    .option(
+      "--keep-agent-files",
+      "Keep AGENTS.md, CLAUDE.md, and .cursor/rules/gleip.mdc unchanged."
+    )
+    .option("--force", "Skip confirmation prompts; does not remove unrelated files.")
+    .addHelpText(
+      "after",
+      [
+        "",
+        "Removes .gleip/, .gleip.yml, GLEIP.md, Gleip-managed sections in agent files,",
+        "and the Gleip-generated Cursor rule. Package dependencies are not changed.",
+        "",
+        "Next: run `npm uninstall gleip` to remove the package dependency."
+      ].join("\n")
+    )
+    .action((commandOptions: UninstallOptions) => {
+      uninstallRepository(runtime, commandOptions);
     });
 
   return program;
@@ -915,9 +948,9 @@ async function preflight(runtime: CommandRuntime, task: string): Promise<void> {
       "",
       "Next steps:",
       "1. Read `.gleip/brief.md`.",
-      "2. Validate the plan with `gleip validate-plan`.",
+      "2. Validate the plan with `npx --no-install gleip validate-plan`.",
       "3. Implement within `.gleip/scope-budget.json`.",
-      "4. Run `gleip status` before the final response."
+      "4. Run `npx --no-install gleip status` before the final response."
     ];
 
   const disabledNote = disabledStateNote(state, "Manual preflight still ran.");
@@ -933,7 +966,7 @@ function printBrief(runtime: CommandRuntime): void {
   const briefPath = join(runtime.cwd, ".gleip", "brief.md");
 
   if (!existsSync(briefPath)) {
-    runtime.stdout('No gleip brief found. Run `gleip preflight "<task>"` first.');
+    runtime.stdout('No gleip brief found. Run `npx --no-install gleip preflight "<task>"` first.');
     return;
   }
 
@@ -949,14 +982,18 @@ async function validatePlan(
   const state = loadGleipState(runtime.cwd);
 
   if (!existsSync(sessionPath)) {
-    runtime.stdout('No active Gleip session found. Run `gleip preflight "<task>"` first.');
+    runtime.stdout(
+      'No active Gleip session found. Run `npx --no-install gleip preflight "<task>"` first.'
+    );
     return;
   }
 
   const scopeBudget = readScopeBudget(runtime.cwd);
 
   if (scopeBudget === undefined) {
-    runtime.stdout('No scope budget found for this session. Re-run `gleip preflight "<task>"`.');
+    runtime.stdout(
+      'No scope budget found for this session. Re-run `npx --no-install gleip preflight "<task>"`.'
+    );
     return;
   }
 
@@ -968,7 +1005,7 @@ async function validatePlan(
 
   if (planText.trim().length === 0) {
     runtime.stdout(
-      'No plan text provided. Pass `gleip validate-plan "<plan>"`, use `--file <file>`, or pipe a plan on stdin.'
+      'No plan text provided. Pass `npx --no-install gleip validate-plan "<plan>"`, use `--file <file>`, or pipe a plan on stdin.'
     );
     return;
   }
@@ -1025,7 +1062,7 @@ function printGleipState(runtime: CommandRuntime): void {
   const state = loadGleipState(runtime.cwd);
 
   if (state === undefined) {
-    runtime.stdout("No gleip state found. Run `gleip init` first.");
+    runtime.stdout("No gleip state found. Run `npx gleip init` first.");
     return;
   }
 
@@ -1061,7 +1098,9 @@ async function printStatus(runtime: CommandRuntime, options: PrintStatusOptions 
       return;
     }
 
-    runtime.stdout('No active Gleip session found. Run `gleip preflight "<task>"` first.');
+    runtime.stdout(
+      'No active Gleip session found. Run `npx --no-install gleip preflight "<task>"` first.'
+    );
     return;
   }
 
@@ -1254,14 +1293,14 @@ function doctorAgents(runtime: CommandRuntime): void {
     ),
     "",
     "Suggestions:",
-    "- Run `gleip init --all-agents` to prepare all supported agent files.",
-    "- Run `gleip init --agent <name>` for one target."
+    "- Run `npx gleip init --all-agents` to prepare all supported agent files.",
+    "- Run `npx gleip init --agent <name>` for one target."
   ];
 
   if (!hasAnyAgentFile) {
     lines.push(
       "",
-      "No supported agent files exist yet. This is valid; `gleip init --all-agents` can prepare the repo before any agent is installed."
+      "No supported agent files exist yet. This is valid; `npx gleip init --all-agents` can prepare the repo before any agent is installed."
     );
   }
 
@@ -1273,7 +1312,7 @@ function repairAgents(runtime: CommandRuntime, options: RepairAgentsOptions): vo
 
   if (files.length === 0) {
     runtime.stdout(
-      "No existing supported agent instruction files found. Run `gleip repair-agents --all` to create all supported files."
+      "No existing supported agent instruction files found. Run `npx gleip repair-agents --all` to create all supported files."
     );
     return;
   }
@@ -1290,7 +1329,9 @@ function stop(runtime: CommandRuntime, options: StopOptions): void {
   const sessionPath = join(gleipDir, "session.json");
 
   if (!existsSync(sessionPath)) {
-    runtime.stdout('No active Gleip session found. Run `gleip preflight "<task>"` first.');
+    runtime.stdout(
+      'No active Gleip session found. Run `npx --no-install gleip preflight "<task>"` first.'
+    );
     return;
   }
 
@@ -1311,6 +1352,214 @@ function stop(runtime: CommandRuntime, options: StopOptions): void {
   }
 
   runtime.stdout(`Gleip session stopped. Archived to ${archivePath}.`);
+}
+
+interface UninstallModification {
+  content: string;
+  path: string;
+}
+
+interface UninstallRemoval {
+  path: string;
+  recursive: boolean;
+}
+
+interface UninstallPlan {
+  modifications: UninstallModification[];
+  removals: UninstallRemoval[];
+  skipped: string[];
+}
+
+function uninstallRepository(runtime: CommandRuntime, options: UninstallOptions): void {
+  void options.force;
+  const plan = createUninstallPlan(runtime.cwd, options.keepAgentFiles === true);
+
+  if (options.dryRun !== true) {
+    for (const removal of plan.removals) {
+      rmSync(join(runtime.cwd, removal.path), {
+        force: true,
+        recursive: removal.recursive
+      });
+    }
+
+    for (const modification of plan.modifications) {
+      writeFileSync(join(runtime.cwd, modification.path), modification.content);
+    }
+  }
+
+  runtime.stdout(formatUninstallPlan(plan, options.dryRun === true));
+}
+
+function createUninstallPlan(cwd: string, keepAgentFiles: boolean): UninstallPlan {
+  const plan: UninstallPlan = {
+    modifications: [],
+    removals: [],
+    skipped: []
+  };
+
+  planOwnedPathRemoval(cwd, ".gleip", true, plan);
+  planOwnedPathRemoval(cwd, ".gleip.yml", false, plan);
+  planOwnedPathRemoval(cwd, "GLEIP.md", false, plan);
+
+  for (const target of ["generic", "claude"] as const) {
+    planAgentInstructionCleanup(cwd, agentInstructionFile(target), keepAgentFiles, plan);
+  }
+
+  planCursorRuleCleanup(cwd, keepAgentFiles, plan);
+  return plan;
+}
+
+function planOwnedPathRemoval(
+  cwd: string,
+  relativePath: string,
+  expectedDirectory: boolean,
+  plan: UninstallPlan
+): void {
+  const filePath = join(cwd, relativePath);
+
+  if (!existsSync(filePath)) {
+    plan.skipped.push(`${relativePath} (not found)`);
+    return;
+  }
+
+  const matchesExpectedType = expectedDirectory
+    ? statSync(filePath).isDirectory()
+    : statSync(filePath).isFile();
+
+  if (!matchesExpectedType) {
+    plan.skipped.push(
+      `${relativePath} (preserved because it is not the expected ${
+        expectedDirectory ? "directory" : "file"
+      } type)`
+    );
+    return;
+  }
+
+  plan.removals.push({ path: relativePath, recursive: expectedDirectory });
+}
+
+function planAgentInstructionCleanup(
+  cwd: string,
+  file: AgentInstructionFile,
+  keepAgentFiles: boolean,
+  plan: UninstallPlan
+): void {
+  const filePath = join(cwd, file.path);
+
+  if (!existsSync(filePath)) {
+    plan.skipped.push(`${file.path} (not found)`);
+    return;
+  }
+
+  if (!statSync(filePath).isFile()) {
+    plan.skipped.push(`${file.path} (preserved because it is not a file)`);
+    return;
+  }
+
+  if (keepAgentFiles) {
+    plan.skipped.push(`${file.path} (--keep-agent-files)`);
+    return;
+  }
+
+  const result = removeGleipManagedSections(readFileSync(filePath, "utf8"));
+
+  if (!result.found) {
+    plan.skipped.push(`${file.path} (no Gleip-managed section)`);
+    return;
+  }
+
+  if (isEmptyOrGeneratedAgentScaffold(result.content, file.defaultContent)) {
+    plan.removals.push({ path: file.path, recursive: false });
+    return;
+  }
+
+  plan.modifications.push({ path: file.path, content: result.content });
+}
+
+function planCursorRuleCleanup(
+  cwd: string,
+  keepAgentFiles: boolean,
+  plan: UninstallPlan
+): void {
+  const file = agentInstructionFile("cursor");
+  const filePath = join(cwd, file.path);
+
+  if (!existsSync(filePath)) {
+    plan.skipped.push(`${file.path} (not found)`);
+    return;
+  }
+
+  if (!statSync(filePath).isFile()) {
+    plan.skipped.push(`${file.path} (preserved because it is not a file)`);
+    return;
+  }
+
+  if (keepAgentFiles) {
+    plan.skipped.push(`${file.path} (--keep-agent-files)`);
+    return;
+  }
+
+  const content = readFileSync(filePath, "utf8");
+  const result = removeGleipManagedSections(content);
+
+  if (
+    !result.found ||
+    !isEmptyOrGeneratedAgentScaffold(result.content, file.defaultContent)
+  ) {
+    plan.skipped.push(`${file.path} (preserved because it contains unrelated content)`);
+    return;
+  }
+
+  plan.removals.push({ path: file.path, recursive: false });
+}
+
+function removeGleipManagedSections(content: string): { content: string; found: boolean } {
+  const markerPattern = new RegExp(
+    `${escapeRegExp(GLEIP_SECTION_START)}[\\s\\S]*?${escapeRegExp(GLEIP_SECTION_END)}`,
+    "g"
+  );
+  const found = markerPattern.test(content);
+
+  if (!found) {
+    return { content, found: false };
+  }
+
+  const remaining = content
+    .replace(markerPattern, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trimEnd();
+
+  return {
+    content: remaining.length === 0 ? "" : `${remaining}\n`,
+    found: true
+  };
+}
+
+function isEmptyOrGeneratedAgentScaffold(content: string, defaultContent: string): boolean {
+  const normalized = content.trim();
+  return normalized.length === 0 || normalized === defaultContent.trim();
+}
+
+function formatUninstallPlan(plan: UninstallPlan, dryRun: boolean): string {
+  return [
+    dryRun ? "Gleip uninstall dry run. No files changed." : "Gleip repository cleanup complete.",
+    "",
+    "Files/directories to remove:",
+    ...formatUninstallItems(plan.removals.map((removal) => removal.path)),
+    "",
+    "Files whose Gleip section would be removed:",
+    ...formatUninstallItems(plan.modifications.map((modification) => modification.path)),
+    "",
+    "Files skipped/preserved:",
+    ...formatUninstallItems(plan.skipped),
+    ...(dryRun
+      ? []
+      : ["", "Next: run `npm uninstall gleip` to remove the package dependency."])
+  ].join("\n");
+}
+
+function formatUninstallItems(items: string[]): string[] {
+  return items.length === 0 ? ["- None."] : items.map((item) => `- ${item}`);
 }
 
 function writeGeneratedFile(filePath: string, content: string, force: boolean): void {
@@ -1521,7 +1770,7 @@ function upsertGleipSection(content: string, target: AgentInstructionTarget): st
 function gleipSectionContent(target: AgentInstructionTarget): string {
   const targetLine =
     target === "claude"
-      ? "Claude Code must run Gleip commands itself before editing code; ask the developer only if the `gleip` command is unavailable."
+      ? "Claude Code must run Gleip commands itself before editing code; ask the developer only if the local package command cannot be run."
       : target === "cursor"
         ? "This Cursor rule is always on for coding tasks in this repository."
         : "Codex-style and generic coding agents must run Gleip before editing code.";
@@ -1530,24 +1779,24 @@ function gleipSectionContent(target: AgentInstructionTarget): string {
 ## Gleip Workflow
 
 - This repository uses Gleip local guardrails. ${targetLine}
-- If the \`gleip\` command is unavailable, ask: "Gleip is configured for this repository, but the \`gleip\` command is unavailable. Do you want me to proceed without Gleip guardrails? y/n". Do not proceed without confirmation.
+- If the local package command cannot be run, ask: "Gleip is configured for this repository, but I could not run it through the local package command. Do you want me to proceed without Gleip guardrails? y/n". Do not proceed without confirmation.
 - Before editing code, check \`.gleip/state.json\`. If \`enabled\` is false, ask: "Gleip is currently inactive. Do you want me to proceed without Gleip guardrails? y/n". Do not proceed without confirmation.
-- If enabled, run \`gleip preflight "<user task>"\`.
+- If enabled, run \`npx --no-install gleip preflight "<user task>"\`.
 - Read \`.gleip/brief.md\` and \`.gleip/scope-budget.json\`.
-- Draft a short implementation plan and run \`gleip validate-plan "<plan>"\`.
+- Draft a short implementation plan and run \`npx --no-install gleip validate-plan "<plan>"\`.
 - Proceed only if validation is \`approved\`; if \`needs_revision\`, revise and validate again; if \`requires_approval\`, stop and ask the user.
 - During implementation, stay inside \`.gleip/scope-budget.json\`.
-- Before the final response, run \`gleip status\`. If status is \`warning\`, \`approval_required\`, or \`blocked\`, report it clearly. Stop if status is \`approval_required\` or \`blocked\`.
+- Before the final response, run \`npx --no-install gleip status\`. If status is \`warning\`, \`approval_required\`, or \`blocked\`, report it clearly. Stop if status is \`approval_required\` or \`blocked\`.
 - Final response must include Gleip status, files changed, tests run, and risks.
 
 ### Gleip checklist for every coding task
 
 - [ ] Check \`.gleip/state.json\`
-- [ ] Run \`gleip preflight "<task>"\`
+- [ ] Run \`npx --no-install gleip preflight "<task>"\`
 - [ ] Read \`.gleip/brief.md\`
-- [ ] Validate plan with \`gleip validate-plan\`
+- [ ] Validate plan with \`npx --no-install gleip validate-plan\`
 - [ ] Implement within \`.gleip/scope-budget.json\`
-- [ ] Run \`gleip status\`
+- [ ] Run \`npx --no-install gleip status\`
 - [ ] Report status, files changed, tests run
 ${GLEIP_SECTION_END}`;
 }
@@ -1621,7 +1870,9 @@ function defaultGleipReadmeContent(): string {
 
 This repository uses Gleip as a local-only preflight and sidecar tool for AI coding agents. Gleip performs no external review.
 
-Agents should run \`gleip preflight "<task>"\` before editing code, validate a short plan with \`gleip validate-plan "<plan>"\`, follow the generated brief and scope budget, and run \`gleip status\` before the final response.
+Agents should run \`npx --no-install gleip preflight "<task>"\` before editing code, validate a short plan with \`npx --no-install gleip validate-plan "<plan>"\`, follow the generated brief and scope budget, and run \`npx --no-install gleip status\` before the final response.
+
+To remove Gleip from this repository, run \`npx --no-install gleip uninstall\`, then run \`npm uninstall gleip\` to remove the package dependency.
 `;
 }
 
@@ -2022,7 +2273,7 @@ function statusJson(
 
 function nextActionForReport(driftResult: DriftResult): string {
   if (driftResult.status === "within_scope" && driftResult.metrics.filesChanged === 0) {
-    return "Begin implementation or run gleip preflight if this is not the intended session.";
+    return "Begin implementation or run npx --no-install gleip preflight if this is not the intended session.";
   }
 
   if (driftResult.status === "within_scope") {
@@ -2175,7 +2426,7 @@ function legacyArgusWarnings(cwd: string): string[] {
     agentsHasLegacyArgusMarkers(cwd)
   ) {
     warnings.push(
-      "Legacy Argus files detected. This pre-release has been renamed to Gleip. Re-run `gleip init` and remove old Argus files after verifying."
+      "Legacy Argus files detected. This pre-release has been renamed to Gleip. Re-run `npx gleip init` and remove old Argus files after verifying."
     );
   }
 

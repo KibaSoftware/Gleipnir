@@ -1,6 +1,6 @@
 {
   "name": "gleip",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "description": "A control layer for AI coding agents that keeps generated code lean, scoped, tested, and merge-ready.",
   "license": "Apache-2.0",

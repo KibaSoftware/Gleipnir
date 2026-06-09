@@ -2,6 +2,8 @@
 
 Agent auto-usage means the developer initializes Gleip once, then keeps using their coding agent normally. Generated repository instructions tell the agent to run Gleip before editing code, validate its plan, stay inside the scope budget, and run status before the final response.
 
+Agents use `npx --no-install gleip` for task workflow commands so Gleip can remain a local development dependency.
+
 ## Supported Agent Files
 
 - Codex and generic agents: `AGENTS.md`
@@ -21,17 +23,30 @@ npx gleip init --all-agents
 
 ## If No Agent Is Installed Yet
 
-`gleip init` and `gleip init --agent auto` detect existing agent files. If none exist, Gleip creates generic `AGENTS.md` and prints a note explaining that `gleip init --all-agents` can prepare all supported future agent files.
+`npx gleip init` and `npx gleip init --agent auto` detect existing agent files. If none exist, Gleip creates generic `AGENTS.md` and prints a note explaining that `npx gleip init --all-agents` can prepare all supported future agent files.
 
 ## Commands
 
-- `gleip init --all-agents`
-- `gleip init --agent auto`
-- `gleip init --agent codex`
-- `gleip init --agent claude`
-- `gleip init --agent cursor`
-- `gleip doctor --agents`
-- `gleip repair-agents`
+- `npx gleip init --all-agents`
+- `npx gleip init --agent auto`
+- `npx gleip init --agent codex`
+- `npx gleip init --agent claude`
+- `npx gleip init --agent cursor`
+- `npx gleip doctor --agents`
+- `npx gleip repair-agents --all`
+
+These are setup, diagnostics, and repair commands. The task workflow commands are intended for agents to run automatically and are available to developers for testing or fallback.
+
+## Repository Lifecycle
+
+To remove Gleip from a repository:
+
+```sh
+npx --no-install gleip uninstall
+npm uninstall gleip
+```
+
+The first command removes `.gleip/`, `.gleip.yml`, `GLEIP.md`, Gleip-managed sections in `AGENTS.md` and `CLAUDE.md`, and the Gleip-generated Cursor rule. The second command removes the package dependency. Use `--dry-run` to preview cleanup or `--keep-agent-files` to leave all supported agent files unchanged.
 
 ## Limitations
 

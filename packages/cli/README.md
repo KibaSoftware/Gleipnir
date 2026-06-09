@@ -1,8 +1,8 @@
 # Gleip
 
-Local-only guardrails for AI coding agents.
+Local-only guardrails that AI coding agents use automatically.
 
-Gleip helps coding agents stay scoped, validate plans before editing, and check drift before final response.
+Install Gleip once, initialize agent instructions, and keep using your coding agent normally. Supported agents are instructed to run Gleip preflight, plan validation, and status checks automatically.
 
 ## Install
 
@@ -11,43 +11,49 @@ npm install -D gleip
 npx gleip init --all-agents
 ```
 
-## Quick Start
+## Supported agents
 
-```bash
-npx gleip preflight "Add CSV export to users table"
-npx gleip validate-plan "Modify UserTable, reuse src/utils/csv.ts, add tests"
-npx gleip status
-```
+- Codex / generic agents via `AGENTS.md`
+- Claude Code via `CLAUDE.md`
+- Cursor via `.cursor/rules/gleip.mdc`
 
-In normal usage, coding agents should run these commands automatically based on generated `AGENTS.md`, `CLAUDE.md`, or Cursor rules.
+## What happens after init
 
-## Agent Auto-Usage
+- The agent checks Gleip state.
+- The agent runs local preflight.
+- The agent reads the brief and scope budget.
+- The agent validates its plan.
+- The agent runs status before final response.
+
+Agents are instructed to use `npx --no-install gleip` internally so Gleip does not need to be globally installed.
+
+## Setup and diagnostics
 
 - `npx gleip init --all-agents`
 - `npx gleip init --agent auto`
 - `npx gleip doctor --agents`
 - `npx gleip repair-agents --all`
 
-## Local-Only
+Task workflow commands are available for testing, but the intended usage is for agents to run them automatically.
+
+## Remove Gleip
+
+`npm uninstall gleip` removes the package dependency, but not generated repository files. Remove Gleip in this order:
+
+```bash
+npx --no-install gleip uninstall
+npm uninstall gleip
+```
+
+Use `npx --no-install gleip uninstall --dry-run` to preview repository cleanup.
+
+## Local-only
 
 - No telemetry.
 - No network calls.
 - No LLM/API calls.
 - No account.
 - No dashboard.
-
-## Commands
-
-- `gleip init --all-agents`
-- `gleip init --agent auto`
-- `gleip preflight`
-- `gleip validate-plan`
-- `gleip status`
-- `gleip check`
-- `gleip doctor --agents`
-- `gleip repair-agents`
-- `gleip enable`
-- `gleip disable`
 
 ## License
 
