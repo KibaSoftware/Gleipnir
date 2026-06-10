@@ -14,6 +14,25 @@ import { fileURLToPath } from "node:url";
 
 import { Command } from "commander";
 
+import { loadConfig as loadBundledConfig } from "../../config/src/index.js";
+import {
+  detectScopeDrift as detectBundledScopeDrift,
+  generateSessionReport as generateBundledSessionReport,
+  renderSessionReportMarkdown as renderBundledSessionReportMarkdown
+} from "../../controller/src/index.js";
+import {
+  collectWorkingTreeDiff as collectBundledWorkingTreeDiff,
+  createSessionBaseline as createBundledSessionBaseline,
+  filterDiffSinceBaseline as filterBundledDiffSinceBaseline
+} from "../../core/src/index.js";
+import {
+  classifyTask as classifyBundledTask,
+  createScopeBudget as createBundledScopeBudget,
+  discoverRepoContext as discoverBundledRepoContext,
+  generateImplementationBrief as generateBundledImplementationBrief,
+  validateAgentPlan as validateBundledAgentPlan
+} from "../../planner/src/index.js";
+
 const GLEIP_SECTION_START = "<!-- GLEIP:START -->";
 const GLEIP_SECTION_END = "<!-- GLEIP:END -->";
 const LEGACY_ARGUS_SECTION_START = "<!-- ARGUS:START -->";
@@ -717,102 +736,46 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
 }
 
 async function loadConfigFromPackage(cwd: string): Promise<unknown> {
-  const packageName = "@gleip/config";
-  let configPackage: { loadConfig: LoadConfig };
-
-  try {
-    configPackage = await loadConfigFromSource(undefined);
-  } catch (fallbackError) {
-    try {
-      configPackage = (await import(packageName)) as { loadConfig: LoadConfig };
-    } catch {
-      throw fallbackError;
-    }
-  }
-
-  return configPackage.loadConfig(cwd);
-}
-
-async function loadConfigFromSource(
-  error: unknown | undefined
-): Promise<{ loadConfig: LoadConfig }> {
-  const configDistUrl = new URL("../../config/dist/index.js", import.meta.url);
-  const configSourceUrl = new URL("../../config/src/index.ts", import.meta.url);
-
-  try {
-    return (await import(configDistUrl.href)) as { loadConfig: LoadConfig };
-  } catch (distError) {
-    if (isBuiltEntrypoint()) {
-      throw distError;
-    }
-    // Fall through to the TypeScript source path for local tsx development.
-  }
-
-  try {
-    return (await import(configSourceUrl.href)) as { loadConfig: LoadConfig };
-  } catch (sourceError) {
-    throw error ?? sourceError;
-  }
+  return loadBundledConfig(cwd);
 }
 
 async function classifyTaskFromPackage(task: string): Promise<TaskClassification> {
-  const packageName = "@gleip/planner";
-  const plannerPackage = await loadPlannerPackage(packageName);
-
-  return plannerPackage.classifyTask(task);
+  return classifyBundledTask(task);
 }
 
 async function discoverRepoContextFromPackage(
   options: DiscoverRepoContextOptions
 ): Promise<RepoContext> {
-  const packageName = "@gleip/planner";
-  const plannerPackage = await loadPlannerPackage(packageName);
-
-  return plannerPackage.discoverRepoContext(options);
+  return (discoverBundledRepoContext as unknown as DiscoverRepoContext)(options);
 }
 
 async function createScopeBudgetFromPackage(input: CreateScopeBudgetInput): Promise<ScopeBudget> {
-  const packageName = "@gleip/planner";
-  const plannerPackage = await loadPlannerPackage(packageName);
-
-  return plannerPackage.createScopeBudget(input);
+  return (createBundledScopeBudget as unknown as CreateScopeBudget)(input);
 }
 
 async function generateImplementationBriefFromPackage(
   input: GenerateImplementationBriefInput
 ): Promise<string> {
-  const packageName = "@gleip/planner";
-  const plannerPackage = await loadPlannerPackage(packageName);
-
-  return plannerPackage.generateImplementationBrief(input);
+  return (generateBundledImplementationBrief as unknown as GenerateImplementationBrief)(input);
 }
 
 async function validateAgentPlanFromPackage(
   input: ValidateAgentPlanInput
 ): Promise<PlanValidationResult> {
-  const packageName = "@gleip/planner";
-  const plannerPackage = await loadPlannerPackage(packageName);
-
-  return plannerPackage.validateAgentPlan(input);
+  return (validateBundledAgentPlan as unknown as ValidateAgentPlan)(input);
 }
 
 async function collectWorkingTreeDiffFromPackage(
   options: CollectWorkingTreeDiffOptions
 ): Promise<GitDiffContext> {
-  const packageName = "@gleip/core";
-  const corePackage = await loadCorePackage(packageName);
-
-  return corePackage.collectWorkingTreeDiff(options);
+  return collectBundledWorkingTreeDiff(options);
 }
 
 async function createSessionBaselineFromPackage(
   diff: GitDiffContext,
   createdAt: string
 ): Promise<SessionBaseline> {
-  const packageName = "@gleip/core";
-  const corePackage = await loadCorePackage(packageName);
-
-  return corePackage.createSessionBaseline(diff, createdAt);
+  return createBundledSessionBaseline(diff, createdAt);
 }
 
 async function filterDiffSinceBaselineFromPackage(
@@ -820,222 +783,21 @@ async function filterDiffSinceBaselineFromPackage(
   baseline: SessionBaseline | undefined,
   options?: { includeBaseline?: boolean }
 ): Promise<BaselineFilteredDiff> {
-  const packageName = "@gleip/core";
-  const corePackage = await loadCorePackage(packageName);
-
-  return corePackage.filterDiffSinceBaseline(currentDiff, baseline, options);
-}
-
-async function loadCorePackage(packageName: string): Promise<{
-  collectWorkingTreeDiff: CollectWorkingTreeDiff;
-  createSessionBaseline: CreateSessionBaseline;
-  filterDiffSinceBaseline: FilterDiffSinceBaseline;
-}> {
-  try {
-    return await loadCoreFromSource(undefined);
-  } catch (fallbackError) {
-    try {
-      return (await import(packageName)) as {
-        collectWorkingTreeDiff: CollectWorkingTreeDiff;
-        createSessionBaseline: CreateSessionBaseline;
-        filterDiffSinceBaseline: FilterDiffSinceBaseline;
-      };
-    } catch {
-      throw fallbackError;
-    }
-  }
-}
-
-async function loadCoreFromSource(error: unknown): Promise<{
-  collectWorkingTreeDiff: CollectWorkingTreeDiff;
-  createSessionBaseline: CreateSessionBaseline;
-  filterDiffSinceBaseline: FilterDiffSinceBaseline;
-}> {
-  const coreDistUrl = new URL("../../core/dist/index.js", import.meta.url);
-  const coreSourceUrl = new URL("../../core/src/index.ts", import.meta.url);
-
-  try {
-    return (await import(coreDistUrl.href)) as {
-      collectWorkingTreeDiff: CollectWorkingTreeDiff;
-      createSessionBaseline: CreateSessionBaseline;
-      filterDiffSinceBaseline: FilterDiffSinceBaseline;
-    };
-  } catch (distError) {
-    if (isBuiltEntrypoint()) {
-      throw distError;
-    }
-    // Fall through to the TypeScript source path for local tsx development.
-  }
-
-  try {
-    return (await import(coreSourceUrl.href)) as {
-      collectWorkingTreeDiff: CollectWorkingTreeDiff;
-      createSessionBaseline: CreateSessionBaseline;
-      filterDiffSinceBaseline: FilterDiffSinceBaseline;
-    };
-  } catch (sourceError) {
-    throw error ?? sourceError;
-  }
+  return filterBundledDiffSinceBaseline(currentDiff, baseline, options);
 }
 
 async function detectScopeDriftFromPackage(input: DetectScopeDriftInput): Promise<DriftResult> {
-  const packageName = "@gleip/controller";
-  const controllerPackage = await loadControllerPackage(packageName);
-
-  return controllerPackage.detectScopeDrift(input);
+  return detectBundledScopeDrift(input);
 }
 
 async function generateSessionReportFromPackage(
   input: GenerateSessionReportInput
 ): Promise<SessionReport> {
-  const controllerPackage = await loadControllerPackage("@gleip/controller");
-  return controllerPackage.generateSessionReport(input);
+  return generateBundledSessionReport(input);
 }
 
 async function renderSessionReportMarkdownFromPackage(report: SessionReport): Promise<string> {
-  const controllerPackage = await loadControllerPackage("@gleip/controller");
-  return controllerPackage.renderSessionReportMarkdown(report);
-}
-
-async function loadControllerPackage(packageName: string): Promise<{
-  detectScopeDrift: DetectScopeDrift;
-  generateSessionReport: GenerateSessionReport;
-  renderSessionReportMarkdown: RenderSessionReportMarkdown;
-}> {
-  try {
-    return await loadControllerFromSource(undefined);
-  } catch (fallbackError) {
-    try {
-      return (await import(packageName)) as {
-        detectScopeDrift: DetectScopeDrift;
-        generateSessionReport: GenerateSessionReport;
-        renderSessionReportMarkdown: RenderSessionReportMarkdown;
-      };
-    } catch {
-      throw fallbackError;
-    }
-  }
-}
-
-async function loadControllerFromSource(error: unknown): Promise<{
-  detectScopeDrift: DetectScopeDrift;
-  generateSessionReport: GenerateSessionReport;
-  renderSessionReportMarkdown: RenderSessionReportMarkdown;
-}> {
-  const controllerDistUrl = new URL("../../controller/dist/index.js", import.meta.url);
-  const controllerSourceUrl = new URL("../../controller/src/index.ts", import.meta.url);
-
-  if (!isBuiltEntrypoint()) {
-    try {
-      return (await import(controllerSourceUrl.href)) as {
-        detectScopeDrift: DetectScopeDrift;
-        generateSessionReport: GenerateSessionReport;
-        renderSessionReportMarkdown: RenderSessionReportMarkdown;
-      };
-    } catch {
-      // Fall through to dist/package loading for environments without TypeScript loading.
-    }
-  }
-
-  try {
-    const controllerPackage = (await import(controllerDistUrl.href)) as {
-      detectScopeDrift: DetectScopeDrift;
-      generateSessionReport?: GenerateSessionReport;
-      renderSessionReportMarkdown?: RenderSessionReportMarkdown;
-    };
-
-    if (
-      controllerPackage.generateSessionReport !== undefined &&
-      controllerPackage.renderSessionReportMarkdown !== undefined
-    ) {
-      return {
-        detectScopeDrift: controllerPackage.detectScopeDrift,
-        generateSessionReport: controllerPackage.generateSessionReport,
-        renderSessionReportMarkdown: controllerPackage.renderSessionReportMarkdown
-      };
-    }
-
-    if (isBuiltEntrypoint()) {
-      throw new Error("Built @gleip/controller is missing report exports.");
-    }
-  } catch (distError) {
-    if (isBuiltEntrypoint()) {
-      throw distError;
-    }
-    // Fall through to the TypeScript source path for local tsx development.
-  }
-
-  try {
-    return (await import(controllerSourceUrl.href)) as {
-      detectScopeDrift: DetectScopeDrift;
-      generateSessionReport: GenerateSessionReport;
-      renderSessionReportMarkdown: RenderSessionReportMarkdown;
-    };
-  } catch (sourceError) {
-    throw error ?? sourceError;
-  }
-}
-
-async function loadPlannerPackage(packageName: string): Promise<{
-  classifyTask: ClassifyTask;
-  createScopeBudget: CreateScopeBudget;
-  discoverRepoContext: DiscoverRepoContext;
-  generateImplementationBrief: GenerateImplementationBrief;
-  validateAgentPlan: ValidateAgentPlan;
-}> {
-  try {
-    return await loadPlannerFromSource(undefined);
-  } catch (fallbackError) {
-    try {
-      return (await import(packageName)) as {
-        classifyTask: ClassifyTask;
-        createScopeBudget: CreateScopeBudget;
-        discoverRepoContext: DiscoverRepoContext;
-        generateImplementationBrief: GenerateImplementationBrief;
-        validateAgentPlan: ValidateAgentPlan;
-      };
-    } catch {
-      throw fallbackError;
-    }
-  }
-}
-
-async function loadPlannerFromSource(error: unknown | undefined): Promise<{
-  classifyTask: ClassifyTask;
-  createScopeBudget: CreateScopeBudget;
-  discoverRepoContext: DiscoverRepoContext;
-  generateImplementationBrief: GenerateImplementationBrief;
-  validateAgentPlan: ValidateAgentPlan;
-}> {
-  const plannerDistUrl = new URL("../../planner/dist/index.js", import.meta.url);
-  const plannerSourceUrl = new URL("../../planner/src/index.ts", import.meta.url);
-
-  try {
-    return (await import(plannerDistUrl.href)) as {
-      classifyTask: ClassifyTask;
-      createScopeBudget: CreateScopeBudget;
-      discoverRepoContext: DiscoverRepoContext;
-      generateImplementationBrief: GenerateImplementationBrief;
-      validateAgentPlan: ValidateAgentPlan;
-    };
-  } catch (distError) {
-    if (isBuiltEntrypoint()) {
-      throw distError;
-    }
-    // Fall through to the TypeScript source path for local tsx development.
-  }
-
-  try {
-    return (await import(plannerSourceUrl.href)) as {
-      classifyTask: ClassifyTask;
-      createScopeBudget: CreateScopeBudget;
-      discoverRepoContext: DiscoverRepoContext;
-      generateImplementationBrief: GenerateImplementationBrief;
-      validateAgentPlan: ValidateAgentPlan;
-    };
-  } catch (sourceError) {
-    throw error ?? sourceError;
-  }
+  return renderBundledSessionReportMarkdown(report);
 }
 
 function initRepository(runtime: CommandRuntime, options: InitOptions): void {
@@ -2662,14 +2424,6 @@ function driftRiskLabel(status: DriftStatus): "none" | "low" | "medium" | "high"
 function isSupportedNodeVersion(version: string): boolean {
   const major = Number.parseInt(version.split(".")[0] ?? "", 10);
   return Number.isInteger(major) && major >= 20;
-}
-
-function isBuiltEntrypoint(): boolean {
-  return normalizeFilePath(fileURLToPath(import.meta.url)).endsWith("/dist/index.js");
-}
-
-function normalizeFilePath(path: string): string {
-  return path.replace(/\\/g, "/");
 }
 
 function isInsideGitRepository(cwd: string): boolean {

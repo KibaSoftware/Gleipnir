@@ -110,7 +110,6 @@ describe("createGleipCommand", () => {
       readFileSync(join(repoRoot, "packages", "cli", "package.json"), "utf8")
     ) as {
       bin: { gleip: string };
-      bundledDependencies: string[];
       dependencies: Record<string, string>;
       exports: { ".": { import: string; types: string } };
       keywords: string[];
@@ -127,13 +126,12 @@ describe("createGleipCommand", () => {
     expect(packageJson.exports["."].types).toBe("./dist/index.d.ts");
     expect(packageJson.name).toBe("gleip");
     expect(packageJson.version).toBe("0.3.0");
-    expect(packageJson.dependencies["@gleip/planner"]).toBe("workspace:0.3.0");
-    expect(packageJson.bundledDependencies).toEqual([
-      "@gleip/config",
-      "@gleip/controller",
-      "@gleip/core",
-      "@gleip/planner"
-    ]);
+    expect(packageJson.dependencies).toEqual({
+      commander: "^12.0.0",
+      yaml: "^2.0.0",
+      zod: "^3.0.0"
+    });
+    expect(packageJson).not.toHaveProperty("bundledDependencies");
     expect(packageJson.keywords).toContain("agent-guardrails");
   });
 
@@ -156,18 +154,13 @@ describe("createGleipCommand", () => {
       expect(packageJson.version).toBe("0.3.0");
     }
 
-    const cliPackageJson = JSON.parse(
-      readFileSync(join(repoRoot, "packages", "cli", "package.json"), "utf8")
-    ) as { dependencies: Record<string, string> };
+    const cliPackageJson = readFileSync(
+      join(repoRoot, "packages", "cli", "package.json"),
+      "utf8"
+    );
 
-    for (const packageName of [
-      "@gleip/config",
-      "@gleip/controller",
-      "@gleip/core",
-      "@gleip/planner"
-    ]) {
-      expect(cliPackageJson.dependencies[packageName]).toBe("workspace:0.3.0");
-    }
+    expect(cliPackageJson).not.toContain("workspace:");
+    expect(cliPackageJson).not.toContain("bundledDependencies");
   });
 
   it("README files position agent auto-usage as the primary workflow", () => {
