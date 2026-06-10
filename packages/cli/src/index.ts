@@ -24,6 +24,8 @@ const SUPPORTED_AGENT_TARGETS = ["auto", "generic", "codex", "claude", "cursor"]
 const AGENT_INSTRUCTION_TARGETS = ["generic", "claude", "cursor"] as const;
 const NO_AGENT_SETUP_MESSAGE =
   "No specific agent setup detected. Created generic AGENTS.md. To prepare all supported agents, run `npx gleip init --all-agents`.";
+const GLEIP_VERSION = "0.3.0";
+const REPORT_SCHEMA_VERSION = "1.0.0";
 
 type AgentTarget = (typeof SUPPORTED_AGENT_TARGETS)[number];
 type AgentInstructionTarget = (typeof AGENT_INSTRUCTION_TARGETS)[number];
@@ -51,6 +53,12 @@ type CollectWorkingTreeDiff = (
 ) => Promise<GitDiffContext> | GitDiffContext;
 
 type DetectScopeDrift = (input: DetectScopeDriftInput) => Promise<DriftResult> | DriftResult;
+
+type GenerateSessionReport = (
+  input: GenerateSessionReportInput
+) => Promise<SessionReport> | SessionReport;
+
+type RenderSessionReportMarkdown = (report: SessionReport) => Promise<string> | string;
 
 type CreateSessionBaseline = (
   diff: GitDiffContext,
@@ -80,6 +88,8 @@ interface CreateGleipCommandOptions {
   now?: () => Date;
   stderr?: OutputWriter;
   stdout?: OutputWriter;
+  generateSessionReport?: GenerateSessionReport;
+  renderSessionReportMarkdown?: RenderSessionReportMarkdown;
   validateAgentPlan?: ValidateAgentPlan;
 }
 
@@ -98,6 +108,8 @@ interface CommandRuntime {
   now: () => Date;
   stderr: OutputWriter;
   stdout: OutputWriter;
+  generateSessionReport: GenerateSessionReport;
+  renderSessionReportMarkdown: RenderSessionReportMarkdown;
   validateAgentPlan: ValidateAgentPlan;
 }
 
@@ -136,6 +148,10 @@ interface StatusCommandOptions {
 
 interface ValidatePlanOptions {
   file?: string;
+  json?: boolean;
+}
+
+interface ReportOptions {
   json?: boolean;
 }
 
@@ -354,6 +370,97 @@ interface PlanValidationResult {
   parsedPlan: AgentPlan;
 }
 
+interface GenerateSessionReportInput {
+  version: string;
+  schemaVersion: string;
+  sessionId?: string | null;
+  generatedAt: string;
+  scopeBudget?: ScopeBudget;
+  diff: GitDiffContext;
+  driftResult: DriftResult;
+  planValidation?: PlanValidationResult;
+  statusContent?: string;
+  missingArtifacts?: string[];
+}
+
+interface SessionReport {
+  version: string;
+  schemaVersion: string;
+  sessionId: string | null;
+  generatedAt: string;
+  scores: {
+    scopeAdherence: number;
+    planAlignment: number;
+    outputDiscipline: number;
+    reviewReadiness: number;
+  };
+  risk: {
+    drift: "none" | "low" | "medium" | "high";
+    testIntegrity: "unknown" | "pass" | "warning" | "fail";
+    overEdit: "none" | "low" | "medium" | "high";
+  };
+  efficiency: {
+    estimatedTokenWasteAvoided: number;
+    confidence: "low" | "medium" | "high";
+    breakdown: {
+      scopeWasteAvoided: number;
+      contextWasteAvoided: number;
+      outputWasteAvoided: number;
+    };
+    basis: Array<{
+      source:
+        | "avoided_diff"
+        | "avoided_file_context"
+        | "rejected_plan_item"
+        | "scope_budget_reduction"
+        | "output_discipline";
+      description: string;
+      estimatedTokens: number;
+      confidence: "low" | "medium" | "high";
+    }>;
+  };
+  finalResponse: {
+    markdown: string;
+    unresolvedWarnings: number;
+  };
+  warnings: Array<{
+    id: string;
+    type:
+      | "scope"
+      | "plan"
+      | "drift"
+      | "test_integrity"
+      | "output"
+      | "review_readiness"
+      | "efficiency";
+    severity: "info" | "low" | "medium" | "high";
+    message: string;
+    reason: string;
+    evidence: string[];
+    files: string[];
+    suggestedAction: string | null;
+  }>;
+  summary: {
+    changedFilesMentioned: boolean;
+    filesChanged: number;
+    unplannedFiles: number;
+    testsMentioned: boolean;
+    risksMentioned: boolean;
+  };
+}
+
+interface GleipSession {
+  sessionId?: string;
+  classification?: TaskClassification;
+  latestPlanValidation?: PlanValidationResult & { validatedAt?: string };
+  latestStatus?: unknown;
+  repoContext?: RepoContext;
+  baseline?: BaselineSummary;
+  scopeBudgetSummary?: ScopeBudgetSummary;
+  task?: string;
+  [key: string]: unknown;
+}
+
 interface ScopeBudgetSummary {
   expectedFilesChanged: NumberRange;
   softLimits: ScopeBudget["softLimits"];
@@ -394,14 +501,19 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
     now: options.now ?? (() => new Date()),
     stderr: options.stderr ?? ((message) => console.error(message)),
     stdout: options.stdout ?? ((message) => console.log(message)),
+    generateSessionReport: options.generateSessionReport ?? generateSessionReportFromPackage,
+    renderSessionReportMarkdown:
+      options.renderSessionReportMarkdown ?? renderSessionReportMarkdownFromPackage,
     validateAgentPlan: options.validateAgentPlan ?? validateAgentPlanFromPackage
   };
   const program = new Command();
 
   program
     .name("gleip")
-    .description("Run local-only preflight, scope budget, and status guardrails for coding-agent work.")
-    .version("0.2.2")
+    .description(
+      "Run local-only preflight, scope budget, and status guardrails for coding-agent work."
+    )
+    .version(GLEIP_VERSION)
     .option("--cwd <path>", "Run Gleip against a target repository.", options.cwd)
     .addHelpText(
       "after",
@@ -410,7 +522,8 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
         "Examples:",
         '  $ gleip preflight "Fix the checkout discount calculation bug without changing payment provider integration or checkout routing"',
         '  $ gleip validate-plan "Update the discount calculation and its focused checkout tests"',
-        "  $ gleip status"
+        "  $ gleip status",
+        "  $ gleip report"
       ].join("\n")
     );
 
@@ -422,10 +535,14 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
   program
     .command("init")
     .description("Create local-only Gleip config, policy docs, and agent workflow files.")
-    .option("--agent <name>", "Create instructions for auto, generic, codex, claude, or cursor.", "auto")
+    .option(
+      "--agent <name>",
+      "Create instructions for auto, generic, codex, claude, or cursor.",
+      "auto"
+    )
     .option("--all-agents", "Create instructions for generic/Codex, Claude, and Cursor.")
     .option("--force", "Overwrite generated Gleip files.")
-    .addHelpText("after", '\nExamples:\n  $ gleip init --all-agents\n  $ gleip init --agent claude')
+    .addHelpText("after", "\nExamples:\n  $ gleip init --all-agents\n  $ gleip init --agent claude")
     .action((commandOptions: InitOptions) => {
       initRepository(runtime, commandOptions);
     });
@@ -507,10 +624,14 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
   program
     .command("status")
     .description("Print and update the active Gleip session status.")
-    .option("--include-baseline", "Analyze the full working tree, including preflight baseline changes.")
+    .option(
+      "--include-baseline",
+      "Analyze the full working tree, including preflight baseline changes."
+    )
     .option("--json", "Print status as JSON.")
     .action(async (commandOptions: StatusCommandOptions) => {
       await printStatus(runtime, {
+        commandName: "status",
         disabledSuffix: "Status can still be checked manually.",
         includeBaseline: commandOptions.includeBaseline === true,
         json: commandOptions.json === true
@@ -520,17 +641,29 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
   program
     .command("check")
     .description("Check current repository changes against the local-only scope budget.")
-    .option("--include-baseline", "Analyze the full working tree, including preflight baseline changes.")
+    .option(
+      "--include-baseline",
+      "Analyze the full working tree, including preflight baseline changes."
+    )
     .option("--json", "Print check result as JSON.")
     .action(async (commandOptions: StatusCommandOptions) => {
       await printStatus(runtime, {
         allowMissingSession: true,
+        commandName: "check",
         disabledSuffix: "Check can still be run manually.",
         includeBaseline: commandOptions.includeBaseline === true,
         json: commandOptions.json === true,
         writeStatusFile: false,
         updateSession: false
       });
+    });
+
+  program
+    .command("report")
+    .description("Generate the canonical local-only Gleip session report.")
+    .option("--json", "Print the stable report JSON.")
+    .action(async (commandOptions: ReportOptions) => {
+      await printReport(runtime, commandOptions);
     });
 
   program
@@ -600,7 +733,9 @@ async function loadConfigFromPackage(cwd: string): Promise<unknown> {
   return configPackage.loadConfig(cwd);
 }
 
-async function loadConfigFromSource(error: unknown | undefined): Promise<{ loadConfig: LoadConfig }> {
+async function loadConfigFromSource(
+  error: unknown | undefined
+): Promise<{ loadConfig: LoadConfig }> {
   const configDistUrl = new URL("../../config/dist/index.js", import.meta.url);
   const configSourceUrl = new URL("../../config/src/index.ts", import.meta.url);
 
@@ -745,31 +880,84 @@ async function loadCoreFromSource(error: unknown): Promise<{
 
 async function detectScopeDriftFromPackage(input: DetectScopeDriftInput): Promise<DriftResult> {
   const packageName = "@gleip/controller";
-  let controllerPackage: { detectScopeDrift: DetectScopeDrift };
-
-  try {
-    controllerPackage = await loadControllerFromSource(undefined);
-  } catch (fallbackError) {
-    try {
-      controllerPackage = (await import(packageName)) as { detectScopeDrift: DetectScopeDrift };
-    } catch {
-      throw fallbackError;
-    }
-  }
+  const controllerPackage = await loadControllerPackage(packageName);
 
   return controllerPackage.detectScopeDrift(input);
 }
 
+async function generateSessionReportFromPackage(
+  input: GenerateSessionReportInput
+): Promise<SessionReport> {
+  const controllerPackage = await loadControllerPackage("@gleip/controller");
+  return controllerPackage.generateSessionReport(input);
+}
+
+async function renderSessionReportMarkdownFromPackage(report: SessionReport): Promise<string> {
+  const controllerPackage = await loadControllerPackage("@gleip/controller");
+  return controllerPackage.renderSessionReportMarkdown(report);
+}
+
+async function loadControllerPackage(packageName: string): Promise<{
+  detectScopeDrift: DetectScopeDrift;
+  generateSessionReport: GenerateSessionReport;
+  renderSessionReportMarkdown: RenderSessionReportMarkdown;
+}> {
+  try {
+    return await loadControllerFromSource(undefined);
+  } catch (fallbackError) {
+    try {
+      return (await import(packageName)) as {
+        detectScopeDrift: DetectScopeDrift;
+        generateSessionReport: GenerateSessionReport;
+        renderSessionReportMarkdown: RenderSessionReportMarkdown;
+      };
+    } catch {
+      throw fallbackError;
+    }
+  }
+}
+
 async function loadControllerFromSource(error: unknown): Promise<{
   detectScopeDrift: DetectScopeDrift;
+  generateSessionReport: GenerateSessionReport;
+  renderSessionReportMarkdown: RenderSessionReportMarkdown;
 }> {
   const controllerDistUrl = new URL("../../controller/dist/index.js", import.meta.url);
   const controllerSourceUrl = new URL("../../controller/src/index.ts", import.meta.url);
 
+  if (!isBuiltEntrypoint()) {
+    try {
+      return (await import(controllerSourceUrl.href)) as {
+        detectScopeDrift: DetectScopeDrift;
+        generateSessionReport: GenerateSessionReport;
+        renderSessionReportMarkdown: RenderSessionReportMarkdown;
+      };
+    } catch {
+      // Fall through to dist/package loading for environments without TypeScript loading.
+    }
+  }
+
   try {
-    return (await import(controllerDistUrl.href)) as {
+    const controllerPackage = (await import(controllerDistUrl.href)) as {
       detectScopeDrift: DetectScopeDrift;
+      generateSessionReport?: GenerateSessionReport;
+      renderSessionReportMarkdown?: RenderSessionReportMarkdown;
     };
+
+    if (
+      controllerPackage.generateSessionReport !== undefined &&
+      controllerPackage.renderSessionReportMarkdown !== undefined
+    ) {
+      return {
+        detectScopeDrift: controllerPackage.detectScopeDrift,
+        generateSessionReport: controllerPackage.generateSessionReport,
+        renderSessionReportMarkdown: controllerPackage.renderSessionReportMarkdown
+      };
+    }
+
+    if (isBuiltEntrypoint()) {
+      throw new Error("Built @gleip/controller is missing report exports.");
+    }
   } catch (distError) {
     if (isBuiltEntrypoint()) {
       throw distError;
@@ -780,6 +968,8 @@ async function loadControllerFromSource(error: unknown): Promise<{
   try {
     return (await import(controllerSourceUrl.href)) as {
       detectScopeDrift: DetectScopeDrift;
+      generateSessionReport: GenerateSessionReport;
+      renderSessionReportMarkdown: RenderSessionReportMarkdown;
     };
   } catch (sourceError) {
     throw error ?? sourceError;
@@ -874,7 +1064,7 @@ function initRepository(runtime: CommandRuntime, options: InitOptions): void {
   output.push(
     "",
     "Continue using your coding agent normally.",
-    "The agent should run Gleip preflight, validate-plan, and status automatically."
+    "The agent should run Gleip preflight, validate-plan, status, and report automatically."
   );
 
   runtime.stdout(output.join("\n"));
@@ -914,6 +1104,7 @@ async function preflight(runtime: CommandRuntime, task: string): Promise<void> {
   const baseline = await runtime.createSessionBaseline(baselineDiff, createdAt);
   const initialDriftResult = emptyDriftResult();
   const brief = addBaselineNote(implementationBrief, baseline);
+  const sessionId = createSessionId(createdAt);
 
   ensureGleipDirectory(runtime.cwd);
   writeFileSync(
@@ -921,6 +1112,7 @@ async function preflight(runtime: CommandRuntime, task: string): Promise<void> {
     `${JSON.stringify(
       {
         version: 1,
+        sessionId,
         task,
         classification,
         repoContext,
@@ -935,23 +1127,26 @@ async function preflight(runtime: CommandRuntime, task: string): Promise<void> {
       2
     )}\n`
   );
-  writeFileSync(join(runtime.cwd, ".gleip", "baseline.json"), `${JSON.stringify(baseline, null, 2)}\n`);
+  writeFileSync(
+    join(runtime.cwd, ".gleip", "baseline.json"),
+    `${JSON.stringify(baseline, null, 2)}\n`
+  );
   writeFileSync(join(runtime.cwd, ".gleip", "brief.md"), brief);
   writeFileSync(join(runtime.cwd, ".gleip", "scope-budget.json"), scopeBudgetContent(scopeBudget));
   writeFileSync(
     join(runtime.cwd, ".gleip", "status.md"),
-    statusContent(initialDriftResult, nextActionForReport(initialDriftResult), baselineContextForPreflight(baseline))
+    statusContent(
+      initialDriftResult,
+      nextActionForReport(initialDriftResult),
+      baselineContextForPreflight(baseline)
+    )
   );
 
   const output = [
-      "Gleip preflight is ready.",
-      "",
-      "Next steps:",
-      "1. Read `.gleip/brief.md`.",
-      "2. Validate the plan with `npx --no-install gleip validate-plan`.",
-      "3. Implement within `.gleip/scope-budget.json`.",
-      "4. Run `npx --no-install gleip status` before the final response."
-    ];
+    "Gleip preflight complete · brief and scope budget ready",
+    "Artifacts: .gleip/brief.md, .gleip/scope-budget.json",
+    "Next: validate plan before editing"
+  ];
 
   const disabledNote = disabledStateNote(state, "Manual preflight still ran.");
 
@@ -1016,10 +1211,29 @@ async function validatePlan(
     scopeBudget,
     config
   });
+  const session = readJsonFile<GleipSession>(sessionPath);
+
+  if (session.value !== undefined) {
+    writeFileSync(
+      sessionPath,
+      `${JSON.stringify(
+        {
+          ...session.value,
+          latestPlanValidation: {
+            ...result,
+            validatedAt: runtime.now().toISOString()
+          },
+          updated_at: runtime.now().toISOString()
+        },
+        null,
+        2
+      )}\n`
+    );
+  }
   const output =
     options.json === true
       ? JSON.stringify(planValidationJson(result), null, 2)
-      : terminalPlanValidationContent(result);
+      : planValidationInteractionSummary(result);
 
   runtime.stdout(
     formatCommandOutput(
@@ -1081,6 +1295,7 @@ function printGleipState(runtime: CommandRuntime): void {
 
 interface PrintStatusOptions {
   allowMissingSession?: boolean;
+  commandName?: "check" | "status";
   disabledSuffix?: string;
   includeBaseline?: boolean;
   json?: boolean;
@@ -1088,7 +1303,10 @@ interface PrintStatusOptions {
   updateSession?: boolean;
 }
 
-async function printStatus(runtime: CommandRuntime, options: PrintStatusOptions = {}): Promise<void> {
+async function printStatus(
+  runtime: CommandRuntime,
+  options: PrintStatusOptions = {}
+): Promise<void> {
   const sessionPath = join(runtime.cwd, ".gleip", "session.json");
   const state = loadGleipState(runtime.cwd);
 
@@ -1104,19 +1322,14 @@ async function printStatus(runtime: CommandRuntime, options: PrintStatusOptions 
     return;
   }
 
-  const session = JSON.parse(readFileSync(sessionPath, "utf8")) as {
-    classification?: TaskClassification;
-    latestStatus?: unknown;
-    repoContext?: RepoContext;
-    baseline?: BaselineSummary;
-    scopeBudgetSummary?: ScopeBudgetSummary;
-    task?: string;
-  };
+  const session = JSON.parse(readFileSync(sessionPath, "utf8")) as GleipSession;
   const updatedAt = runtime.now().toISOString();
   const task = session.task ?? "Unknown task";
   const classification = session.classification ?? (await runtime.classifyTask(task));
   const repoContext = session.repoContext ?? emptyRepoContext();
-  const scopeBudget = readScopeBudget(runtime.cwd) ?? scopeBudgetFromSummary(session.scopeBudgetSummary, classification);
+  const scopeBudget =
+    readScopeBudget(runtime.cwd) ??
+    scopeBudgetFromSummary(session.scopeBudgetSummary, classification);
   const config = (await runtime.loadConfig(runtime.cwd)) as GleipConfigLike;
   const gitDiffContext = await runtime.collectWorkingTreeDiff({ cwd: runtime.cwd });
 
@@ -1172,12 +1385,103 @@ async function printStatus(runtime: CommandRuntime, options: PrintStatusOptions 
     formatCommandOutput(
       options.json === true
         ? JSON.stringify(statusJson(driftResult, nextAction, filtered.baseline), null, 2)
-        : terminalStatusContent(driftResult, nextAction, filtered.baseline),
+        : statusInteractionSummary(
+            options.commandName ?? "status",
+            driftResult,
+            nextAction,
+            filtered.baseline
+          ),
       state,
       options.disabledSuffix ?? "Status can still be checked manually.",
       options.json === true
     )
   );
+}
+
+async function printReport(runtime: CommandRuntime, options: ReportOptions): Promise<void> {
+  const generatedAt = runtime.now().toISOString();
+  const missingArtifacts: string[] = [];
+  const sessionResult = readJsonFile<GleipSession>(join(runtime.cwd, ".gleip", "session.json"));
+  const scopeBudgetResult = readJsonFile<ScopeBudget>(
+    join(runtime.cwd, ".gleip", "scope-budget.json")
+  );
+  const baselineResult = readJsonFile<SessionBaseline>(
+    join(runtime.cwd, ".gleip", "baseline.json")
+  );
+  const statusPath = join(runtime.cwd, ".gleip", "status.md");
+
+  if (sessionResult.value === undefined) {
+    missingArtifacts.push("session.json");
+  }
+
+  if (scopeBudgetResult.value === undefined) {
+    missingArtifacts.push("scope-budget.json");
+  }
+
+  if (baselineResult.value === undefined) {
+    missingArtifacts.push("baseline.json");
+  }
+
+  if (!existsSync(statusPath) || !statSync(statusPath).isFile()) {
+    missingArtifacts.push("status.md");
+  }
+
+  const config = await loadConfigForReport(runtime);
+  const scopeBudget =
+    scopeBudgetResult.value ??
+    (config === undefined ? undefined : defaultScopeBudgetForCheck(config));
+  const gitDiffContext = await runtime.collectWorkingTreeDiff({ cwd: runtime.cwd });
+  const filtered =
+    baselineResult.value === undefined
+      ? {
+          diff: gitDiffContext,
+          baseline: {
+            hasBaseline: false,
+            preExistingFilesIgnored: 0,
+            sessionFilesChanged: gitDiffContext.changedFiles.length,
+            includeBaseline: false,
+            possiblyPreExistingFiles: []
+          }
+        }
+      : await runtime.filterDiffSinceBaseline(gitDiffContext, baselineResult.value);
+  const driftResult =
+    scopeBudget === undefined
+      ? driftResultWithoutBudget(filtered.diff)
+      : await runtime.detectScopeDrift({
+          scopeBudget,
+          gitDiffContext: filtered.diff,
+          config: config ?? {}
+        });
+  const statusContent =
+    existsSync(statusPath) && statSync(statusPath).isFile()
+      ? readFileSync(statusPath, "utf8")
+      : undefined;
+  const report = await runtime.generateSessionReport({
+    version: GLEIP_VERSION,
+    schemaVersion: REPORT_SCHEMA_VERSION,
+    sessionId: sessionResult.value?.sessionId ?? null,
+    generatedAt,
+    ...(scopeBudget === undefined ? {} : { scopeBudget }),
+    diff: filtered.diff,
+    driftResult,
+    ...(sessionResult.value?.latestPlanValidation === undefined
+      ? {}
+      : { planValidation: sessionResult.value.latestPlanValidation }),
+    ...(statusContent === undefined ? {} : { statusContent }),
+    missingArtifacts
+  });
+  const markdown = await runtime.renderSessionReportMarkdown(report);
+
+  ensureGleipDirectory(runtime.cwd);
+  writeFileSync(join(runtime.cwd, ".gleip", "report.json"), `${JSON.stringify(report, null, 2)}\n`);
+  writeFileSync(join(runtime.cwd, ".gleip", "report.md"), markdown);
+
+  if (options.json === true) {
+    runtime.stdout(JSON.stringify(report, null, 2));
+    return;
+  }
+
+  runtime.stdout(reportInteractionSummary(report));
 }
 
 async function printCheckWithoutSession(
@@ -1211,7 +1515,12 @@ async function printCheckWithoutSession(
     formatCommandOutput(
       options.json === true
         ? JSON.stringify(statusJson(driftResult, nextAction, baseline), null, 2)
-        : terminalStatusContent(driftResult, nextAction, baseline),
+        : statusInteractionSummary(
+            options.commandName ?? "check",
+            driftResult,
+            nextAction,
+            baseline
+          ),
       state,
       options.disabledSuffix ?? "Check can still be run manually.",
       options.json === true
@@ -1308,7 +1617,8 @@ function doctorAgents(runtime: CommandRuntime): void {
 }
 
 function repairAgents(runtime: CommandRuntime, options: RepairAgentsOptions): void {
-  const files = options.all === true ? allAgentInstructionFiles() : existingAgentInstructionFiles(runtime.cwd);
+  const files =
+    options.all === true ? allAgentInstructionFiles() : existingAgentInstructionFiles(runtime.cwd);
 
   if (files.length === 0) {
     runtime.stdout(
@@ -1476,11 +1786,7 @@ function planAgentInstructionCleanup(
   plan.modifications.push({ path: file.path, content: result.content });
 }
 
-function planCursorRuleCleanup(
-  cwd: string,
-  keepAgentFiles: boolean,
-  plan: UninstallPlan
-): void {
+function planCursorRuleCleanup(cwd: string, keepAgentFiles: boolean, plan: UninstallPlan): void {
   const file = agentInstructionFile("cursor");
   const filePath = join(cwd, file.path);
 
@@ -1502,10 +1808,7 @@ function planCursorRuleCleanup(
   const content = readFileSync(filePath, "utf8");
   const result = removeGleipManagedSections(content);
 
-  if (
-    !result.found ||
-    !isEmptyOrGeneratedAgentScaffold(result.content, file.defaultContent)
-  ) {
+  if (!result.found || !isEmptyOrGeneratedAgentScaffold(result.content, file.defaultContent)) {
     plan.skipped.push(`${file.path} (preserved because it contains unrelated content)`);
     return;
   }
@@ -1552,9 +1855,7 @@ function formatUninstallPlan(plan: UninstallPlan, dryRun: boolean): string {
     "",
     "Files skipped/preserved:",
     ...formatUninstallItems(plan.skipped),
-    ...(dryRun
-      ? []
-      : ["", "Next: run `npm uninstall gleip` to remove the package dependency."])
+    ...(dryRun ? [] : ["", "Next: run `npm uninstall gleip` to remove the package dependency."])
   ].join("\n");
 }
 
@@ -1643,7 +1944,7 @@ function formatCommandOutput(
     return output;
   }
 
-  return `${output}\n\n${note}`;
+  return `${output}\n${note}`;
 }
 
 interface AgentInstructionFile {
@@ -1657,7 +1958,10 @@ interface InitAgentInstructionSelection {
   noAgentSetupDetected: boolean;
 }
 
-function initAgentInstructionFiles(cwd: string, options: InitOptions): InitAgentInstructionSelection {
+function initAgentInstructionFiles(
+  cwd: string,
+  options: InitOptions
+): InitAgentInstructionSelection {
   if (options.allAgents === true) {
     return {
       files: allAgentInstructionFiles(),
@@ -1787,7 +2091,11 @@ function gleipSectionContent(target: AgentInstructionTarget): string {
 - Proceed only if validation is \`approved\`; if \`needs_revision\`, revise and validate again; if \`requires_approval\`, stop and ask the user.
 - During implementation, stay inside \`.gleip/scope-budget.json\`.
 - Before the final response, run \`npx --no-install gleip status\`. If status is \`warning\`, \`approval_required\`, or \`blocked\`, report it clearly. Stop if status is \`approval_required\` or \`blocked\`.
-- Final response must include Gleip status, files changed, tests run, and risks.
+- Before the final response, run or read \`npx --no-install gleip report\`.
+- Treat \`.gleip/report.json\` and \`.gleip/report.md\` as the source of truth for Gleip final status.
+- Include only the generated compact block under \`Recommended final response\`; do not paste the full report.
+- The generated block contains scope adherence, drift risk, output discipline, estimated token waste avoided, and unresolved warnings.
+- Final response must also include files changed, tests run, and risks.
 
 ### Gleip checklist for every coding task
 
@@ -1797,7 +2105,8 @@ function gleipSectionContent(target: AgentInstructionTarget): string {
 - [ ] Validate plan with \`npx --no-install gleip validate-plan\`
 - [ ] Implement within \`.gleip/scope-budget.json\`
 - [ ] Run \`npx --no-install gleip status\`
-- [ ] Report status, files changed, tests run
+- [ ] Run or read \`npx --no-install gleip report\`
+- [ ] Include only the generated compact Gleip block, plus files changed, tests run, and risks
 ${GLEIP_SECTION_END}`;
 }
 
@@ -1870,7 +2179,7 @@ function defaultGleipReadmeContent(): string {
 
 This repository uses Gleip as a local-only preflight and sidecar tool for AI coding agents. Gleip performs no external review.
 
-Agents should run \`npx --no-install gleip preflight "<task>"\` before editing code, validate a short plan with \`npx --no-install gleip validate-plan "<plan>"\`, follow the generated brief and scope budget, and run \`npx --no-install gleip status\` before the final response.
+Agents should run \`npx --no-install gleip preflight "<task>"\` before editing code, validate a short plan with \`npx --no-install gleip validate-plan "<plan>"\`, follow the generated brief and scope budget, then run \`npx --no-install gleip status\` and \`npx --no-install gleip report\` before the final response.
 
 To remove Gleip from this repository, run \`npx --no-install gleip uninstall\`, then run \`npm uninstall gleip\` to remove the package dependency.
 `;
@@ -1898,6 +2207,58 @@ function readBaseline(cwd: string): SessionBaseline | undefined {
   }
 
   return JSON.parse(readFileSync(baselinePath, "utf8")) as SessionBaseline;
+}
+
+function readJsonFile<T>(path: string): { value?: T; error?: string } {
+  if (!existsSync(path)) {
+    return { error: "File not found." };
+  }
+
+  try {
+    if (!statSync(path).isFile()) {
+      return { error: "Path is not a file." };
+    }
+
+    return { value: JSON.parse(readFileSync(path, "utf8")) as T };
+  } catch (error) {
+    return { error: formatError(error) };
+  }
+}
+
+async function loadConfigForReport(runtime: CommandRuntime): Promise<GleipConfigLike | undefined> {
+  try {
+    return (await runtime.loadConfig(runtime.cwd)) as GleipConfigLike;
+  } catch {
+    return undefined;
+  }
+}
+
+function driftResultWithoutBudget(diff: GitDiffContext): DriftResult {
+  return {
+    status: diff.isGitRepo ? "within_scope" : "warning",
+    findings: [],
+    metrics: {
+      filesChanged: diff.changedFiles.length,
+      linesAdded: diff.totalLinesAdded,
+      linesDeleted: diff.totalLinesDeleted
+    },
+    summary:
+      diff.changedFiles.length === 0
+        ? "No working tree changes detected."
+        : "Working tree changes detected without an active scope budget."
+  };
+}
+
+function reportInteractionSummary(report: SessionReport): string {
+  return [
+    `Gleip report ready · output discipline: ${report.scores.outputDiscipline}/100`,
+    "Report: .gleip/report.md",
+    `Next: include the generated compact Gleip block${report.finalResponse.unresolvedWarnings === 0 ? "" : ` and report ${report.finalResponse.unresolvedWarnings} unresolved warning(s)`}`
+  ].join("\n");
+}
+
+function createSessionId(createdAt: string): string {
+  return `session-${createdAt.replace(/[^0-9]/g, "")}`;
 }
 
 function statusContent(
@@ -2092,92 +2453,54 @@ function scopeBudgetFromSummary(
   };
 }
 
-function terminalStatusContent(
+function statusInteractionSummary(
+  commandName: "check" | "status",
   driftResult: DriftResult,
   nextAction: string,
   baseline: BaselineContext
 ): string {
-  if (driftResult.findings.length === 0 && driftResult.metrics.filesChanged === 0) {
-    const lines = [
-      "Gleip Status",
-      `Status: ${driftResult.status}`,
-      "",
-      "No working tree changes detected.",
-      ...formatBaselineLines(baseline),
-      "",
-      "Next action:",
-      nextAction
-    ];
-
-    return lines.join("\n");
-  }
-
   const lines = [
-    "Gleip Status",
-    `Status: ${driftResult.status}`,
-    "",
-    "Summary:",
-    `- Session changes: ${driftResult.metrics.filesChanged} files, +${driftResult.metrics.linesAdded}/-${driftResult.metrics.linesDeleted}`,
-    `- Lines added: ${driftResult.metrics.linesAdded}`,
-    `- Lines deleted: ${driftResult.metrics.linesDeleted}`,
-    `- Pre-existing changes ignored: ${baseline.preExistingFilesIgnored} files`
+    `Gleip ${commandName} complete · drift: ${driftRiskLabel(driftResult.status)}`,
+    `Changes: ${driftResult.metrics.filesChanged} files, +${driftResult.metrics.linesAdded}/-${driftResult.metrics.linesDeleted}`
   ];
 
   if (driftResult.findings.length > 0) {
-    lines.push("", "Findings:", ...formatTerminalFindingGroups(driftResult.findings));
+    const highestFinding = orderFindings(driftResult.findings)[0];
+    lines.push(
+      `Findings: ${driftResult.findings.length} · highest: ${highestFinding?.title ?? "review required"}`
+    );
+  } else if (baseline.preExistingFilesIgnored > 0) {
+    lines.push(`Baseline: ${baseline.preExistingFilesIgnored} pre-existing file(s) ignored`);
   }
 
-  lines.push("", "Next action:", nextAction);
+  lines.push(
+    commandName === "status" &&
+      (driftResult.status === "within_scope" || driftResult.status === "warning")
+      ? "Next: generate report"
+      : `Next: ${nextAction}`
+  );
 
   return lines.join("\n");
 }
 
-function terminalPlanValidationContent(result: PlanValidationResult): string {
-  const lines = [
-    "Gleip Plan Validation",
-    `Status: ${result.status}`,
-    "",
-    "Findings:"
-  ];
+function planValidationInteractionSummary(result: PlanValidationResult): string {
+  const phase =
+    result.status === "approved"
+      ? "passed · ready to implement within scope"
+      : result.status === "needs_revision"
+        ? `needs revision · ${result.findings.length} finding(s)`
+        : `requires approval · ${result.findings.length} finding(s)`;
+  const lines = [`Gleip plan check ${phase}`];
+  const firstFinding = orderPlanFindings(result.findings)[0];
 
-  if (result.findings.length === 0) {
-    lines.push("- None");
-  } else {
-    lines.push(...formatPlanFindingGroups(result.findings));
+  if (firstFinding !== undefined) {
+    lines.push(`Finding: ${firstFinding.title} · ${firstFinding.message}`);
   }
 
-  lines.push("", "Next action:", result.nextAction);
-
+  lines.push(
+    `Next: ${result.status === "approved" ? "implement within scope, then run status" : result.nextAction}`
+  );
   return lines.join("\n");
-}
-
-function formatPlanFindingGroups(findings: PlanValidationFinding[]): string[] {
-  const lines: string[] = [];
-
-  for (const severity of ["approval_required", "warning", "info"] as const) {
-    const group = orderPlanFindings(findings).filter((finding) => finding.severity === severity);
-
-    if (group.length === 0) {
-      continue;
-    }
-
-    lines.push(`[${planSeverityLabel(severity)}]`);
-    lines.push(...group.map(formatPlanFinding));
-    lines.push("");
-  }
-
-  return lines.at(-1) === "" ? lines.slice(0, -1) : lines;
-}
-
-function formatPlanFinding(finding: PlanValidationFinding): string {
-  const evidence =
-    finding.evidence === undefined || finding.evidence.length === 0
-      ? ""
-      : ` Evidence: ${finding.evidence.join(", ")}.`;
-  const recommendation =
-    finding.recommendation === undefined ? "" : `\n  Recommendation: ${finding.recommendation}`;
-
-  return `- ${finding.title}: ${finding.message}${evidence}${recommendation}`;
 }
 
 function planValidationJson(result: PlanValidationResult): {
@@ -2196,8 +2519,7 @@ function planValidationJson(result: PlanValidationResult): {
 
 function orderPlanFindings(findings: PlanValidationFinding[]): PlanValidationFinding[] {
   return [...findings].sort((left, right) => {
-    const severityDifference =
-      planSeverityRank(right.severity) - planSeverityRank(left.severity);
+    const severityDifference = planSeverityRank(right.severity) - planSeverityRank(left.severity);
 
     if (severityDifference !== 0) {
       return severityDifference;
@@ -2205,14 +2527,6 @@ function orderPlanFindings(findings: PlanValidationFinding[]): PlanValidationFin
 
     return left.title.localeCompare(right.title);
   });
-}
-
-function planSeverityLabel(severity: PlanValidationFinding["severity"]): string {
-  if (severity === "approval_required") {
-    return "APPROVAL REQUIRED";
-  }
-
-  return severity.toUpperCase();
 }
 
 function planSeverityRank(severity: PlanValidationFinding["severity"]): number {
@@ -2225,18 +2539,6 @@ function planSeverityRank(severity: PlanValidationFinding["severity"]): number {
   }
 
   return 1;
-}
-
-function formatBaselineLines(baseline: BaselineContext): string[] {
-  if (!baseline.hasBaseline || baseline.preExistingFilesIgnored === 0) {
-    return [];
-  }
-
-  if (baseline.includeBaseline) {
-    return ["", `Pre-existing baseline changes included: ${baseline.preExistingFilesIgnored} files.`];
-  }
-
-  return ["", `Pre-existing changes ignored: ${baseline.preExistingFilesIgnored} files.`];
 }
 
 function statusJson(
@@ -2259,7 +2561,9 @@ function statusJson(
     hasBaseline: baseline.hasBaseline,
     preExistingFilesIgnored: baseline.preExistingFilesIgnored,
     sessionFilesChanged: baseline.sessionFilesChanged,
-    ...(baseline.baselineCreatedAt === undefined ? {} : { baselineCreatedAt: baseline.baselineCreatedAt })
+    ...(baseline.baselineCreatedAt === undefined
+      ? {}
+      : { baselineCreatedAt: baseline.baselineCreatedAt })
   };
 
   return {
@@ -2291,32 +2595,10 @@ function nextActionForReport(driftResult: DriftResult): string {
   return "Fix blocked issues before continuing. Do not proceed until skipped/deleted tests or secret changes are resolved.";
 }
 
-function formatTerminalFindingGroups(findings: DriftFinding[]): string[] {
-  const lines: string[] = [];
-
-  for (const severity of ["blocked", "approval_required", "warning", "info"] as const) {
-    const group = orderFindings(findings).filter((finding) => finding.severity === severity);
-
-    if (group.length === 0) {
-      continue;
-    }
-
-    lines.push(`[${severityLabel(severity)}]`);
-    lines.push(...group.map(formatTerminalFinding));
-    lines.push("");
-  }
-
-  return lines.at(-1) === "" ? lines.slice(0, -1) : lines;
-}
-
-function formatTerminalFinding(finding: DriftFinding): string {
-  const recommendation =
-    finding.recommendation === undefined ? "" : `\n  Recommendation: ${finding.recommendation}`;
-
-  return `- ${finding.title}: ${finding.message}${recommendation}`;
-}
-
-function formatMarkdownFindingGroup(findings: DriftFinding[], severity: DriftFinding["severity"]): string {
+function formatMarkdownFindingGroup(
+  findings: DriftFinding[],
+  severity: DriftFinding["severity"]
+): string {
   const group = orderFindings(findings).filter((finding) => finding.severity === severity);
 
   if (group.length === 0) {
@@ -2345,14 +2627,6 @@ function orderFindings(findings: DriftFinding[]): DriftFinding[] {
   });
 }
 
-function severityLabel(severity: DriftFinding["severity"]): string {
-  if (severity === "approval_required") {
-    return "APPROVAL REQUIRED";
-  }
-
-  return severity.toUpperCase();
-}
-
 function severityRank(severity: DriftFinding["severity"]): number {
   if (severity === "blocked") {
     return 4;
@@ -2367,6 +2641,22 @@ function severityRank(severity: DriftFinding["severity"]): number {
   }
 
   return 1;
+}
+
+function driftRiskLabel(status: DriftStatus): "none" | "low" | "medium" | "high" {
+  if (status === "blocked") {
+    return "high";
+  }
+
+  if (status === "approval_required") {
+    return "medium";
+  }
+
+  if (status === "warning") {
+    return "low";
+  }
+
+  return "none";
 }
 
 function isSupportedNodeVersion(version: string): boolean {

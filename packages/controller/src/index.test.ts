@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  clampScore,
   deriveNextAction,
   detectScopeDrift,
+  estimateTokens,
+  generateSessionReport,
   normalizeDriftFindings,
   packageName,
+  renderSessionReportMarkdown,
   type GitDiffContextLike,
+  type ReportDiff,
   type ScopeBudgetLike
 } from "./index.js";
 
@@ -28,7 +33,9 @@ describe("detectScopeDrift", () => {
 
   it("warns when file count exceeds the soft limit", () => {
     const result = detectScopeDrift({
-      scopeBudget: budget({ softLimits: { maxFilesChanged: 1, maxLinesAdded: 100, maxLinesDeleted: 100 } }),
+      scopeBudget: budget({
+        softLimits: { maxFilesChanged: 1, maxLinesAdded: 100, maxLinesDeleted: 100 }
+      }),
       gitDiffContext: diff({
         changedFiles: ["src/a.ts", "src/b.ts"],
         fileStats: [
@@ -45,7 +52,9 @@ describe("detectScopeDrift", () => {
 
   it("warns when added lines exceed the soft limit", () => {
     const result = detectScopeDrift({
-      scopeBudget: budget({ softLimits: { maxFilesChanged: 5, maxLinesAdded: 1, maxLinesDeleted: 100 } }),
+      scopeBudget: budget({
+        softLimits: { maxFilesChanged: 5, maxLinesAdded: 1, maxLinesDeleted: 100 }
+      }),
       gitDiffContext: diff({
         changedFiles: ["src/a.ts"],
         fileStats: [{ path: "src/a.ts", added: 2, deleted: 0 }],
@@ -54,7 +63,9 @@ describe("detectScopeDrift", () => {
     });
 
     expect(result.status).toBe("warning");
-    expect(result.findings.map((finding) => finding.title)).toContain("Added lines exceed scope budget");
+    expect(result.findings.map((finding) => finding.title)).toContain(
+      "Added lines exceed scope budget"
+    );
   });
 
   it("requires approval when dependency files change but dependencies are not allowed", () => {
@@ -96,7 +107,9 @@ describe("detectScopeDrift", () => {
     });
 
     expect(result.status).toBe("warning");
-    expect(result.findings.map((finding) => finding.title)).toContain("Files outside allowed scope");
+    expect(result.findings.map((finding) => finding.title)).toContain(
+      "Files outside allowed scope"
+    );
   });
 
   it("requires approval when approvalRequiredFor paths change", () => {
@@ -110,7 +123,9 @@ describe("detectScopeDrift", () => {
     });
 
     expect(result.status).toBe("approval_required");
-    expect(result.findings.map((finding) => finding.title)).toContain("Approval-required paths changed");
+    expect(result.findings.map((finding) => finding.title)).toContain(
+      "Approval-required paths changed"
+    );
   });
 
   it("blocks when skipped tests are added", () => {
@@ -147,7 +162,9 @@ describe("detectScopeDrift", () => {
       scopeBudget: budget(),
       gitDiffContext: diff({
         changedFiles: ["src/users/UserTable.test.tsx"],
-        fileStats: [{ path: "src/users/UserTable.test.tsx", added: 0, deleted: 20, isDeleted: true }],
+        fileStats: [
+          { path: "src/users/UserTable.test.tsx", added: 0, deleted: 20, isDeleted: true }
+        ],
         totalLinesDeleted: 20
       })
     });
@@ -235,7 +252,214 @@ describe("detectScopeDrift", () => {
   });
 
   it("derives within_scope next action", () => {
-    expect(deriveNextAction("within_scope")).toBe("Continue. Run relevant tests before final response.");
+    expect(deriveNextAction("within_scope")).toBe(
+      "Continue. Run relevant tests before final response."
+    );
+  });
+});
+
+describe("session reports", () => {
+  it("calculates token estimates with ceil(chars / 4)", () => {
+    expect(estimateTokens(0)).toBe(0);
+    expect(estimateTokens(1)).toBe(1);
+    expect(estimateTokens(4)).toBe(1);
+    expect(estimateTokens(5)).toBe(2);
+  });
+
+  it("clamps scores to the 0-100 range", () => {
+    expect(clampScore(-20)).toBe(0);
+    expect(clampScore(42.4)).toBe(42);
+    expect(clampScore(140)).toBe(100);
+  });
+
+  it("generates stable warnings with required evidence fields", () => {
+    const report = generateSessionReport({
+      version: "0.3.0",
+      schemaVersion: "1.0.0",
+      generatedAt: "2026-06-09T00:00:00.000Z",
+      diff: reportDiff(),
+      driftResult: {
+        status: "within_scope",
+        findings: []
+      },
+      missingArtifacts: ["session.json", "status.md"]
+    });
+
+    expect(report.warnings.length).toBeGreaterThan(0);
+    for (const warning of report.warnings) {
+      expect(warning.message.length).toBeGreaterThan(0);
+      expect(warning.reason.length).toBeGreaterThan(0);
+      expect(warning.evidence.length).toBeGreaterThan(0);
+      expect(["info", "low", "medium", "high"]).toContain(warning.severity);
+    }
+  });
+
+  it("penalizes unplanned file changes and estimates flagged diff size", () => {
+    const report = generateSessionReport({
+      version: "0.3.0",
+      schemaVersion: "1.0.0",
+      sessionId: "session-1",
+      generatedAt: "2026-06-09T00:00:00.000Z",
+      scopeBudget: {
+        softLimits: {
+          maxFilesChanged: 5,
+          maxLinesAdded: 100,
+          maxLinesDeleted: 100
+        },
+        allowedPaths: ["src/planned.ts"],
+        requiredTests: true
+      },
+      planValidation: {
+        status: "approved",
+        findings: [],
+        parsedPlan: {
+          rawText: "Update src/planned.ts",
+          proposedFiles: ["src/planned.ts"]
+        }
+      },
+      diff: reportDiff({
+        changedFiles: ["src/unplanned.ts"],
+        fileStats: [{ path: "src/unplanned.ts", added: 1, deleted: 0 }],
+        rawDiff:
+          "diff --git a/src/unplanned.ts b/src/unplanned.ts\n--- a/src/unplanned.ts\n+++ b/src/unplanned.ts\n+change\n",
+        totalLinesAdded: 1
+      }),
+      driftResult: {
+        status: "warning",
+        findings: []
+      },
+      statusContent:
+        "# Gleip Status\n\n## Tests\n- pnpm test: pass\n\n## Risks\n- None identified.\n"
+    });
+
+    expect(report.summary.unplannedFiles).toBe(1);
+    expect(report.scores.scopeAdherence).toBeLessThan(100);
+    expect(report.scores.planAlignment).toBeLessThan(100);
+    expect(report.risk.overEdit).toBe("low");
+    expect(report.efficiency.breakdown.scopeWasteAvoided).toBeGreaterThan(0);
+  });
+
+  it("detects missing output evidence and repeated narration", () => {
+    const repeated =
+      "This is repeated narration that is long enough to be treated as review noise.";
+    const report = generateSessionReport({
+      version: "0.3.0",
+      schemaVersion: "1.0.0",
+      generatedAt: "2026-06-09T00:00:00.000Z",
+      scopeBudget: {
+        softLimits: {
+          maxFilesChanged: 5,
+          maxLinesAdded: 100,
+          maxLinesDeleted: 100
+        },
+        allowedPaths: [],
+        requiredTests: true
+      },
+      diff: reportDiff(),
+      driftResult: {
+        status: "within_scope",
+        findings: []
+      },
+      statusContent: `# Gleip Status\n\n${repeated}\n${repeated}\n`
+    });
+
+    expect(report.scores.outputDiscipline).toBeLessThan(100);
+    expect(report.summary.testsMentioned).toBe(false);
+    expect(report.summary.risksMentioned).toBe(false);
+    expect(report.warnings.map((warning) => warning.id)).toContain("output.repeated-narration");
+    expect(report.efficiency.breakdown.outputWasteAvoided).toBeGreaterThan(0);
+  });
+
+  it("detects repeated plan narration and excessive output deterministically", () => {
+    const planLine = "Update src/report.ts and keep the final response focused on report outcomes.";
+    const statusContent = [
+      "# Gleip Status",
+      "- Session files changed: 1",
+      "",
+      planLine,
+      "x".repeat(6100),
+      "",
+      "## Tests",
+      "- pnpm test: pass",
+      "",
+      "## Risks",
+      "- None identified."
+    ].join("\n");
+    const input = {
+      version: "0.3.0",
+      schemaVersion: "1.0.0",
+      generatedAt: "2026-06-09T00:00:00.000Z",
+      scopeBudget: {
+        softLimits: {
+          maxFilesChanged: 5,
+          maxLinesAdded: 100,
+          maxLinesDeleted: 100
+        },
+        allowedPaths: [],
+        requiredTests: true
+      },
+      planValidation: {
+        status: "approved" as const,
+        findings: [],
+        parsedPlan: {
+          rawText: planLine,
+          proposedFiles: ["src/report.ts"]
+        }
+      },
+      diff: reportDiff(),
+      driftResult: {
+        status: "within_scope" as const,
+        findings: []
+      },
+      statusContent
+    };
+
+    const first = generateSessionReport(input);
+    const second = generateSessionReport(input);
+
+    expect(first.scores.outputDiscipline).toBe(second.scores.outputDiscipline);
+    expect(first.scores.outputDiscipline).toBeGreaterThanOrEqual(0);
+    expect(first.warnings.map((warning) => warning.id)).toContain("output.repeated-plan-narration");
+    expect(first.warnings.map((warning) => warning.id)).toContain("output.excessive-verbosity");
+  });
+
+  it("generates a compact final response block", () => {
+    const report = generateSessionReport({
+      version: "0.3.0",
+      schemaVersion: "1.0.0",
+      generatedAt: "2026-06-09T00:00:00.000Z",
+      diff: reportDiff(),
+      driftResult: {
+        status: "within_scope",
+        findings: []
+      }
+    });
+
+    expect(report.finalResponse.markdown).toContain("### Gleip");
+    expect(report.finalResponse.markdown).toContain("Scope adherence:");
+    expect(report.finalResponse.markdown).toContain("Output discipline:");
+    expect(report.finalResponse.markdown.split("\n")).toHaveLength(6);
+  });
+
+  it("renders a concise markdown report", () => {
+    const report = generateSessionReport({
+      version: "0.3.0",
+      schemaVersion: "1.0.0",
+      sessionId: "session-1",
+      generatedAt: "2026-06-09T00:00:00.000Z",
+      diff: reportDiff(),
+      driftResult: {
+        status: "within_scope",
+        findings: []
+      }
+    });
+    const markdown = renderSessionReportMarkdown(report);
+
+    expect(markdown).toContain("# Gleipnir Session Report");
+    expect(markdown).toContain("Scope adherence:");
+    expect(markdown).toContain("Estimated token waste avoided:");
+    expect(markdown).toContain("## Recommended final response");
+    expect(markdown).toContain("It is not exact model billing or API usage data.");
   });
 });
 
@@ -269,6 +493,18 @@ function diff(overrides: Partial<GitDiffContextLike> = {}): GitDiffContextLike {
     totalLinesDeleted: 0,
     isGitRepo: true,
     hasChanges: false,
+    ...overrides
+  };
+}
+
+function reportDiff(overrides: Partial<ReportDiff> = {}): ReportDiff {
+  return {
+    changedFiles: [],
+    fileStats: [],
+    rawDiff: "",
+    totalLinesAdded: 0,
+    totalLinesDeleted: 0,
+    isGitRepo: true,
     ...overrides
   };
 }

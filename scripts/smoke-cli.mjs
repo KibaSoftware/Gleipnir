@@ -44,8 +44,13 @@ run(
   ],
   repo
 );
-const validation = run("node", [cliEntry, "--cwd", repo, "validate-plan", "--file", join(repo, "plan.md")], repo);
+const validation = run(
+  "node",
+  [cliEntry, "--cwd", repo, "validate-plan", "--file", join(repo, "plan.md")],
+  repo
+);
 run("node", [cliEntry, "--cwd", repo, "status"], repo);
+const reportJson = run("node", [cliEntry, "--cwd", repo, "report", "--json"], repo);
 
 for (const path of [
   "AGENTS.md",
@@ -56,13 +61,25 @@ for (const path of [
   ".gleip/session.json",
   ".gleip/brief.md",
   ".gleip/scope-budget.json",
-  ".gleip/status.md"
+  ".gleip/status.md",
+  ".gleip/report.json",
+  ".gleip/report.md"
 ]) {
   assertFile(path);
 }
 
-if (!validation.includes("Status: approved")) {
+if (!validation.includes("Gleip plan check passed · ready to implement within scope")) {
   throw new Error(`Expected approved plan validation, received:\n${validation}`);
+}
+
+const report = JSON.parse(reportJson);
+
+if (report.schemaVersion !== "1.0.0" || report.version !== "0.3.0") {
+  throw new Error(`Expected Gleip 0.3.0 report schema 1.0.0, received:\n${reportJson}`);
+}
+
+if (!report.finalResponse?.markdown?.includes("### Gleip")) {
+  throw new Error(`Expected compact final response block, received:\n${reportJson}`);
 }
 
 console.log(`CLI smoke test passed in ${repo}`);

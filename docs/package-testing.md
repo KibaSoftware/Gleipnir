@@ -2,7 +2,7 @@
 
 Use these flows before publishing anything. They verify the built CLI can run outside the source TypeScript entrypoint. For the full local-only preview release pass, see [docs/release-checklist.md](release-checklist.md).
 
-Current release target: `0.2.2`.
+Current release target: `0.3.0`.
 
 ## Flow A: npm pack
 
@@ -31,7 +31,7 @@ mkdir %TEMP%\gleip-pack-test
 cd %TEMP%\gleip-pack-test
 git init
 npm init -y
-npm install -D <path-to-repo>\dist-pack\gleip-0.2.2.tgz
+npm install -D <path-to-repo>\dist-pack\gleip-0.3.0.tgz
 ```
 
 On macOS or Linux, use a temp directory such as `/tmp/gleip-pack-test` and the matching tarball path.
@@ -43,11 +43,12 @@ npx gleip --help
 npx gleip --version
 npx gleip init --all-agents
 npx gleip doctor --agents
+npx gleip report --json
 npx --no-install gleip uninstall --dry-run
 npx --no-install gleip uninstall
 ```
 
-Expected result: help prints, the version is `0.2.2`, all supported agent instructions are created, agent diagnostics pass, dry-run changes nothing, and uninstall removes generated repository files without removing the npm dependency.
+Expected result: help prints, the version is `0.3.0`, reports generate locally, all supported agent instructions are created, agent diagnostics pass, dry-run changes nothing, and uninstall removes generated repository files without removing the npm dependency.
 
 ## Testing the workflow manually
 
@@ -58,6 +59,8 @@ npx gleip preflight "Fix the checkout discount calculation bug without changing 
 npx gleip brief
 npx gleip validate-plan "Update the discount calculation and its focused checkout tests."
 npx gleip status
+npx gleip report
+npx gleip report --json
 npx gleip check
 ```
 

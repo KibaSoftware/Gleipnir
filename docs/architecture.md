@@ -8,7 +8,7 @@ Gleip is organized as a TypeScript monorepo with small packages and explicit bou
 - `@gleip/core` owns shared domain types and orchestration primitives.
 - `@gleip/config` owns `.gleip.yml` loading, validation, and defaults.
 - `@gleip/planner` owns scope, budget, and task planning concepts.
-- `@gleip/controller` owns policy application across agent workflows.
+- `@gleip/controller` owns policy application across agent workflows, deterministic report scoring, and report rendering.
 - `@gleip/adapters` owns integrations with coding agents and external tools.
 - `@gleip/github-action` owns CI entry points for GitHub Actions.
 

@@ -1,8 +1,8 @@
 {
   "name": "gleip",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "private": true,
-  "description": "A control layer for AI coding agents that keeps generated code lean, scoped, tested, and merge-ready.",
+  "description": "Local-only guardrails that AI coding agents use automatically.",
   "license": "Apache-2.0",
   "type": "module",
   "packageManager": "pnpm@9.15.4",

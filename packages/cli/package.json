@@ -1,8 +1,16 @@
 {
   "name": "gleip",
-  "version": "0.2.2",
-  "description": "Command-line interface for Gleip.",
+  "version": "0.3.0",
+  "description": "Local-only guardrails that AI coding agents use automatically.",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/KibaSoftware/Gleipnir.git"
+  },
+  "homepage": "https://github.com/KibaSoftware/Gleipnir#readme",
+  "bugs": {
+    "url": "https://github.com/KibaSoftware/Gleipnir/issues"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -26,7 +34,8 @@
     "code-review",
     "cli",
     "agent-guardrails",
-    "developer-tools"
+    "developer-tools",
+    "local-only"
   ],
   "scripts": {
     "build": "tsup src/index.ts --format esm --dts --clean",
@@ -36,10 +45,10 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@gleip/config": "workspace:0.2.2",
-    "@gleip/controller": "workspace:0.2.2",
-    "@gleip/core": "workspace:0.2.2",
-    "@gleip/planner": "workspace:0.2.2",
+    "@gleip/config": "workspace:0.3.0",
+    "@gleip/controller": "workspace:0.3.0",
+    "@gleip/core": "workspace:0.3.0",
+    "@gleip/planner": "workspace:0.3.0",
     "commander": "^12.0.0"
   },
   "bundledDependencies": [

@@ -2,7 +2,7 @@
 
 Use this checklist for the local-only developer preview.
 
-Current release target: `0.2.2`.
+Current release target: `0.3.0`.
 
 ## Package
 
@@ -19,12 +19,13 @@ Current release target: `0.2.2`.
 
 ## Packed Install
 
-- Install `dist-pack/gleip-0.2.2.tgz` into a clean external temp repo.
+- Install `dist-pack/gleip-0.3.0.tgz` into a clean external temp repo.
 - Verify:
   - `npx gleip --help`
   - `npx gleip --version`
   - `npx gleip init --all-agents`
   - `npx gleip doctor --agents`
+  - `npx gleip report --json`
   - `npx --no-install gleip uninstall --dry-run`
   - `npx --no-install gleip uninstall`
 
@@ -39,6 +40,8 @@ Task workflow commands are for agents and direct release testing, not the normal
 - `npx gleip brief`
 - `npx gleip validate-plan "Update the discount calculation and its focused checkout tests."`
 - `npx gleip status`
+- `npx gleip report`
+- `npx gleip report --json`
 - `npx gleip check`
 - `npx gleip disable --reason "manual test"`
 - `npx gleip enable --reason "manual test complete"`
@@ -48,6 +51,6 @@ Task workflow commands are for agents and direct release testing, not the normal
 - Confirm no network/API/account/dashboard/telemetry behavior exists.
 - Confirm `.gleip/` is ignored.
 - Confirm `.gleip.yml` is not ignored.
-- Confirm generated agent instructions use `npx --no-install gleip` for preflight, plan validation, and status.
+- Confirm generated agent instructions use `npx --no-install gleip` for preflight, plan validation, status, and report.
 - Confirm the root and npm READMEs lead with agent auto-usage and list Codex/generic agents, Claude Code, and Cursor.
 - Confirm the root and npm READMEs document the uninstall lifecycle.

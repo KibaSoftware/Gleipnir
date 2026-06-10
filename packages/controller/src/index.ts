@@ -1,5 +1,29 @@
 export const packageName = "@gleip/controller";
 
+export {
+  clampScore,
+  estimateTokens,
+  generateSessionReport,
+  renderSessionReportMarkdown
+} from "./report.js";
+export type {
+  EfficiencyBasis,
+  EfficiencySource,
+  GenerateSessionReportInput,
+  ReportConfidence,
+  ReportDiff,
+  ReportDriftFinding,
+  ReportDriftResult,
+  ReportPlanValidation,
+  ReportRiskLevel,
+  ReportScopeBudget,
+  ReportWarning,
+  ReportWarningSeverity,
+  ReportWarningType,
+  SessionReport,
+  TestIntegrity
+} from "./report.js";
+
 export type DriftStatus = "within_scope" | "warning" | "approval_required" | "blocked";
 
 export type DriftSeverity = "info" | "warning" | "approval_required" | "blocked";
@@ -114,14 +138,19 @@ export function detectScopeDrift(input: DetectScopeDriftInput): DriftResult {
 
   if (changedFiles.length === 0) {
     return {
-      status: findings.some((finding) => finding.severity === "warning") ? "warning" : "within_scope",
+      status: findings.some((finding) => finding.severity === "warning")
+        ? "warning"
+        : "within_scope",
       findings,
       metrics: {
         filesChanged: 0,
         linesAdded: 0,
         linesDeleted: 0
       },
-      summary: findings.length === 0 ? "No working tree changes detected." : "Git diff could not be fully inspected."
+      summary:
+        findings.length === 0
+          ? "No working tree changes detected."
+          : "Git diff could not be fully inspected."
     };
   }
 
@@ -164,9 +193,7 @@ export function normalizeDriftFindings(findings: DriftFinding[]): DriftFinding[]
     groups.set(key, group);
   }
 
-  return Array.from(groups.values())
-    .map(normalizeFindingGroup)
-    .sort(compareFindings);
+  return Array.from(groups.values()).map(normalizeFindingGroup).sort(compareFindings);
 }
 
 export function deriveNextAction(status: DriftStatus): string {
@@ -195,7 +222,8 @@ function addSoftLimitFindings(
       severity: "warning",
       title: "File count exceeds scope budget",
       message: `${metrics.filesChanged} files changed; soft limit is ${scopeBudget.softLimits.maxFilesChanged}.`,
-      recommendation: "Keep changes focused or ask for approval if the task is broader than expected.",
+      recommendation:
+        "Keep changes focused or ask for approval if the task is broader than expected.",
       category: "soft_limit"
     });
   }
@@ -311,7 +339,9 @@ function addApprovalPathFindings(
   scopeBudget: ScopeBudgetLike
 ): void {
   const matched = changedFiles.filter(
-    (path) => !hasSpecificHardGateFinding(path) && matchesAnyBudgetEntry(path, scopeBudget.approvalRequiredFor)
+    (path) =>
+      !hasSpecificHardGateFinding(path) &&
+      matchesAnyBudgetEntry(path, scopeBudget.approvalRequiredFor)
   );
 
   if (matched.length > 0) {
@@ -333,7 +363,9 @@ function addBlockedPathFindings(
   scopeBudget: ScopeBudgetLike
 ): void {
   const matched = changedFiles.filter(
-    (path) => !hasSpecificHardGateFinding(path) && matchesAnyBudgetEntry(path, scopeBudget.blockedWithoutApproval)
+    (path) =>
+      !hasSpecificHardGateFinding(path) &&
+      matchesAnyBudgetEntry(path, scopeBudget.blockedWithoutApproval)
   );
 
   if (matched.length > 0) {
@@ -437,7 +469,8 @@ function addSecretFindings(
       message: `${formatExamples(secretFiles)} changed.`,
       count: secretFiles.length,
       examples: secretFiles.slice(0, 3),
-      recommendation: "Do not modify secrets through this task. Revert or ask for explicit approval.",
+      recommendation:
+        "Do not modify secrets through this task. Revert or ask for explicit approval.",
       category: "secrets"
     });
   }
@@ -469,7 +502,9 @@ function normalizeFindingGroup(findings: DriftFinding[]): DriftFinding {
   ).slice(0, 3);
   const count = findings.reduce((total, finding) => total + (finding.count ?? 1), 0);
   const message = groupedMessage(first, count, examples);
-  const recommendation = findings.find((finding) => finding.recommendation !== undefined)?.recommendation;
+  const recommendation = findings.find(
+    (finding) => finding.recommendation !== undefined
+  )?.recommendation;
 
   return recommendation === undefined
     ? {
@@ -586,7 +621,10 @@ function matchesBudgetEntry(path: string, entry: string): boolean {
     return true;
   }
 
-  if ((normalizedEntry.includes("secret") || normalizedEntry.includes(".env")) && isSecretFile(normalizedPath)) {
+  if (
+    (normalizedEntry.includes("secret") || normalizedEntry.includes(".env")) &&
+    isSecretFile(normalizedPath)
+  ) {
     return true;
   }
 

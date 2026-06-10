@@ -7,6 +7,7 @@ Gleip exists to make AI-generated code easier to trust, review, and merge.
 - Gleip should constrain agent work before it expands.
 - Policy feedback should be concrete, actionable, and tied to changed files.
 - Scoring should explain tradeoffs instead of hiding them behind a single opaque number.
+- Reports and efficiency estimates must remain deterministic, evidence-backed, conservative, and local-only.
 - Defaults should favor small patches, explicit tests, and low dependency growth.
 - CI and local workflows should use the same policy concepts.
 

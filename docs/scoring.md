@@ -1,13 +1,16 @@
 # Scoring
 
-Gleip scoring will summarize review readiness signals.
+Gleip session reports contain four deterministic local scores:
 
-Scores should be explainable and decomposed into categories such as:
+- Scope adherence.
+- Plan alignment.
+- Output discipline.
+- Review readiness.
 
-- Scope fit.
-- Test coverage.
-- Dependency risk.
-- Configuration risk.
-- Review clarity.
+Each score starts at 100. Evidence-backed problems create warnings and deduct points. Scores are rounded and clamped to 0-100.
 
-Scoring is not a substitute for policy failures. A blocked policy should remain blocked even when other signals are strong.
+Signals include unplanned files, files outside allowed scope, scope-budget limits, dependency or CI drift, missing or rejected plan validation, missing tests or risks evidence, repeated narration, and unresolved warnings. A blocked policy remains blocked even when other signals are strong.
+
+Scores are heuristics. They explain local review signals but do not prove correctness, test quality, security, or merge readiness.
+
+See [reporting.md](reporting.md) for the stable report model and efficiency estimate.
