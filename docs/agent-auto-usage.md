@@ -1,6 +1,6 @@
 # Agent Auto-Usage
 
-Agent auto-usage means the developer initializes Gleip once, then keeps using their coding agent normally. Generated repository instructions tell the agent to run Gleip before editing code, validate its plan, stay inside the scope budget, then run status and generate the session report before the final response.
+Agent auto-usage means the developer initializes Gleip once, then keeps using their coding agent normally. Generated repository instructions tell the agent to run Gleip before editing code, validate non-trivial plans, stay inside the scope budget, run check before claiming completion, and use status when the next action is unclear.
 
 Agents use `npx --no-install gleip` for task workflow commands so Gleip can remain a local development dependency.
 
@@ -36,6 +36,11 @@ npx gleip init --all-agents
 - `npx gleip repair-agents --all`
 
 These are setup, diagnostics, and repair commands. The task workflow commands are intended for agents to run automatically and are available to developers for testing or fallback.
+
+For each task, agents run preflight, read `.gleip/brief.md` and `.gleip/scope-budget.json`,
+validate non-trivial plans, keep changes minimal, and run `npx --no-install gleip check`
+before completion. They do not edit or commit `.gleip/` artifacts unless explicitly asked,
+and they explain any failing Gleip check they cannot resolve.
 
 Before final response, agents run or read `npx --no-install gleip report`, treat it as the source of truth, and include only its generated `Recommended final response` block. They do not paste the full report. Developers do not need to run this manually during normal usage.
 

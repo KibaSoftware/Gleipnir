@@ -35,6 +35,9 @@ import {
 
 const GLEIP_SECTION_START = "<!-- GLEIP:START -->";
 const GLEIP_SECTION_END = "<!-- GLEIP:END -->";
+const GLEIP_GITIGNORE_START = "# Gleip local artifacts";
+const GLEIP_GITIGNORE_END = "# End Gleip local artifacts";
+const GLEIP_GITIGNORE_ENTRIES = [".gleip/"] as const;
 const LEGACY_ARGUS_SECTION_START = "<!-- ARGUS:START -->";
 const LEGACY_ARGUS_SECTION_END = "<!-- ARGUS:END -->";
 const LEGACY_ARGUS_WORKFLOW_SECTION_START = "<!-- ARGUS:AGENT-WORKFLOW:START -->";
@@ -43,7 +46,7 @@ const SUPPORTED_AGENT_TARGETS = ["auto", "generic", "codex", "claude", "cursor"]
 const AGENT_INSTRUCTION_TARGETS = ["generic", "claude", "cursor"] as const;
 const NO_AGENT_SETUP_MESSAGE =
   "No specific agent setup detected. Created generic AGENTS.md. To prepare all supported agents, run `npx gleip init --all-agents`.";
-const GLEIP_VERSION = "0.3.0";
+const GLEIP_VERSION = readPackageVersion();
 const REPORT_SCHEMA_VERSION = "1.0.0";
 
 type AgentTarget = (typeof SUPPORTED_AGENT_TARGETS)[number];
@@ -807,6 +810,7 @@ function initRepository(runtime: CommandRuntime, options: InitOptions): void {
   const agentInstructionFiles = agentInstructions.map((file) => file.path);
 
   ensureGleipDirectory(runtime.cwd);
+  const gitignoreResult = ensureGleipGitignore(runtime.cwd);
   writeGleipStateIfMissing(runtime.cwd, getDefaultGleipState(runtime.now().toISOString()), force);
   writeGeneratedFile(join(runtime.cwd, ".gleip.yml"), defaultConfigContent(), force);
   writeGeneratedFile(join(runtime.cwd, "GLEIP.md"), defaultGleipReadmeContent(), force);
@@ -825,8 +829,17 @@ function initRepository(runtime: CommandRuntime, options: InitOptions): void {
 
   output.push(
     "",
-    "Continue using your coding agent normally.",
-    "The agent should run Gleip preflight, validate-plan, status, and report automatically."
+    "Next:",
+    '  npx gleip preflight "<task>"',
+    "  npx gleip status",
+    "",
+    "For agent-assisted work:",
+    "  Ask your coding agent to read the Gleip instructions before editing.",
+    "  Run npx gleip check before claiming completion.",
+    "",
+    gitignoreResult === "unchanged"
+      ? "Local Gleip artifacts are protected by .gitignore."
+      : "Local Gleip artifacts were added to and protected by .gitignore."
   );
 
   runtime.stdout(output.join("\n"));
@@ -1296,7 +1309,7 @@ async function doctor(runtime: CommandRuntime, options: DoctorOptions = {}): Pro
     return;
   }
 
-  const checks: string[] = [];
+  const checks = ["Setup:", ...setupDiagnosticLines(runtime.cwd), "", "Environment:"];
   let failed = false;
 
   if (isInsideGitRepository(runtime.cwd)) {
@@ -1340,11 +1353,57 @@ async function doctor(runtime: CommandRuntime, options: DoctorOptions = {}): Pro
   }
 }
 
+function setupDiagnosticLines(cwd: string): string[] {
+  const initialized = isFilePath(join(cwd, ".gleip", "state.json"));
+  const versionedSetupPresent =
+    isFilePath(join(cwd, ".gleip.yml")) && isFilePath(join(cwd, "GLEIP.md"));
+  const agentInstructionsPresent = AGENT_INSTRUCTION_TARGETS.some((target) => {
+    const filePath = join(cwd, agentInstructionFile(target).path);
+    return isFilePath(filePath) && hasGleipWorkflow(readFileSync(filePath, "utf8"));
+  });
+  const localArtifactsIgnored = hasGleipGitignoreProtection(cwd);
+  const lines = [
+    setupDiagnosticLine(initialized, "Gleip init state present", "Missing .gleip/state.json"),
+    setupDiagnosticLine(
+      versionedSetupPresent,
+      "Versioned config and policy files present",
+      "Missing .gleip.yml or GLEIP.md"
+    ),
+    setupDiagnosticLine(
+      agentInstructionsPresent,
+      "Agent instructions present",
+      "Missing Gleip-managed agent instructions"
+    ),
+    setupDiagnosticLine(
+      localArtifactsIgnored,
+      "Local artifacts ignored",
+      "Missing or incomplete Gleip .gitignore block"
+    ),
+    `  OK   CLI version resolved (${GLEIP_VERSION})`,
+    "  OK   Built-in init assets available"
+  ];
+
+  if (
+    !initialized ||
+    !versionedSetupPresent ||
+    !agentInstructionsPresent ||
+    !localArtifactsIgnored
+  ) {
+    lines.push("       Run: npx gleip init");
+  }
+
+  return lines;
+}
+
+function setupDiagnosticLine(ok: boolean, success: string, warning: string): string {
+  return ok ? `  OK   ${success}` : `  WARN ${warning}`;
+}
+
 function doctorAgents(runtime: CommandRuntime): void {
   const reports = AGENT_INSTRUCTION_TARGETS.map((target) => {
     const file = agentInstructionFile(target);
     const filePath = join(runtime.cwd, file.path);
-    const present = existsSync(filePath);
+    const present = isFilePath(filePath);
     const workflowPresent = present && hasGleipWorkflow(readFileSync(filePath, "utf8"));
 
     return {
@@ -1635,6 +1694,59 @@ function writeGeneratedFile(filePath: string, content: string, force: boolean): 
   writeFileSync(filePath, content);
 }
 
+type GitignoreUpdateResult = "created" | "updated" | "unchanged";
+
+function ensureGleipGitignore(cwd: string): GitignoreUpdateResult {
+  const gitignorePath = join(cwd, ".gitignore");
+  const exists = existsSync(gitignorePath);
+  const existing = exists ? readFileSync(gitignorePath, "utf8") : "";
+  const lineEnding = existing.includes("\r\n") ? "\r\n" : "\n";
+  const block = [GLEIP_GITIGNORE_START, ...GLEIP_GITIGNORE_ENTRIES, GLEIP_GITIGNORE_END].join(
+    lineEnding
+  );
+  const startIndex = existing.indexOf(GLEIP_GITIGNORE_START);
+  const endMarkerIndex = startIndex === -1 ? -1 : existing.indexOf(GLEIP_GITIGNORE_END, startIndex);
+  let updated: string;
+
+  if (startIndex !== -1 && endMarkerIndex !== -1) {
+    const endIndex = endMarkerIndex + GLEIP_GITIGNORE_END.length;
+    updated = `${existing.slice(0, startIndex)}${block}${existing.slice(endIndex)}`;
+  } else if (existing.length === 0) {
+    updated = `${block}${lineEnding}`;
+  } else {
+    const separator = existing.endsWith("\n") ? lineEnding : `${lineEnding}${lineEnding}`;
+    updated = `${existing}${separator}${block}${lineEnding}`;
+  }
+
+  if (updated === existing) {
+    return "unchanged";
+  }
+
+  writeFileSync(gitignorePath, updated);
+  return exists ? "updated" : "created";
+}
+
+function hasGleipGitignoreProtection(cwd: string): boolean {
+  const gitignorePath = join(cwd, ".gitignore");
+
+  if (!existsSync(gitignorePath) || !statSync(gitignorePath).isFile()) {
+    return false;
+  }
+
+  const content = readFileSync(gitignorePath, "utf8").replaceAll("\r\n", "\n");
+  const startIndex = content.indexOf(GLEIP_GITIGNORE_START);
+  const endIndex = content.indexOf(GLEIP_GITIGNORE_END, startIndex);
+
+  if (startIndex === -1 || endIndex === -1) {
+    return false;
+  }
+
+  const block = content.slice(startIndex, endIndex + GLEIP_GITIGNORE_END.length);
+  return GLEIP_GITIGNORE_ENTRIES.every((entry) =>
+    block.split("\n").some((line) => line.trim() === entry)
+  );
+}
+
 function getDefaultGleipState(updatedAt = new Date().toISOString()): GleipState {
   return {
     enabled: true,
@@ -1849,9 +1961,14 @@ function gleipSectionContent(target: AgentInstructionTarget): string {
 - Before editing code, check \`.gleip/state.json\`. If \`enabled\` is false, ask: "Gleip is currently inactive. Do you want me to proceed without Gleip guardrails? y/n". Do not proceed without confirmation.
 - If enabled, run \`npx --no-install gleip preflight "<user task>"\`.
 - Read \`.gleip/brief.md\` and \`.gleip/scope-budget.json\`.
-- Draft a short implementation plan and run \`npx --no-install gleip validate-plan "<plan>"\`.
+- For a non-trivial change, draft a short implementation plan and run \`npx --no-install gleip validate-plan "<plan>"\` before implementing it.
 - Proceed only if validation is \`approved\`; if \`needs_revision\`, revise and validate again; if \`requires_approval\`, stop and ask the user.
 - During implementation, stay inside \`.gleip/scope-budget.json\`.
+- Keep changes minimal and scoped to the requested task.
+- Do not edit or commit files under \`.gleip/\` unless the user explicitly asks.
+- Before claiming completion, run \`npx --no-install gleip check\`.
+- Run \`npx --no-install gleip status\` whenever Gleip's expected next action is unclear.
+- Do not bypass a failing Gleip check without explaining the failure and why work is continuing.
 - Before the final response, run \`npx --no-install gleip status\`. If status is \`warning\`, \`approval_required\`, or \`blocked\`, report it clearly. Stop if status is \`approval_required\` or \`blocked\`.
 - Before the final response, run or read \`npx --no-install gleip report\`.
 - Treat \`.gleip/report.json\` and \`.gleip/report.md\` as the source of truth for Gleip final status.
@@ -1866,6 +1983,7 @@ function gleipSectionContent(target: AgentInstructionTarget): string {
 - [ ] Read \`.gleip/brief.md\`
 - [ ] Validate plan with \`npx --no-install gleip validate-plan\`
 - [ ] Implement within \`.gleip/scope-budget.json\`
+- [ ] Run \`npx --no-install gleip check\`
 - [ ] Run \`npx --no-install gleip status\`
 - [ ] Run or read \`npx --no-install gleip report\`
 - [ ] Include only the generated compact Gleip block, plus files changed, tests run, and risks
@@ -1873,11 +1991,17 @@ ${GLEIP_SECTION_END}`;
 }
 
 function hasGleipWorkflow(content: string): boolean {
+  const requiredCommands = [
+    "gleip preflight",
+    "gleip validate-plan",
+    "gleip check",
+    "gleip status"
+  ];
+
   return (
-    content.includes(GLEIP_SECTION_START) ||
-    (content.includes("gleip preflight") &&
-      content.includes("gleip validate-plan") &&
-      content.includes("gleip status"))
+    content.includes(GLEIP_SECTION_START) &&
+    content.includes(GLEIP_SECTION_END) &&
+    requiredCommands.every((command) => content.includes(command))
   );
 }
 
@@ -2452,8 +2576,24 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function readPackageVersion(): string {
+  const packageJson = JSON.parse(
+    readFileSync(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8")
+  ) as { version?: unknown };
+
+  if (typeof packageJson.version !== "string" || packageJson.version.length === 0) {
+    throw new Error("Gleip package version is missing.");
+  }
+
+  return packageJson.version;
+}
+
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isFilePath(path: string): boolean {
+  return existsSync(path) && statSync(path).isFile();
 }
 
 function notGitRepositoryMessage(): string {

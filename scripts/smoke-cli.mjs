@@ -32,7 +32,9 @@ writeRepoFile(
 );
 
 run("node", [cliEntry, "--help"], repo);
+const version = run("node", [cliEntry, "--version"], repo).trim();
 run("node", [cliEntry, "--cwd", repo, "init", "--all-agents"], repo);
+const doctorOutput = run("node", [cliEntry, "--cwd", repo, "doctor"], repo);
 run(
   "node",
   [
@@ -53,6 +55,7 @@ run("node", [cliEntry, "--cwd", repo, "status"], repo);
 const reportJson = run("node", [cliEntry, "--cwd", repo, "report", "--json"], repo);
 
 for (const path of [
+  ".gitignore",
   "AGENTS.md",
   "CLAUDE.md",
   ".cursor/rules/gleip.mdc",
@@ -68,14 +71,27 @@ for (const path of [
   assertFile(path);
 }
 
+if (
+  !doctorOutput.includes("OK   Agent instructions present") ||
+  !doctorOutput.includes("OK   Local artifacts ignored")
+) {
+  throw new Error(`Expected complete setup diagnostics, received:\n${doctorOutput}`);
+}
+
+run("git", ["check-ignore", "-q", ".gleip/session.json"], repo);
+
 if (!validation.includes("Gleip plan check passed · ready to implement within scope")) {
   throw new Error(`Expected approved plan validation, received:\n${validation}`);
 }
 
 const report = JSON.parse(reportJson);
 
-if (report.schemaVersion !== "1.0.0" || report.version !== "0.3.0") {
-  throw new Error(`Expected Gleip 0.3.0 report schema 1.0.0, received:\n${reportJson}`);
+if (version !== "0.4.0") {
+  throw new Error(`Expected Gleip 0.4.0, received: ${version}`);
+}
+
+if (report.schemaVersion !== "1.0.0" || report.version !== "0.4.0") {
+  throw new Error(`Expected Gleip 0.4.0 report schema 1.0.0, received:\n${reportJson}`);
 }
 
 if (!report.finalResponse?.markdown?.includes("### Gleip")) {

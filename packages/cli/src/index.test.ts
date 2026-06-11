@@ -72,6 +72,12 @@ describe("createGleipCommand", () => {
     expect(output.toLowerCase()).not.toContain("dashboard");
   });
 
+  it("--version prints the package version", async () => {
+    const output = (await runHelpCommand(["--version"])).join("\n");
+
+    expect(output).toBe("0.4.0");
+  });
+
   it("command help shows important flags and stdin support", async () => {
     const validatePlanHelp = (await runHelpCommand(["validate-plan", "--help"])).join("\n");
     const statusHelp = (await runHelpCommand(["status", "--help"])).join("\n");
@@ -125,7 +131,7 @@ describe("createGleipCommand", () => {
     expect(packageJson.exports["."].import).toBe("./dist/index.js");
     expect(packageJson.exports["."].types).toBe("./dist/index.d.ts");
     expect(packageJson.name).toBe("gleip");
-    expect(packageJson.version).toBe("0.3.0");
+    expect(packageJson.version).toBe("0.4.0");
     expect(packageJson.dependencies).toEqual({
       commander: "^12.0.0",
       yaml: "^2.0.0",
@@ -133,9 +139,22 @@ describe("createGleipCommand", () => {
     });
     expect(packageJson).not.toHaveProperty("bundledDependencies");
     expect(packageJson.keywords).toContain("agent-guardrails");
+    for (const keyword of [
+      "ai-agent",
+      "coding-agent",
+      "agentic-coding",
+      "code-quality",
+      "static-analysis",
+      "repo-guardrails",
+      "llm-tools",
+      "vibe-coding"
+    ]) {
+      expect(packageJson.keywords).toContain(keyword);
+    }
+    expect(new Set(packageJson.keywords).size).toBe(packageJson.keywords.length);
   });
 
-  it("release metadata uses version 0.3.0 across packages", () => {
+  it("release metadata uses version 0.4.0 across packages", () => {
     const packagePaths = [
       "package.json",
       "packages/cli/package.json",
@@ -151,13 +170,10 @@ describe("createGleipCommand", () => {
       const packageJson = JSON.parse(readFileSync(join(repoRoot, packagePath), "utf8")) as {
         version: string;
       };
-      expect(packageJson.version).toBe("0.3.0");
+      expect(packageJson.version).toBe("0.4.0");
     }
 
-    const cliPackageJson = readFileSync(
-      join(repoRoot, "packages", "cli", "package.json"),
-      "utf8"
-    );
+    const cliPackageJson = readFileSync(join(repoRoot, "packages", "cli", "package.json"), "utf8");
 
     expect(cliPackageJson).not.toContain("workspace:");
     expect(cliPackageJson).not.toContain("bundledDependencies");
@@ -173,13 +189,21 @@ describe("createGleipCommand", () => {
       expect(readme).toContain("Cursor");
       expect(readme).toContain("npx --no-install gleip");
       expect(readme).toContain("## Quick Start");
+      expect(readme).toContain("npm i -D gleip");
+      expect(readme).toContain("npx gleip --version");
+      expect(readme).toContain("pnpm exec gleip --version");
+      expect(readme).toContain("./node_modules/.bin/gleip --version");
+      expect(readme).toContain(".\\node_modules\\.bin\\gleip --version");
+      expect(readme).toContain("`npm gleip --version` prints npm's version");
+      expect(readme).toContain("## How Agents Should Use Gleip");
+      expect(readme).toContain("npx --no-install gleip check");
       expect(readme).toContain("## Commands for Developers");
       expect(readme).toContain("## Commands Used by Agents");
       expect(readme).toContain("## Reports and Metrics");
+      expect(readme).toContain("## What Gets Committed?");
       expect(readme).toContain("It is not exact model billing or API usage data.");
       expect(readme).not.toContain("CSV export");
       expect(readme).not.toContain("Add CSV");
-      expect(readme).not.toContain('npx gleip preflight "');
     }
   });
 
@@ -250,8 +274,87 @@ describe("createGleipCommand", () => {
     expect(existsSync(join(repo, ".gleip"))).toBe(true);
     expect(existsSync(join(repo, ".gleip", "state.json"))).toBe(true);
     expect(existsSync(join(repo, "AGENTS.md"))).toBe(true);
+    expect(readFileSync(join(repo, ".gitignore"), "utf8")).toBe(
+      "# Gleip local artifacts\n.gleip/\n# End Gleip local artifacts\n"
+    );
     expect(readFileSync(join(repo, "GLEIP.md"), "utf8")).toContain("local-only");
     expect(readFileSync(join(repo, "GLEIP.md"), "utf8")).toContain("no external review");
+  });
+
+  it("init appends the Gleip block without changing unrelated .gitignore entries", async () => {
+    const repo = createTempRepo();
+    writeFileSync(join(repo, ".gitignore"), "node_modules/\ndist/\n");
+
+    await runCommand(repo, ["init"]);
+
+    expect(readFileSync(join(repo, ".gitignore"), "utf8")).toBe(
+      [
+        "node_modules/",
+        "dist/",
+        "",
+        "# Gleip local artifacts",
+        ".gleip/",
+        "# End Gleip local artifacts",
+        ""
+      ].join("\n")
+    );
+  });
+
+  it("running init twice does not duplicate the Gleip .gitignore block", async () => {
+    const repo = createTempRepo();
+
+    await runCommand(repo, ["init"]);
+    await runCommand(repo, ["init"]);
+
+    const gitignore = readFileSync(join(repo, ".gitignore"), "utf8");
+    expect(countOccurrences(gitignore, "# Gleip local artifacts")).toBe(1);
+    expect(countOccurrences(gitignore, "# End Gleip local artifacts")).toBe(1);
+    expect(countOccurrences(gitignore, ".gleip/")).toBe(1);
+  });
+
+  it("init preserves CRLF line endings in an existing .gitignore", async () => {
+    const repo = createTempRepo();
+    writeFileSync(join(repo, ".gitignore"), "node_modules/\r\ndist/\r\n");
+
+    await runCommand(repo, ["init"]);
+
+    const gitignore = readFileSync(join(repo, ".gitignore"), "utf8");
+    expect(gitignore).toContain(
+      "\r\n\r\n# Gleip local artifacts\r\n.gleip/\r\n# End Gleip local artifacts\r\n"
+    );
+    expect(gitignore.replaceAll("\r\n", "")).not.toContain("\n");
+  });
+
+  it("init ignores local artifacts without ignoring versioned Gleip files", async () => {
+    const repo = createTempRepo();
+
+    await runCommand(repo, ["init", "--all-agents"]);
+
+    const gitignore = readFileSync(join(repo, ".gitignore"), "utf8");
+    for (const localArtifact of [
+      ".gleip/state.json",
+      ".gleip/session.json",
+      ".gleip/baseline.json",
+      ".gleip/brief.md",
+      ".gleip/scope-budget.json",
+      ".gleip/status.md",
+      ".gleip/report.json",
+      ".gleip/report.md",
+      ".gleip/session-2026-05-30T00-00-00-000Z.json"
+    ]) {
+      expect(localArtifact.startsWith(".gleip/")).toBe(true);
+      expect(gitignore).toContain(".gleip/");
+    }
+
+    for (const versionedFile of [
+      ".gleip.yml",
+      "GLEIP.md",
+      "AGENTS.md",
+      "CLAUDE.md",
+      ".cursor/rules/gleip.mdc"
+    ]) {
+      expect(gitignore).not.toContain(versionedFile);
+    }
   });
 
   it("init success output includes next normal flow", async () => {
@@ -263,9 +366,14 @@ describe("createGleipCommand", () => {
     expect(initOutput).toContain("Gleip initialized.");
     expect(initOutput).toContain("Agent instructions created/updated: AGENTS.md.");
     expect(initOutput).toContain("No specific agent setup detected. Created generic AGENTS.md.");
-    expect(initOutput).toContain("Continue using your coding agent normally.");
+    expect(initOutput).toContain('Next:\n  npx gleip preflight "<task>"\n  npx gleip status');
+    expect(initOutput).toContain("For agent-assisted work:");
     expect(initOutput).toContain(
-      "The agent should run Gleip preflight, validate-plan, status, and report automatically."
+      "Ask your coding agent to read the Gleip instructions before editing."
+    );
+    expect(initOutput).toContain("Run npx gleip check before claiming completion.");
+    expect(initOutput).toContain(
+      "Local Gleip artifacts were added to and protected by .gitignore."
     );
   });
 
@@ -353,6 +461,14 @@ describe("createGleipCommand", () => {
     expect(agents).toContain('run `npx --no-install gleip preflight "<user task>"`');
     expect(agents).toContain("Read `.gleip/brief.md` and `.gleip/scope-budget.json`");
     expect(agents).toContain("npx --no-install gleip validate-plan");
+    expect(agents).toContain("For a non-trivial change");
+    expect(agents).toContain("Before claiming completion, run `npx --no-install gleip check`");
+    expect(agents).toContain(
+      "Run `npx --no-install gleip status` whenever Gleip's expected next action is unclear"
+    );
+    expect(agents).toContain("Do not edit or commit files under `.gleip/`");
+    expect(agents).toContain("Do not bypass a failing Gleip check without explaining");
+    expect(agents).toContain("Keep changes minimal and scoped to the requested task");
     expect(agents).toContain("needs_revision");
     expect(agents).toContain("requires_approval");
     expect(agents).toContain("Gleip is currently inactive");
@@ -552,6 +668,63 @@ describe("createGleipCommand", () => {
     expect(output.join("\n")).toContain("Legacy Argus files detected");
     expect(output.join("\n")).toContain("renamed to Gleip");
     expect(output.join("\n")).toContain("Re-run `npx gleip init`");
+  });
+
+  it("doctor reports incomplete repository setup with an actionable init command", async () => {
+    const repo = createTempRepo();
+
+    const output = await runCommand(repo, ["doctor"]);
+    const report = output.join("\n");
+
+    expect(report).toContain("Setup:");
+    expect(report).toContain("WARN Missing .gleip/state.json");
+    expect(report).toContain("WARN Missing .gleip.yml or GLEIP.md");
+    expect(report).toContain("WARN Missing Gleip-managed agent instructions");
+    expect(report).toContain("WARN Missing or incomplete Gleip .gitignore block");
+    expect(report).toContain("OK   CLI version resolved (0.4.0)");
+    expect(report).toContain("OK   Built-in init assets available");
+    expect(report).toContain("Run: npx gleip init");
+  });
+
+  it("doctor reports complete setup after init", async () => {
+    const repo = createTempRepo();
+    await runCommand(repo, ["init"]);
+
+    const output = await runCommand(repo, ["doctor"]);
+    const report = output.join("\n");
+
+    expect(report).toContain("OK   Gleip init state present");
+    expect(report).toContain("OK   Versioned config and policy files present");
+    expect(report).toContain("OK   Agent instructions present");
+    expect(report).toContain("OK   Local artifacts ignored");
+    expect(report).not.toContain("WARN Missing");
+  });
+
+  it("doctor detects an incomplete Gleip .gitignore block", async () => {
+    const repo = createTempRepo();
+    await runCommand(repo, ["init"]);
+    writeFileSync(
+      join(repo, ".gitignore"),
+      "# Gleip local artifacts\n# End Gleip local artifacts\n"
+    );
+
+    const output = await runCommand(repo, ["doctor"]);
+
+    expect(output.join("\n")).toContain("WARN Missing or incomplete Gleip .gitignore block");
+    expect(output.join("\n")).toContain("Run: npx gleip init");
+  });
+
+  it("doctor detects stale managed agent instructions", async () => {
+    const repo = createTempRepo();
+    await runCommand(repo, ["init"]);
+    writeFileSync(
+      join(repo, "AGENTS.md"),
+      "<!-- GLEIP:START -->\ngleip preflight\ngleip validate-plan\ngleip status\n<!-- GLEIP:END -->\n"
+    );
+
+    const output = await runCommand(repo, ["doctor"]);
+
+    expect(output.join("\n")).toContain("WARN Missing Gleip-managed agent instructions");
   });
 
   it("doctor --agents reports missing files", async () => {
@@ -1648,7 +1821,7 @@ describe("createGleipCommand", () => {
     expect(output).toHaveLength(1);
     expect(output[0]?.trimStart().startsWith("{")).toBe(true);
     expect(output.join("\n")).not.toContain("Gleip report ready");
-    expect(report.version).toBe("0.3.0");
+    expect(report.version).toBe("0.4.0");
     expect(report.generatedAt).toBe("2026-05-30T00:00:00.000Z");
     expect(report.summary.filesChanged).toBe(0);
     expect(existsSync(join(repo, ".gleip", "report.json"))).toBe(true);
@@ -2008,7 +2181,11 @@ async function runHelpCommand(args: string[]): Promise<string[]> {
   try {
     await program.parseAsync(["node", "gleip", ...args], { from: "node" });
   } catch (error) {
-    if ((error as { code?: string }).code !== "commander.helpDisplayed") {
+    if (
+      !["commander.helpDisplayed", "commander.version"].includes(
+        (error as { code?: string }).code ?? ""
+      )
+    ) {
       throw error;
     }
   }
@@ -2025,6 +2202,7 @@ function assertGleipWorkflowInstructions(content: string): void {
   expect(content).toContain('npx --no-install gleip preflight "<task>"');
   expect(content).toContain('npx --no-install gleip preflight "<user task>"');
   expect(content).toContain("npx --no-install gleip validate-plan");
+  expect(content).toContain("npx --no-install gleip check");
   expect(content).toContain("npx --no-install gleip status");
   expect(content).toContain("npx --no-install gleip report");
   expect(content).toContain("needs_revision");
@@ -2038,6 +2216,9 @@ function assertGleipWorkflowInstructions(content: string): void {
   expect(content).toContain("Gleip checklist for every coding task");
   expect(content).toContain("Check `.gleip/state.json`");
   expect(content).toContain("Validate plan with `npx --no-install gleip validate-plan`");
+  expect(content).toContain("Do not edit or commit files under `.gleip/`");
+  expect(content).toContain("Do not bypass a failing Gleip check without explaining");
+  expect(content).toContain("Keep changes minimal and scoped to the requested task");
   expect(content).toContain("scope adherence, drift risk, output discipline");
   expect(content).toContain("estimated token waste avoided");
   expect(content).toContain("<!-- GLEIP:END -->");

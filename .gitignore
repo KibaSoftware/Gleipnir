@@ -3,14 +3,9 @@ dist/
 coverage/
 *.tsbuildinfo
 
-# Gleip local session state
+# Gleip local artifacts
 .gleip/
-.gleip/session.json
-.gleip/brief.md
-.gleip/scope-budget.json
-.gleip/status.md
-.gleip/baseline.json
-.gleip/state.json
+# End Gleip local artifacts
 
 # Legacy Argus local session state
 .argus/

@@ -1,6 +1,6 @@
 {
   "name": "gleip",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Local-only guardrails that AI coding agents use automatically.",
   "license": "Apache-2.0",
   "repository": {
@@ -30,10 +30,18 @@
   ],
   "keywords": [
     "ai",
+    "ai-agent",
+    "coding-agent",
     "coding-agents",
-    "code-review",
-    "cli",
+    "agentic-coding",
     "agent-guardrails",
+    "llm-tools",
+    "vibe-coding",
+    "code-quality",
+    "code-review",
+    "static-analysis",
+    "repo-guardrails",
+    "cli",
     "developer-tools",
     "local-only"
   ],
