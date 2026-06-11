@@ -20,6 +20,7 @@
 
 - Made `gleip init` reliably create or update `.gitignore` with an idempotent Gleip local-artifacts block.
 - Protected local-only Gleip session, baseline, state, and report artifacts from accidental commits.
+- Fixed the root npm package metadata so installs expose the built `gleip` executable.
 - Improved and smoke-tested behavior from the packed npm artifact.
 
 ### Security / Privacy

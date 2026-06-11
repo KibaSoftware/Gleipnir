@@ -14,8 +14,11 @@ pnpm build
 pnpm pack:cli
 ```
 
-This writes tarballs for the CLI and its runtime workspace packages to `dist-pack/`.
-The CLI tarball bundles the internal runtime packages so it can be installed by itself.
+This packs the root `gleip` package to `dist-pack/`. The package `bin` points to the
+built CLI at `packages/cli/dist/index.js`.
+
+Plain `npm pack` from the repository root produces the same package in the repository
+root and is the command used for the release smoke test.
 
 The public preview install target is:
 

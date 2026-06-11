@@ -154,6 +154,27 @@ describe("createGleipCommand", () => {
     expect(new Set(packageJson.keywords).size).toBe(packageJson.keywords.length);
   });
 
+  it("root npm package exposes the built CLI executable", () => {
+    const packageJson = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as {
+      bin: { gleip: string };
+      dependencies: Record<string, string>;
+      files: string[];
+      main: string;
+      types: string;
+    };
+
+    expect(packageJson.bin.gleip).toBe("./packages/cli/dist/index.js");
+    expect(packageJson.main).toBe("./packages/cli/dist/index.js");
+    expect(packageJson.types).toBe("./packages/cli/dist/index.d.ts");
+    expect(packageJson.files).toContain("packages/cli/dist");
+    expect(packageJson.files).toContain("packages/cli/package.json");
+    expect(packageJson.dependencies).toEqual({
+      commander: "^12.0.0",
+      yaml: "^2.0.0",
+      zod: "^3.0.0"
+    });
+  });
+
   it("release metadata uses version 0.4.0 across packages", () => {
     const packagePaths = [
       "package.json",

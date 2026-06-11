@@ -1,10 +1,54 @@
 {
   "name": "gleip",
   "version": "0.4.0",
-  "private": true,
   "description": "Local-only guardrails that AI coding agents use automatically.",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/KibaSoftware/Gleipnir.git"
+  },
+  "homepage": "https://github.com/KibaSoftware/Gleipnir#readme",
+  "bugs": {
+    "url": "https://github.com/KibaSoftware/Gleipnir/issues"
+  },
   "type": "module",
+  "main": "./packages/cli/dist/index.js",
+  "module": "./packages/cli/dist/index.js",
+  "types": "./packages/cli/dist/index.d.ts",
+  "bin": {
+    "gleip": "./packages/cli/dist/index.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./packages/cli/dist/index.d.ts",
+      "import": "./packages/cli/dist/index.js"
+    }
+  },
+  "files": [
+    "packages/cli/dist",
+    "packages/cli/package.json",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "keywords": [
+    "ai",
+    "ai-agent",
+    "coding-agent",
+    "coding-agents",
+    "agentic-coding",
+    "agent-guardrails",
+    "llm-tools",
+    "vibe-coding",
+    "code-quality",
+    "code-review",
+    "static-analysis",
+    "repo-guardrails",
+    "cli",
+    "developer-tools",
+    "local-only"
+  ],
   "packageManager": "pnpm@9.15.4",
   "engines": {
     "node": ">=20.0.0"
@@ -19,6 +63,11 @@
     "pack:cli": "node scripts/pack-cli.mjs",
     "smoke:cli": "node scripts/smoke-cli.mjs",
     "format": "prettier --write ."
+  },
+  "dependencies": {
+    "commander": "^12.0.0",
+    "yaml": "^2.0.0",
+    "zod": "^3.0.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
