@@ -1,3 +1,5 @@
+import type { FindingCode, FindingSeverity } from "@gleip/core/findings";
+
 export const packageName = "@gleip/controller";
 
 export {
@@ -26,9 +28,10 @@ export type {
 
 export type DriftStatus = "within_scope" | "warning" | "approval_required" | "blocked";
 
-export type DriftSeverity = "info" | "warning" | "approval_required" | "blocked";
+export type DriftSeverity = FindingSeverity;
 
 export interface DriftFinding {
+  code: FindingCode;
   severity: DriftSeverity;
   title: string;
   message: string;
@@ -87,6 +90,7 @@ export interface GitDiffContextLike {
   totalLinesDeleted: number;
   isGitRepo?: boolean;
   hasChanges?: boolean;
+  trackedLocalArtifacts?: string[];
   error?: string;
 }
 
@@ -109,6 +113,18 @@ const DEPENDENCY_FILES = new Set([
   "composer.lock"
 ]);
 
+const LOCKFILES = new Set([
+  "package-lock.json",
+  "pnpm-lock.yaml",
+  "yarn.lock",
+  "bun.lockb",
+  "poetry.lock",
+  "go.sum",
+  "Cargo.lock",
+  "Gemfile.lock",
+  "composer.lock"
+]);
+
 const SKIPPED_TEST_PATTERNS = [
   "test.skip",
   "it.skip",
@@ -128,7 +144,8 @@ export function detectScopeDrift(input: DetectScopeDriftInput): DriftResult {
 
   if (input.gitDiffContext.isGitRepo === false) {
     findings.push({
-      severity: "warning",
+      code: "GIT_UNAVAILABLE",
+      severity: "warn",
       title: "Git repository unavailable",
       message: input.gitDiffContext.error ?? "Gleip could not inspect the working tree.",
       recommendation: "Run status from inside a git repository before final response.",
@@ -136,21 +153,24 @@ export function detectScopeDrift(input: DetectScopeDriftInput): DriftResult {
     });
   }
 
+  addLocalArtifactFindings(findings, input.gitDiffContext.trackedLocalArtifacts ?? []);
+
   if (changedFiles.length === 0) {
+    const normalizedFindings = normalizeDriftFindings(findings);
+    const status = aggregateStatus(normalizedFindings);
+
     return {
-      status: findings.some((finding) => finding.severity === "warning")
-        ? "warning"
-        : "within_scope",
-      findings,
+      status,
+      findings: normalizedFindings,
       metrics: {
         filesChanged: 0,
         linesAdded: 0,
         linesDeleted: 0
       },
       summary:
-        findings.length === 0
+        normalizedFindings.length === 0
           ? "No working tree changes detected."
-          : "Git diff could not be fully inspected."
+          : summaryForStatus(status, 0)
     };
   }
 
@@ -219,7 +239,8 @@ function addSoftLimitFindings(
 ): void {
   if (metrics.filesChanged > scopeBudget.softLimits.maxFilesChanged) {
     findings.push({
-      severity: "warning",
+      code: "SCOPE_LIMIT_EXCEEDED",
+      severity: "warn",
       title: "File count exceeds scope budget",
       message: `${metrics.filesChanged} files changed; soft limit is ${scopeBudget.softLimits.maxFilesChanged}.`,
       recommendation:
@@ -230,7 +251,8 @@ function addSoftLimitFindings(
 
   if (metrics.linesAdded > scopeBudget.softLimits.maxLinesAdded) {
     findings.push({
-      severity: "warning",
+      code: "SCOPE_LIMIT_EXCEEDED",
+      severity: "warn",
       title: "Added lines exceed scope budget",
       message: `${metrics.linesAdded} lines added; soft limit is ${scopeBudget.softLimits.maxLinesAdded}.`,
       recommendation: "Check whether the implementation can be narrowed.",
@@ -240,7 +262,8 @@ function addSoftLimitFindings(
 
   if (metrics.linesDeleted > scopeBudget.softLimits.maxLinesDeleted) {
     findings.push({
-      severity: "warning",
+      code: "SCOPE_LIMIT_EXCEEDED",
+      severity: "warn",
       title: "Deleted lines exceed scope budget",
       message: `${metrics.linesDeleted} lines deleted; soft limit is ${scopeBudget.softLimits.maxLinesDeleted}.`,
       recommendation: "Check whether deleted behavior is intentional and scoped.",
@@ -258,16 +281,34 @@ function addDependencyFindings(
     return;
   }
 
-  const dependencyFiles = changedFiles.filter(isDependencyFile);
+  const dependencyFiles = changedFiles.filter(
+    (path) => isDependencyFile(path) && !isLockfile(path)
+  );
 
   if (dependencyFiles.length > 0) {
     findings.push({
-      severity: "approval_required",
+      code: "DEPENDENCY_FILE_CHANGED",
+      severity: "fail",
       title: "Dependency files changed",
       message: `${formatExamples(dependencyFiles)} changed, but new dependency changes are not allowed by the budget.`,
       count: dependencyFiles.length,
       examples: dependencyFiles.slice(0, 3),
       recommendation: "Stop and ask for approval before changing dependency files.",
+      category: "dependencies"
+    });
+  }
+
+  const lockfiles = changedFiles.filter(isLockfile);
+
+  if (lockfiles.length > 0) {
+    findings.push({
+      code: "LOCKFILE_CHANGED",
+      severity: "fail",
+      title: "Lockfile changed",
+      message: `${formatExamples(lockfiles)} changed, but dependency changes are not allowed by the budget.`,
+      count: lockfiles.length,
+      examples: lockfiles.slice(0, 3),
+      recommendation: "Review the lockfile change and confirm it is required by the task.",
       category: "dependencies"
     });
   }
@@ -286,7 +327,8 @@ function addCiFindings(
 
   if (ciFiles.length > 0) {
     findings.push({
-      severity: "approval_required",
+      code: "CI_FILE_CHANGED",
+      severity: "fail",
       title: "CI configuration changed",
       message: `${formatExamples(ciFiles)} changed, but CI changes are not allowed by the budget.`,
       count: ciFiles.length,
@@ -314,21 +356,14 @@ function addOutsideScopeFindings(
     return;
   }
 
-  const requiresApproval = outsideFiles.some(
-    (path) =>
-      matchesAnyBudgetEntry(path, scopeBudget.approvalRequiredFor) ||
-      matchesAnyBudgetEntry(path, scopeBudget.blockedWithoutApproval)
-  );
-
   findings.push({
-    severity: requiresApproval ? "approval_required" : "warning",
+    code: "SCOPE_EXPANSION_WARN",
+    severity: "warn",
     title: "Files outside allowed scope",
     message: `${outsideFiles.length} file(s) changed outside the allowed paths: ${formatExamples(outsideFiles)}.`,
     count: outsideFiles.length,
     examples: outsideFiles.slice(0, 3),
-    recommendation: requiresApproval
-      ? "Stop and ask for approval before continuing."
-      : "Confirm these files are necessary for the task.",
+    recommendation: "Confirm these files are necessary for the task.",
     category: "allowed_scope"
   });
 }
@@ -346,7 +381,8 @@ function addApprovalPathFindings(
 
   if (matched.length > 0) {
     findings.push({
-      severity: "approval_required",
+      code: "APPROVAL_REQUIRED_PATH_CHANGED",
+      severity: "fail",
       title: "Approval-required paths changed",
       message: `${formatExamples(matched)} matched approval-required scope.`,
       count: matched.length,
@@ -370,7 +406,8 @@ function addBlockedPathFindings(
 
   if (matched.length > 0) {
     findings.push({
-      severity: "approval_required",
+      code: "BLOCKED_PATH_CHANGED",
+      severity: "fail",
       title: "Blocked-without-approval paths changed",
       message: `${formatExamples(matched)} matched paths or categories that require approval.`,
       count: matched.length,
@@ -402,7 +439,8 @@ function addSkippedTestFindings(
 
   if (hasSkippedTest) {
     findings.push({
-      severity: "blocked",
+      code: "TEST_SKIPPED",
+      severity: "blocking",
       title: "Skipped test added",
       message: "The diff adds a skipped or pending test.",
       recommendation: "Remove the skipped test or ask for explicit approval.",
@@ -424,7 +462,8 @@ function addDeletedTestFindings(
 
   if (deletedTests.length > 0) {
     findings.push({
-      severity: "blocked",
+      code: "TEST_DELETED",
+      severity: "blocking",
       title: "Test file deleted",
       message: `${formatExamples(deletedTests.map((stat) => stat.path))} deleted.`,
       count: deletedTests.length,
@@ -440,7 +479,8 @@ function addDeletedTestFindings(
 
   if (largeTestDeletions.length > 0) {
     findings.push({
-      severity: "approval_required",
+      code: "TEST_WEAKENED",
+      severity: "fail",
       title: "Large test deletion",
       message: `${formatExamples(largeTestDeletions.map((stat) => stat.path))} removed many test lines.`,
       count: largeTestDeletions.length,
@@ -464,7 +504,8 @@ function addSecretFindings(
 
   if (secretFiles.length > 0) {
     findings.push({
-      severity: "blocked",
+      code: "SECRET_FILE_CHANGED",
+      severity: "fail",
       title: "Secret or env file changed",
       message: `${formatExamples(secretFiles)} changed.`,
       count: secretFiles.length,
@@ -476,11 +517,34 @@ function addSecretFindings(
   }
 }
 
+function addLocalArtifactFindings(
+  findings: DriftFinding[],
+  trackedLocalArtifacts: string[]
+): void {
+  const artifacts = trackedLocalArtifacts.map(normalizePath).filter(isLocalArtifact);
+
+  if (artifacts.length === 0) {
+    return;
+  }
+
+  findings.push({
+    code: "LOCAL_ARTIFACT_INCLUDED",
+    severity: "blocking",
+    title: "Local Gleip artifact included",
+    message: `${formatExamples(artifacts)} are tracked by git.`,
+    count: artifacts.length,
+    examples: artifacts.slice(0, 3),
+    recommendation: "Remove .gleip session artifacts from version control and keep .gleip/ ignored.",
+    category: "local_artifacts"
+  });
+}
+
 function normalizeFindingGroup(findings: DriftFinding[]): DriftFinding {
   const first = findings[0];
 
   if (first === undefined) {
     return {
+      code: "GIT_UNAVAILABLE",
       severity: "info",
       title: "No finding",
       message: "No finding.",
@@ -509,6 +573,7 @@ function normalizeFindingGroup(findings: DriftFinding[]): DriftFinding {
   return recommendation === undefined
     ? {
         severity,
+        code: first.code,
         title: first.title,
         message,
         count,
@@ -517,6 +582,7 @@ function normalizeFindingGroup(findings: DriftFinding[]): DriftFinding {
       }
     : {
         severity,
+        code: first.code,
         title: first.title,
         message,
         count,
@@ -534,7 +600,8 @@ function groupedMessage(finding: DriftFinding, count: number, examples: string[]
   }
 
   if (finding.category === "dependencies") {
-    return `${count === 1 ? "1 dependency file" : `${count} dependency files`} changed, but dependency changes are not allowed by the budget.${exampleText}`;
+    const label = finding.code === "LOCKFILE_CHANGED" ? "lockfile" : "dependency file";
+    return `${count === 1 ? `1 ${label}` : `${count} ${label}s`} changed, but dependency changes are not allowed by the budget.${exampleText}`;
   }
 
   if (finding.category === "ci") {
@@ -557,15 +624,15 @@ function groupedMessage(finding: DriftFinding, count: number, examples: string[]
 }
 
 function aggregateStatus(findings: DriftFinding[]): DriftStatus {
-  if (findings.some((finding) => finding.severity === "blocked")) {
+  if (findings.some((finding) => finding.severity === "blocking")) {
     return "blocked";
   }
 
-  if (findings.some((finding) => finding.severity === "approval_required")) {
+  if (findings.some((finding) => finding.severity === "fail")) {
     return "approval_required";
   }
 
-  if (findings.some((finding) => finding.severity === "warning")) {
+  if (findings.some((finding) => finding.severity === "warn")) {
     return "warning";
   }
 
@@ -664,6 +731,16 @@ function isDependencyFile(path: string): boolean {
   return DEPENDENCY_FILES.has(normalizePath(path).split("/").at(-1) ?? "");
 }
 
+function isLockfile(path: string): boolean {
+  return LOCKFILES.has(normalizePath(path).split("/").at(-1) ?? "");
+}
+
+function isLocalArtifact(path: string): boolean {
+  const normalized = normalizePath(path);
+
+  return normalized.startsWith(".gleip/") && normalized !== ".gleip/.gitkeep";
+}
+
 function hasSpecificHardGateFinding(path: string): boolean {
   return isDependencyFile(path) || isCiFile(path) || isSecretFile(path);
 }
@@ -735,15 +812,15 @@ function highestSeverity(severities: DriftSeverity[]): DriftSeverity {
 }
 
 function severityRank(severity: DriftSeverity): number {
-  if (severity === "blocked") {
+  if (severity === "blocking") {
     return 4;
   }
 
-  if (severity === "approval_required") {
+  if (severity === "fail") {
     return 3;
   }
 
-  if (severity === "warning") {
+  if (severity === "warn") {
     return 2;
   }
 

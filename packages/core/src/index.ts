@@ -5,6 +5,8 @@ import { createHash } from "node:crypto";
 
 export const packageName = "@gleip/core";
 
+export type { FindingCode, FindingSeverity } from "../findings.js";
+
 export interface CollectWorkingTreeDiffOptions {
   cwd: string;
   base?: string;
@@ -27,6 +29,7 @@ export interface GitDiffContext {
   totalLinesDeleted: number;
   isGitRepo: boolean;
   hasChanges: boolean;
+  trackedLocalArtifacts?: string[];
   error?: string;
 }
 
@@ -139,6 +142,7 @@ export function collectWorkingTreeDiff(options: CollectWorkingTreeDiffOptions): 
   });
   const totalLinesAdded = fileStats.reduce((total, stat) => total + stat.added, 0);
   const totalLinesDeleted = fileStats.reduce((total, stat) => total + stat.deleted, 0);
+  const trackedLocalArtifacts = listTrackedLocalArtifacts(options.cwd);
 
   return {
     changedFiles: sortedChangedFiles,
@@ -147,7 +151,8 @@ export function collectWorkingTreeDiff(options: CollectWorkingTreeDiffOptions): 
     totalLinesAdded,
     totalLinesDeleted,
     isGitRepo: true,
-    hasChanges: sortedChangedFiles.length > 0
+    hasChanges: sortedChangedFiles.length > 0,
+    trackedLocalArtifacts
   };
 }
 
@@ -390,6 +395,12 @@ function listUntrackedFiles(cwd: string): string[] {
   return parseLines(result.stdout).filter((path) => !isGleipSidecarPath(path));
 }
 
+function listTrackedLocalArtifacts(cwd: string): string[] {
+  const result = runGit(cwd, ["ls-files", "--", ".gleip"]);
+
+  return result.ok ? parseLines(result.stdout).filter(isGleipSidecarPath) : [];
+}
+
 function countTextFileLines(cwd: string, relativePath: string): number {
   const absolutePath = join(cwd, relativePath);
 
@@ -497,7 +508,8 @@ function emptyDiff(isGitRepo: boolean, error?: string): GitDiffContext {
     totalLinesAdded: 0,
     totalLinesDeleted: 0,
     isGitRepo,
-    hasChanges: false
+    hasChanges: false,
+    trackedLocalArtifacts: []
   };
 
   return error === undefined ? base : { ...base, error };

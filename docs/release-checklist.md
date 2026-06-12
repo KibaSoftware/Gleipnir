@@ -2,10 +2,19 @@
 
 Use this checklist for the local-only developer preview.
 
-Current release target: `0.4.0`.
+Current release target: `0.5.0`.
 
-Release focus: first-run setup, npm-installed reliability, local artifact protection, version
-reporting, agent instructions, and setup diagnostics.
+Release focus: stable findings, conservative CI behavior, and precision-first policy.
+
+## Signal Quality Gates
+
+- Existing valid-work benchmark cases must continue to pass.
+- No new false-positive category may be introduced without a matching benchmark scenario.
+- Run external black-box benchmarks before release to check for false-positive regressions.
+- CI blocking behavior must be limited to documented blocking finding codes.
+- Scope expansion must remain warning-based unless there is high-confidence evidence of unrelated or risky work.
+- Multi-file changes must not fail solely because multiple files or modules changed.
+- Plan validation must remain structural rather than semantic.
 
 ## Package
 
@@ -19,16 +28,19 @@ reporting, agent instructions, and setup diagnostics.
   - `pnpm lint`
   - `pnpm smoke:cli`
   - `pnpm pack:cli`
+  - `npm pack`
 
 ## Packed Install
 
-- Install `dist-pack/gleip-0.4.0.tgz` into a clean external temp repo.
+- Install `dist-pack/gleip-0.5.0.tgz` into a clean external temp repo.
 - Verify:
   - `npx gleip --help`
   - `npx gleip --version`
-  - `npx gleip init --all-agents`
-  - `npx gleip doctor --agents`
-  - `npx gleip report --json`
+  - `npx gleip init`
+  - `npx gleip status`
+  - `npx gleip doctor`
+  - `npx gleip check`
+  - `npx gleip check --ci`
   - `npx --no-install gleip uninstall --dry-run`
   - `npx --no-install gleip uninstall`
 
@@ -52,6 +64,7 @@ Task workflow commands are for agents and direct release testing, not the normal
 ## Local-only Check
 
 - Confirm no network/API/account/dashboard/telemetry behavior exists.
+- Confirm no source code, diffs, prompts, file names, repository metadata, or usage data leave the repository.
 - Confirm `.gleip/` is ignored.
 - Confirm `.gleip.yml` is not ignored.
 - Confirm generated agent instructions use `npx --no-install gleip` for preflight, plan validation, check, status, and report.

@@ -518,7 +518,8 @@ describe("validateAgentPlan", () => {
     expect(result.status).toBe("needs_revision");
     expect(result.findings).toContainEqual(
       expect.objectContaining({
-        severity: "warning",
+        code: "MISSING_TEST_STRATEGY",
+        severity: "warn",
         title: "Missing test plan"
       })
     );
@@ -536,7 +537,8 @@ describe("validateAgentPlan", () => {
     expect(result.status).toBe("requires_approval");
     expect(result.findings).toContainEqual(
       expect.objectContaining({
-        severity: "approval_required",
+        code: "DEPENDENCY_CHANGE_INTENT",
+        severity: "fail",
         title: "New dependency intent"
       })
     );
@@ -554,7 +556,8 @@ describe("validateAgentPlan", () => {
     expect(result.status).toBe("requires_approval");
     expect(result.findings).toContainEqual(
       expect.objectContaining({
-        severity: "approval_required",
+        code: "CI_CHANGE_INTENT",
+        severity: "fail",
         title: "CI change intent"
       })
     );
@@ -569,7 +572,8 @@ describe("validateAgentPlan", () => {
     expect(result.status).toBe("requires_approval");
     expect(result.findings).toContainEqual(
       expect.objectContaining({
-        severity: "approval_required",
+        code: "TEST_WEAKENED",
+        severity: "fail",
         title: "Test weakening intent"
       })
     );
@@ -587,7 +591,8 @@ describe("validateAgentPlan", () => {
     expect(result.status).toBe("needs_revision");
     expect(result.findings).toContainEqual(
       expect.objectContaining({
-        severity: "warning",
+        code: "SCOPE_EXPANSION_WARN",
+        severity: "warn",
         title: "Files outside allowed scope",
         evidence: ["src/admin/AdminTable.tsx"]
       })

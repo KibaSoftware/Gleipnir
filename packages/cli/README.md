@@ -65,6 +65,7 @@ For each coding task, agents should:
 | `npx gleip report`              | Generate and summarize the canonical session report.                                    | Inspect the current session outcome.                                |
 | `npx gleip report --json`       | Generate the report and print stable JSON only.                                         | Local scripts, tooling, or debugging.                               |
 | `npx gleip check`               | Check the working tree against scope without updating the active status file.           | Run a manual drift check; add `--json` for machine-readable output. |
+| `npx gleip check --ci`          | Run the conservative CI check and fail only on documented blocking codes.               | Use in local CI without network access or telemetry.                |
 | `npx gleip brief`               | Print the active implementation brief.                                                  | Inspect or debug agent context.                                     |
 | `npx gleip stop`                | Archive the active session; `--clean` also removes its brief, budget, and status files. | End or reset a task session.                                        |
 | `npx gleip uninstall --dry-run` | Preview repository cleanup.                                                             | Review removals before uninstalling.                                |
@@ -88,9 +89,28 @@ Generated agent instructions use these commands through `npx --no-install` so th
 
 Normal workflow commands print concise 1-5 line summaries that confirm the completed phase and the next expected agent action. JSON modes remain machine-readable without human summary noise.
 
+## Stable Findings and CI
+
+Gleip 0.5.0 is conservative by design. It reports stable finding codes but only fails
+CI on high-confidence blocking findings. Scope expansion is warning-only because
+valid enterprise work often touches multiple files or modules.
+
+Severities are `info`, `warn`, `fail`, and `blocking`. Human output includes both code
+and severity, for example `[TEST_SKIPPED] blocking: Skipped test added`.
+
+`npx gleip check` remains advisory. `npx gleip check --ci` exits `1` only for
+`TEST_SKIPPED`, `TEST_DELETED`, or `LOCAL_ARTIFACT_INCLUDED`; otherwise it exits `0`.
+`NO_ACTIVE_SESSION` exits non-zero for commands that require a session. Dependency,
+lockfile, plan structure, and `SCOPE_EXPANSION_WARN` findings do not block CI in
+0.5.0.
+
+Before 1.0, Gleip favors precision over recall. False positives are worse than missed
+suspicious cases, multi-file changes are normal, and stable codes should improve
+clarity without creating extra justification work.
+
 ## Reports and Metrics
 
-Gleip 0.4.0 generates:
+Gleip 0.5.0 generates:
 
 - `.gleip/report.md`: concise scores, risks, findings, actions, and the recommended final-response block.
 - `.gleip/report.json`: stable machine-readable report data, warnings, evidence, summary, and efficiency estimate.
@@ -133,6 +153,7 @@ The `.gitignore` block added by `gleip init` ignores `.gleip/`. This local-only 
 - No account.
 - No dashboard.
 - No cloud or remote metrics.
+- No source, diff, prompt, file-name, repository-metadata, or usage-data upload.
 - Generated session and report files stay inside the repository.
 
 ## Known Limitations
@@ -167,6 +188,6 @@ pnpm pack:cli
 
 ## Status
 
-- Current release: `0.4.0`
+- Current release: `0.5.0`
 - License: Apache-2.0
 - Local-only developer preview

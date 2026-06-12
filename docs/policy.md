@@ -10,3 +10,23 @@ Initial policy areas:
 - Review readiness for explanations, risks, and verification.
 
 Policies should produce actionable feedback tied to repository facts. They should not rely on vague quality labels without evidence.
+
+## Precision-First Policy Before 1.0
+
+Gleip favors precision over recall before 1.0. False positives are worse than missed
+suspicious cases because noisy guardrails train agents and reviewers to ignore the signal.
+
+- Multi-file and cross-module changes are normal in enterprise repositories.
+- Scope expansion is not automatically a failure and is WARN-only in 0.5.0.
+- Local mode remains advisory unless a finding is clearly severe.
+- `gleip check --ci` fails only for documented, high-confidence blocking finding codes.
+- Gleip should reduce agent chatter, not require justification for every changed file.
+- Stable finding codes improve clarity and automation; they are not a proxy metric or a target to maximize.
+- Plan validation remains structural. It does not attempt semantic correctness judgments.
+- The goal is not to make every suspicious external benchmark case fail.
+- The goal is to preserve valid work while improving deterministic signal quality.
+
+Gleip remains local-only. It has no telemetry, analytics, network calls, cloud behavior,
+external APIs, LLM/API calls, source upload, repository metadata upload, hosted
+dashboard, or account system. Source code, diffs, prompts, file names, repository
+metadata, and usage data stay inside the local repository.

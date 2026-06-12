@@ -47,7 +47,11 @@ describe("detectScopeDrift", () => {
     });
 
     expect(result.status).toBe("warning");
-    expect(result.findings[0]?.title).toBe("File count exceeds scope budget");
+    expect(result.findings[0]).toMatchObject({
+      code: "SCOPE_LIMIT_EXCEEDED",
+      severity: "warn",
+      title: "File count exceeds scope budget"
+    });
   });
 
   it("warns when added lines exceed the soft limit", () => {
@@ -79,7 +83,33 @@ describe("detectScopeDrift", () => {
     });
 
     expect(result.status).toBe("approval_required");
-    expect(result.findings.map((finding) => finding.title)).toContain("Dependency files changed");
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({
+        code: "DEPENDENCY_FILE_CHANGED",
+        severity: "fail",
+        title: "Dependency files changed"
+      })
+    );
+  });
+
+  it("reports lockfile changes separately without making them CI-blocking", () => {
+    const result = detectScopeDrift({
+      scopeBudget: budget(),
+      gitDiffContext: diff({
+        changedFiles: ["pnpm-lock.yaml"],
+        fileStats: [{ path: "pnpm-lock.yaml", added: 1, deleted: 0 }],
+        totalLinesAdded: 1
+      })
+    });
+
+    expect(result.status).toBe("approval_required");
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({
+        code: "LOCKFILE_CHANGED",
+        severity: "fail",
+        title: "Lockfile changed"
+      })
+    );
   });
 
   it("requires approval when CI files change but CI is not allowed", () => {
@@ -107,8 +137,12 @@ describe("detectScopeDrift", () => {
     });
 
     expect(result.status).toBe("warning");
-    expect(result.findings.map((finding) => finding.title)).toContain(
-      "Files outside allowed scope"
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({
+        code: "SCOPE_EXPANSION_WARN",
+        severity: "warn",
+        title: "Files outside allowed scope"
+      })
     );
   });
 
@@ -140,7 +174,13 @@ describe("detectScopeDrift", () => {
     });
 
     expect(result.status).toBe("blocked");
-    expect(result.findings.map((finding) => finding.title)).toContain("Skipped test added");
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({
+        code: "TEST_SKIPPED",
+        severity: "blocking",
+        title: "Skipped test added"
+      })
+    );
   });
 
   it("blocks when env files change", () => {
@@ -153,8 +193,14 @@ describe("detectScopeDrift", () => {
       })
     });
 
-    expect(result.status).toBe("blocked");
-    expect(result.findings.map((finding) => finding.title)).toContain("Secret or env file changed");
+    expect(result.status).toBe("approval_required");
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({
+        code: "SECRET_FILE_CHANGED",
+        severity: "fail",
+        title: "Secret or env file changed"
+      })
+    );
   });
 
   it("blocks when a test file is deleted", () => {
@@ -170,7 +216,31 @@ describe("detectScopeDrift", () => {
     });
 
     expect(result.status).toBe("blocked");
-    expect(result.findings.map((finding) => finding.title)).toContain("Test file deleted");
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({
+        code: "TEST_DELETED",
+        severity: "blocking",
+        title: "Test file deleted"
+      })
+    );
+  });
+
+  it("blocks tracked local Gleip artifacts", () => {
+    const result = detectScopeDrift({
+      scopeBudget: budget(),
+      gitDiffContext: diff({
+        trackedLocalArtifacts: [".gleip/session.json"]
+      })
+    });
+
+    expect(result.status).toBe("blocked");
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({
+        code: "LOCAL_ARTIFACT_INCLUDED",
+        severity: "blocking",
+        title: "Local Gleip artifact included"
+      })
+    );
   });
 
   it("groups repeated outside-scope findings", () => {
@@ -183,7 +253,8 @@ describe("detectScopeDrift", () => {
 
     expect(findings).toHaveLength(1);
     expect(findings[0]).toMatchObject({
-      severity: "warning",
+      code: "SCOPE_EXPANSION_WARN",
+      severity: "warn",
       title: "Files outside allowed scope",
       message: "4 files changed outside the approved scope. Examples: src/a.ts, src/b.ts, src/c.ts."
     });
@@ -197,7 +268,8 @@ describe("detectScopeDrift", () => {
 
     expect(findings).toHaveLength(1);
     expect(findings[0]).toMatchObject({
-      severity: "approval_required",
+      code: "DEPENDENCY_FILE_CHANGED",
+      severity: "fail",
       title: "Dependency files changed",
       message:
         "2 dependency files changed, but dependency changes are not allowed by the budget. Examples: package.json, pnpm-lock.yaml."
@@ -207,19 +279,22 @@ describe("detectScopeDrift", () => {
   it("orders findings by severity", () => {
     const findings = normalizeDriftFindings([
       {
-        severity: "warning",
+        code: "SCOPE_EXPANSION_WARN",
+        severity: "warn",
         title: "Warning",
         message: "Warning.",
         category: "warning"
       },
       {
-        severity: "blocked",
+        code: "TEST_SKIPPED",
+        severity: "blocking",
         title: "Blocked",
         message: "Blocked.",
         category: "blocked"
       },
       {
-        severity: "approval_required",
+        code: "DEPENDENCY_FILE_CHANGED",
+        severity: "fail",
         title: "Approval",
         message: "Approval.",
         category: "approval"
@@ -227,9 +302,9 @@ describe("detectScopeDrift", () => {
     ]);
 
     expect(findings.map((finding) => finding.severity)).toEqual([
-      "blocked",
-      "approval_required",
-      "warning"
+      "blocking",
+      "fail",
+      "warn"
     ]);
   });
 
@@ -511,7 +586,8 @@ function reportDiff(overrides: Partial<ReportDiff> = {}): ReportDiff {
 
 function outsideFinding(file: string) {
   return {
-    severity: "warning" as const,
+    code: "SCOPE_EXPANSION_WARN" as const,
+    severity: "warn" as const,
     title: "Files outside allowed scope",
     message: `${file} changed outside the approved scope.`,
     file,
@@ -522,7 +598,8 @@ function outsideFinding(file: string) {
 
 function dependencyFinding(file: string) {
   return {
-    severity: "approval_required" as const,
+    code: "DEPENDENCY_FILE_CHANGED" as const,
+    severity: "fail" as const,
     title: "Dependency files changed",
     message: `${file} changed, but dependency changes are not allowed by the budget.`,
     file,

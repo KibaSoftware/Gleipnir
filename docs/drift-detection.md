@@ -32,7 +32,43 @@ This is useful when you intentionally want Gleip to consider pre-existing change
 - `within_scope`: No meaningful budget issues were detected.
 - `warning`: A soft limit was exceeded, such as file count or line count.
 - `approval_required`: The diff touches a path or category that needs explicit approval, such as dependency or CI files when the budget does not allow them.
-- `blocked`: The diff contains an objective hard-gate issue, such as skipped tests, deleted tests, or likely secret/env files.
+- `blocked`: The diff contains an objective hard-gate issue, such as skipped tests, deleted tests, or tracked local Gleip artifacts.
+
+Each finding also has a stable code and severity:
+
+- `info`: Context only.
+- `warn`: Advisory signal that does not block CI.
+- `fail`: Strong local finding that does not block CI in 0.5.0.
+- `blocking`: High-confidence finding eligible to block CI.
+
+Text output uses a concise form such as `[TEST_SKIPPED] blocking: Skipped test added`.
+
+## Finding Codes in 0.5.0
+
+| Code | Severity | Current signal |
+| --- | --- | --- |
+| `TEST_SKIPPED` | `blocking` | A skipped or pending test was added. |
+| `TEST_DELETED` | `blocking` | A test file was deleted. |
+| `TEST_WEAKENED` | `fail` | Explicit test weakening intent or a large test deletion was detected. |
+| `DEPENDENCY_FILE_CHANGED` | `fail` | A dependency manifest changed outside an allowed dependency task. |
+| `LOCKFILE_CHANGED` | `fail` | A lockfile changed outside an allowed dependency task. |
+| `LOCAL_ARTIFACT_INCLUDED` | `blocking` | A `.gleip/` session artifact is tracked by git. |
+| `NO_ACTIVE_SESSION` | `blocking` | A session-required command has no active session. |
+| `SCOPE_EXPANSION_WARN` | `warn` | Files are outside the inferred allowed paths. |
+| `PLAN_TOO_VAGUE` | `warn` | Structural plan details are too vague. |
+| `MISSING_TEST_STRATEGY` | `warn` | A structurally required test strategy is absent. |
+| `SCOPE_LIMIT_EXCEEDED` | `warn` | A soft file or line limit was exceeded. |
+| `GIT_UNAVAILABLE` | `warn` | Local git evidence could not be inspected. |
+| `CI_FILE_CHANGED` | `fail` | CI configuration changed outside an allowed CI task. |
+| `SECRET_FILE_CHANGED` | `fail` | A likely secret or env file changed. |
+| `APPROVAL_REQUIRED_PATH_CHANGED` | `fail` | An explicitly protected path changed. |
+| `BLOCKED_PATH_CHANGED` | `fail` | A configured blocked-without-approval path changed. |
+| `DEPENDENCY_CHANGE_INTENT` | `fail` | A plan explicitly proposes a disallowed dependency change. |
+| `CI_CHANGE_INTENT` | `fail` | A plan explicitly proposes a disallowed CI change. |
+| `BROAD_REFACTOR_INTENT` | `warn` or `fail` | A plan explicitly proposes a broad refactor outside the task type. |
+
+`MISSING_IMPLEMENTATION_CHANGE` is reserved but intentionally not emitted in 0.5.0.
+Gleip does not yet have a high-confidence structural detector for that condition.
 
 ## How Agents Should Use It
 
@@ -57,9 +93,9 @@ Gleip groups related findings to reduce noise. For example, several outside-scop
 
 Findings are ordered by severity:
 
-1. `blocked`
-2. `approval_required`
-3. `warning`
+1. `blocking`
+2. `fail`
+3. `warn`
 4. `info`
 
 The report ends with one next action so coding agents have a clear instruction.
@@ -82,6 +118,23 @@ JSON output includes:
 - `nextAction`
 
 `npx --no-install gleip check --json` is non-mutating, like the text check command.
+
+## CI Mode
+
+`npx --no-install gleip check --ci` is deterministic, non-interactive, local-only, and
+non-mutating. It exits `1` only when a documented blocking code is present and exits
+`0` for OK, INFO, WARN, and non-blocking FAIL findings.
+
+The 0.5.0 CI blocking codes are:
+
+- `TEST_SKIPPED`
+- `TEST_DELETED`
+- `LOCAL_ARTIFACT_INCLUDED`
+- `NO_ACTIVE_SESSION` for commands that require an active session
+
+Dependency and lockfile changes use `DEPENDENCY_FILE_CHANGED` and `LOCKFILE_CHANGED`
+with `fail` severity, but do not block `check --ci` in 0.5.0. Scope expansion uses
+`SCOPE_EXPANSION_WARN` with `warn` severity.
 
 ## Limitations
 

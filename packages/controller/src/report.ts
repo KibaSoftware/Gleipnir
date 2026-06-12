@@ -100,7 +100,15 @@ export interface ReportDiff {
 }
 
 export interface ReportDriftFinding {
-  severity: "info" | "warning" | "approval_required" | "blocked";
+  code?: string;
+  severity:
+    | "info"
+    | "warn"
+    | "fail"
+    | "blocking"
+    | "warning"
+    | "approval_required"
+    | "blocked";
   title: string;
   message: string;
   examples?: string[];
@@ -449,12 +457,16 @@ function addDriftWarnings(
     const severity = reportSeverity(finding.severity);
     const type = finding.category === "tests" ? "test_integrity" : "drift";
     addWarning(warnings, {
-      id: `drift.${slug(finding.category)}.${index + 1}`,
+      id: finding.code ?? `drift.${slug(finding.category)}.${index + 1}`,
       type,
       severity,
       message: finding.message,
       reason: `${finding.title} was detected by the local drift check.`,
-      evidence: [finding.title, ...(finding.examples ?? [])],
+      evidence: [
+        ...(finding.code === undefined ? [] : [finding.code]),
+        finding.title,
+        ...(finding.examples ?? [])
+      ],
       files: finding.examples ?? [],
       suggestedAction: finding.recommendation ?? null
     });
@@ -469,7 +481,8 @@ function addDriftWarnings(
     }
 
     if (finding.category === "tests") {
-      deductions.reviewReadiness += finding.severity === "blocked" ? 30 : 15;
+      deductions.reviewReadiness +=
+        finding.severity === "blocking" || finding.severity === "blocked" ? 30 : 15;
     }
   }
 }
@@ -675,7 +688,11 @@ function calculateEfficiency(
 function testIntegrityFor(input: GenerateSessionReportInput): TestIntegrity {
   const testFindings = input.driftResult.findings.filter((finding) => finding.category === "tests");
 
-  if (testFindings.some((finding) => finding.severity === "blocked")) {
+  if (
+    testFindings.some(
+      (finding) => finding.severity === "blocking" || finding.severity === "blocked"
+    )
+  ) {
     return "fail";
   }
 
@@ -722,7 +739,10 @@ function overEditRisk(
     findings.some(
       (finding) =>
         finding.category === "dependencies" &&
-        (finding.severity === "approval_required" || finding.severity === "blocked")
+        (finding.severity === "fail" ||
+          finding.severity === "blocking" ||
+          finding.severity === "approval_required" ||
+          finding.severity === "blocked")
     )
   ) {
     return "high";
@@ -877,15 +897,15 @@ function orderWarnings(warnings: ReportWarning[]): ReportWarning[] {
 }
 
 function reportSeverity(severity: ReportDriftFinding["severity"]): ReportWarningSeverity {
-  if (severity === "blocked") {
+  if (severity === "blocking" || severity === "blocked") {
     return "high";
   }
 
-  if (severity === "approval_required") {
+  if (severity === "fail" || severity === "approval_required") {
     return "high";
   }
 
-  if (severity === "warning") {
+  if (severity === "warn" || severity === "warning") {
     return "medium";
   }
 

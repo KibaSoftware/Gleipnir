@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.5.0
+
+### Added
+
+- Added stable finding codes and `info`, `warn`, `fail`, and `blocking` severities.
+- Added conservative `gleip check --ci` behavior with an explicit blocking-code allowlist.
+- Added non-zero exits and `NO_ACTIVE_SESSION` output for session-required commands.
+
+### Changed
+
+- Made scope expansion warning-only for 0.5.0.
+- Split dependency manifest and lockfile findings into stable codes.
+- Documented precision-first policy, CI behavior, and false-positive release gates.
+
+### Security / Privacy
+
+- Preserved local-only operation with no telemetry, network calls, cloud behavior,
+  external API/LLM calls, source upload, repository metadata upload, accounts, or
+  hosted dashboards.
+
 ## 0.4.0
 
 ### Added

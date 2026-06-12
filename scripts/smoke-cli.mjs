@@ -86,12 +86,12 @@ if (!validation.includes("Gleip plan check passed · ready to implement within s
 
 const report = JSON.parse(reportJson);
 
-if (version !== "0.4.0") {
-  throw new Error(`Expected Gleip 0.4.0, received: ${version}`);
+if (version !== "0.5.0") {
+  throw new Error(`Expected Gleip 0.5.0, received: ${version}`);
 }
 
-if (report.schemaVersion !== "1.0.0" || report.version !== "0.4.0") {
-  throw new Error(`Expected Gleip 0.4.0 report schema 1.0.0, received:\n${reportJson}`);
+if (report.schemaVersion !== "1.0.0" || report.version !== "0.5.0") {
+  throw new Error(`Expected Gleip 0.5.0 report schema 1.0.0, received:\n${reportJson}`);
 }
 
 if (!report.finalResponse?.markdown?.includes("### Gleip")) {

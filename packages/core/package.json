@@ -1,6 +1,6 @@
 {
   "name": "@gleip/core",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Shared domain primitives for Gleip.",
   "license": "Apache-2.0",
   "type": "module",
@@ -11,10 +11,15 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./findings": {
+      "types": "./findings.d.ts",
+      "default": "./dist/index.js"
     }
   },
   "files": [
     "dist",
+    "findings.d.ts",
     "README.md"
   ],
   "scripts": {

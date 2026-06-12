@@ -48,6 +48,12 @@ const NO_AGENT_SETUP_MESSAGE =
   "No specific agent setup detected. Created generic AGENTS.md. To prepare all supported agents, run `npx gleip init --all-agents`.";
 const GLEIP_VERSION = readPackageVersion();
 const REPORT_SCHEMA_VERSION = "1.0.0";
+const CI_BLOCKING_FINDING_CODES = new Set([
+  "TEST_SKIPPED",
+  "TEST_DELETED",
+  "LOCAL_ARTIFACT_INCLUDED",
+  "NO_ACTIVE_SESSION"
+]);
 
 type AgentTarget = (typeof SUPPORTED_AGENT_TARGETS)[number];
 type AgentInstructionTarget = (typeof AGENT_INSTRUCTION_TARGETS)[number];
@@ -112,6 +118,7 @@ interface CreateGleipCommandOptions {
   stdout?: OutputWriter;
   generateSessionReport?: GenerateSessionReport;
   renderSessionReportMarkdown?: RenderSessionReportMarkdown;
+  setExitCode?: (code: number) => void;
   validateAgentPlan?: ValidateAgentPlan;
 }
 
@@ -132,6 +139,7 @@ interface CommandRuntime {
   stdout: OutputWriter;
   generateSessionReport: GenerateSessionReport;
   renderSessionReportMarkdown: RenderSessionReportMarkdown;
+  setExitCode: (code: number) => void;
   validateAgentPlan: ValidateAgentPlan;
 }
 
@@ -164,6 +172,7 @@ interface StateChangeOptions {
 }
 
 interface StatusCommandOptions {
+  ci?: boolean;
   includeBaseline?: boolean;
   json?: boolean;
 }
@@ -248,6 +257,7 @@ interface GitDiffContext {
   totalLinesDeleted: number;
   isGitRepo: boolean;
   hasChanges: boolean;
+  trackedLocalArtifacts?: string[];
   error?: string;
 }
 
@@ -298,7 +308,15 @@ interface DriftResult {
 type DriftStatus = "within_scope" | "warning" | "approval_required" | "blocked";
 
 interface DriftFinding {
-  severity: "info" | "warning" | "approval_required" | "blocked";
+  code?: string;
+  severity:
+    | "info"
+    | "warn"
+    | "fail"
+    | "blocking"
+    | "warning"
+    | "approval_required"
+    | "blocked";
   title: string;
   message: string;
   file?: string;
@@ -365,7 +383,14 @@ interface ScopeBudget {
 type PlanValidationStatus = "approved" | "needs_revision" | "requires_approval";
 
 interface PlanValidationFinding {
-  severity: "info" | "warning" | "approval_required";
+  code?: string;
+  severity:
+    | "info"
+    | "warn"
+    | "fail"
+    | "blocking"
+    | "warning"
+    | "approval_required";
   title: string;
   message: string;
   recommendation?: string;
@@ -526,6 +551,11 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
     generateSessionReport: options.generateSessionReport ?? generateSessionReportFromPackage,
     renderSessionReportMarkdown:
       options.renderSessionReportMarkdown ?? renderSessionReportMarkdownFromPackage,
+    setExitCode:
+      options.setExitCode ??
+      ((code) => {
+        process.exitCode = code;
+      }),
     validateAgentPlan: options.validateAgentPlan ?? validateAgentPlanFromPackage
   };
   const program = new Command();
@@ -667,10 +697,12 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
       "--include-baseline",
       "Analyze the full working tree, including preflight baseline changes."
     )
+    .option("--ci", "Exit non-zero only for documented blocking finding codes.")
     .option("--json", "Print check result as JSON.")
     .action(async (commandOptions: StatusCommandOptions) => {
       await printStatus(runtime, {
         allowMissingSession: true,
+        ci: commandOptions.ci === true,
         commandName: "check",
         disabledSuffix: "Check can still be run manually.",
         includeBaseline: commandOptions.includeBaseline === true,
@@ -936,7 +968,7 @@ function printBrief(runtime: CommandRuntime): void {
   const briefPath = join(runtime.cwd, ".gleip", "brief.md");
 
   if (!existsSync(briefPath)) {
-    runtime.stdout('No gleip brief found. Run `npx --no-install gleip preflight "<task>"` first.');
+    reportNoActiveSession(runtime);
     return;
   }
 
@@ -952,9 +984,7 @@ async function validatePlan(
   const state = loadGleipState(runtime.cwd);
 
   if (!existsSync(sessionPath)) {
-    runtime.stdout(
-      'No active Gleip session found. Run `npx --no-install gleip preflight "<task>"` first.'
-    );
+    reportNoActiveSession(runtime);
     return;
   }
 
@@ -1070,6 +1100,7 @@ function printGleipState(runtime: CommandRuntime): void {
 
 interface PrintStatusOptions {
   allowMissingSession?: boolean;
+  ci?: boolean;
   commandName?: "check" | "status";
   disabledSuffix?: string;
   includeBaseline?: boolean;
@@ -1091,9 +1122,7 @@ async function printStatus(
       return;
     }
 
-    runtime.stdout(
-      'No active Gleip session found. Run `npx --no-install gleip preflight "<task>"` first.'
-    );
+    reportNoActiveSession(runtime);
     return;
   }
 
@@ -1171,6 +1200,8 @@ async function printStatus(
       options.json === true
     )
   );
+
+  applyCiExitCode(runtime, options, driftResult.findings);
 }
 
 async function printReport(runtime: CommandRuntime, options: ReportOptions): Promise<void> {
@@ -1301,6 +1332,8 @@ async function printCheckWithoutSession(
       options.json === true
     )
   );
+
+  applyCiExitCode(runtime, options, driftResult.findings);
 }
 
 async function doctor(runtime: CommandRuntime, options: DoctorOptions = {}): Promise<void> {
@@ -1349,7 +1382,7 @@ async function doctor(runtime: CommandRuntime, options: DoctorOptions = {}): Pro
   runtime.stdout(["gleip doctor", ...checks].join("\n"));
 
   if (failed) {
-    process.exitCode = 1;
+    runtime.setExitCode(1);
   }
 }
 
@@ -1460,9 +1493,7 @@ function stop(runtime: CommandRuntime, options: StopOptions): void {
   const sessionPath = join(gleipDir, "session.json");
 
   if (!existsSync(sessionPath)) {
-    runtime.stdout(
-      'No active Gleip session found. Run `npx --no-install gleip preflight "<task>"` first.'
-    );
+    reportNoActiveSession(runtime);
     return;
   }
 
@@ -2162,14 +2193,14 @@ function statusContent(
 
 ## Findings
 
-### Blocked
-${formatMarkdownFindingGroup(driftResult.findings, "blocked")}
+### Blocking
+${formatMarkdownFindingGroup(driftResult.findings, "blocking")}
 
-### Approval required
-${formatMarkdownFindingGroup(driftResult.findings, "approval_required")}
+### Fail
+${formatMarkdownFindingGroup(driftResult.findings, "fail")}
 
-### Warnings
-${formatMarkdownFindingGroup(driftResult.findings, "warning")}
+### Warn
+${formatMarkdownFindingGroup(driftResult.findings, "warn")}
 
 ### Info
 ${formatMarkdownFindingGroup(driftResult.findings, "info")}
@@ -2353,7 +2384,9 @@ function statusInteractionSummary(
   if (driftResult.findings.length > 0) {
     const highestFinding = orderFindings(driftResult.findings)[0];
     lines.push(
-      `Findings: ${driftResult.findings.length} · highest: ${highestFinding?.title ?? "review required"}`
+      `Findings: ${driftResult.findings.length} · highest: ${
+        highestFinding === undefined ? "review required" : formatFindingLabel(highestFinding)
+      }`
     );
   } else if (baseline.preExistingFilesIgnored > 0) {
     lines.push(`Baseline: ${baseline.preExistingFilesIgnored} pre-existing file(s) ignored`);
@@ -2380,7 +2413,7 @@ function planValidationInteractionSummary(result: PlanValidationResult): string 
   const firstFinding = orderPlanFindings(result.findings)[0];
 
   if (firstFinding !== undefined) {
-    lines.push(`Finding: ${firstFinding.title} · ${firstFinding.message}`);
+    lines.push(`Finding: ${formatFindingLabel(firstFinding)} · ${firstFinding.message}`);
   }
 
   lines.push(
@@ -2416,11 +2449,15 @@ function orderPlanFindings(findings: PlanValidationFinding[]): PlanValidationFin
 }
 
 function planSeverityRank(severity: PlanValidationFinding["severity"]): number {
-  if (severity === "approval_required") {
+  if (severity === "blocking") {
+    return 4;
+  }
+
+  if (severity === "fail" || severity === "approval_required") {
     return 3;
   }
 
-  if (severity === "warning") {
+  if (severity === "warn" || severity === "warning") {
     return 2;
   }
 
@@ -2483,9 +2520,11 @@ function nextActionForReport(driftResult: DriftResult): string {
 
 function formatMarkdownFindingGroup(
   findings: DriftFinding[],
-  severity: DriftFinding["severity"]
+  severity: "info" | "warn" | "fail" | "blocking"
 ): string {
-  const group = orderFindings(findings).filter((finding) => finding.severity === severity);
+  const group = orderFindings(findings).filter(
+    (finding) => displaySeverity(finding.severity) === severity
+  );
 
   if (group.length === 0) {
     return "- None";
@@ -2498,7 +2537,7 @@ function formatMarkdownFinding(finding: DriftFinding): string {
   const recommendation =
     finding.recommendation === undefined ? "" : ` Recommendation: ${finding.recommendation}`;
 
-  return `- ${finding.title}: ${finding.message}${recommendation}`;
+  return `- ${formatFindingLabel(finding)}: ${finding.message}${recommendation}`;
 }
 
 function orderFindings(findings: DriftFinding[]): DriftFinding[] {
@@ -2514,19 +2553,70 @@ function orderFindings(findings: DriftFinding[]): DriftFinding[] {
 }
 
 function severityRank(severity: DriftFinding["severity"]): number {
-  if (severity === "blocked") {
+  if (severity === "blocking" || severity === "blocked") {
     return 4;
   }
 
-  if (severity === "approval_required") {
+  if (severity === "fail" || severity === "approval_required") {
     return 3;
   }
 
-  if (severity === "warning") {
+  if (severity === "warn" || severity === "warning") {
     return 2;
   }
 
   return 1;
+}
+
+function formatFindingLabel(finding: {
+  code?: string;
+  severity: DriftFinding["severity"] | PlanValidationFinding["severity"];
+  title: string;
+}): string {
+  const code = finding.code === undefined ? "" : `[${finding.code}] `;
+
+  return `${code}${displaySeverity(finding.severity)}: ${finding.title}`;
+}
+
+function displaySeverity(
+  severity: DriftFinding["severity"] | PlanValidationFinding["severity"]
+): "info" | "warn" | "fail" | "blocking" {
+  if (severity === "blocking" || severity === "blocked") {
+    return "blocking";
+  }
+
+  if (severity === "fail" || severity === "approval_required") {
+    return "fail";
+  }
+
+  if (severity === "warn" || severity === "warning") {
+    return "warn";
+  }
+
+  return "info";
+}
+
+function applyCiExitCode(
+  runtime: CommandRuntime,
+  options: PrintStatusOptions,
+  findings: DriftFinding[]
+): void {
+  if (
+    options.ci === true &&
+    findings.some(
+      (finding) =>
+        finding.code !== undefined && CI_BLOCKING_FINDING_CODES.has(finding.code)
+    )
+  ) {
+    runtime.setExitCode(1);
+  }
+}
+
+function reportNoActiveSession(runtime: CommandRuntime): void {
+  runtime.stdout(
+    '[NO_ACTIVE_SESSION] blocking: No active Gleip session found. Run: npx gleip preflight "<task>"'
+  );
+  runtime.setExitCode(1);
 }
 
 function driftRiskLabel(status: DriftStatus): "none" | "low" | "medium" | "high" {

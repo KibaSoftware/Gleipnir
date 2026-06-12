@@ -68,6 +68,17 @@ describe("collectWorkingTreeDiff", () => {
     expect(diff.hasChanges).toBe(false);
   });
 
+  it("reports tracked Gleip sidecar artifacts separately", () => {
+    const repo = createCommittedRepo();
+    writeRepoFile(repo, ".gleip/session.json", "{}\n");
+    git(repo, ["add", "-f", ".gleip/session.json"]);
+
+    const diff = collectWorkingTreeDiff({ cwd: repo });
+
+    expect(diff.changedFiles).toEqual([]);
+    expect(diff.trackedLocalArtifacts).toEqual([".gleip/session.json"]);
+  });
+
   it("filters unchanged pre-existing files from a baseline", () => {
     const baseline = createSessionBaseline(
       {

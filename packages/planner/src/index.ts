@@ -1,5 +1,6 @@
 import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import type { FindingCode, FindingSeverity } from "@gleip/core/findings";
 
 export const packageName = "@gleip/planner";
 
@@ -143,7 +144,8 @@ export interface AgentPlan {
 export type PlanValidationStatus = "approved" | "needs_revision" | "requires_approval";
 
 export interface PlanValidationFinding {
-  severity: "info" | "warning" | "approval_required";
+  code: FindingCode;
+  severity: FindingSeverity;
   title: string;
   message: string;
   recommendation?: string;
@@ -862,7 +864,8 @@ export function validateAgentPlan(input: ValidateAgentPlanInput): PlanValidation
     !input.scopeBudget.hardGates.newDependenciesAllowed
   ) {
     findings.push({
-      severity: "approval_required",
+      code: "DEPENDENCY_CHANGE_INTENT",
+      severity: "fail",
       title: "New dependency intent",
       message: "The plan mentions dependency changes, but this scope budget does not allow new dependencies.",
       recommendation: "Revise the plan to avoid dependency changes, or ask the user for explicit approval.",
@@ -872,7 +875,8 @@ export function validateAgentPlan(input: ValidateAgentPlanInput): PlanValidation
 
   if (parsedPlan.mentionsCiChanges && !input.scopeBudget.hardGates.ciChangesAllowed) {
     findings.push({
-      severity: "approval_required",
+      code: "CI_CHANGE_INTENT",
+      severity: "fail",
       title: "CI change intent",
       message: "The plan mentions CI or workflow changes, but this scope budget does not allow CI changes.",
       recommendation: "Revise the plan to avoid CI changes, or ask the user for explicit approval.",
@@ -882,7 +886,8 @@ export function validateAgentPlan(input: ValidateAgentPlanInput): PlanValidation
 
   if (parsedPlan.mentionsTestWeakening) {
     findings.push({
-      severity: "approval_required",
+      code: "TEST_WEAKENED",
+      severity: "fail",
       title: "Test weakening intent",
       message: "The plan mentions skipping, deleting, disabling, or weakening tests.",
       recommendation: "Revise the plan to preserve tests and CI. Do not weaken tests without explicit user approval."
@@ -893,7 +898,8 @@ export function validateAgentPlan(input: ValidateAgentPlanInput): PlanValidation
 
   if (input.scopeBudget.requiredTests && parsedPlan.proposedTests.length === 0) {
     findings.push({
-      severity: "warning",
+      code: "MISSING_TEST_STRATEGY",
+      severity: "warn",
       title: "Missing test plan",
       message: "The scope budget requires tests, but the plan does not mention adding, updating, or running tests.",
       recommendation: "Add a focused test plan covering the intended behavior."
@@ -904,7 +910,8 @@ export function validateAgentPlan(input: ValidateAgentPlanInput): PlanValidation
     const severeRefactor = detectsHighRiskRefactor(input.planText);
 
     findings.push({
-      severity: severeRefactor ? "approval_required" : "warning",
+      code: "BROAD_REFACTOR_INTENT",
+      severity: severeRefactor ? "fail" : "warn",
       title: "Broad refactor intent",
       message: "The plan uses broad refactor wording, but the task was not classified as a refactor.",
       recommendation: "Narrow the plan to the smallest change needed for the task, or ask for approval."
@@ -913,7 +920,8 @@ export function validateAgentPlan(input: ValidateAgentPlanInput): PlanValidation
 
   if (isPlanVague(parsedPlan)) {
     findings.push({
-      severity: "warning",
+      code: "PLAN_TOO_VAGUE",
+      severity: "warn",
       title: "Vague implementation plan",
       message: "The plan is too short or does not name concrete files, tests, dependencies, or actions.",
       recommendation: "Provide files to inspect or change and tests to add or run."
@@ -1219,7 +1227,8 @@ function validatePlanFilesAgainstScope(
 
   if (approvalRequiredPaths.length > 0) {
     findings.push({
-      severity: "approval_required",
+      code: "APPROVAL_REQUIRED_PATH_CHANGED",
+      severity: "fail",
       title: "Files require approval",
       message: `${approvalRequiredPaths.length} proposed file(s) are outside allowed scope and match approval-required paths or categories.`,
       recommendation: "Ask the user for approval before planning these files, or revise the plan to stay in allowed paths.",
@@ -1229,7 +1238,8 @@ function validatePlanFilesAgainstScope(
 
   if (warningPaths.length > 0) {
     findings.push({
-      severity: "warning",
+      code: "SCOPE_EXPANSION_WARN",
+      severity: "warn",
       title: "Files outside allowed scope",
       message: `${warningPaths.length} proposed file(s) are outside the allowed scope budget paths.`,
       recommendation: "Revise the plan to stay within allowed paths, or explain why the extra files are required.",
@@ -1346,11 +1356,15 @@ function isPlanVague(parsedPlan: AgentPlan): boolean {
 }
 
 function planValidationStatus(findings: PlanValidationFinding[]): PlanValidationStatus {
-  if (findings.some((finding) => finding.severity === "approval_required")) {
+  if (
+    findings.some(
+      (finding) => finding.severity === "fail" || finding.severity === "blocking"
+    )
+  ) {
     return "requires_approval";
   }
 
-  if (findings.some((finding) => finding.severity === "warning")) {
+  if (findings.some((finding) => finding.severity === "warn")) {
     return "needs_revision";
   }
 
@@ -1394,11 +1408,15 @@ function orderPlanFindings(findings: PlanValidationFinding[]): PlanValidationFin
 }
 
 function planFindingSeverityRank(severity: PlanValidationFinding["severity"]): number {
-  if (severity === "approval_required") {
+  if (severity === "blocking") {
+    return 4;
+  }
+
+  if (severity === "fail") {
     return 3;
   }
 
-  if (severity === "warning") {
+  if (severity === "warn") {
     return 2;
   }
 

@@ -69,13 +69,21 @@ importers:
         specifier: ^3.0.0
         version: 3.25.76
 
-  packages/controller: {}
+  packages/controller:
+    dependencies:
+      '@gleip/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/core: {}
 
   packages/github-action: {}
 
-  packages/planner: {}
+  packages/planner:
+    dependencies:
+      '@gleip/core':
+        specifier: workspace:*
+        version: link:../core
 
 packages:
 
