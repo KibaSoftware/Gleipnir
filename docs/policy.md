@@ -17,12 +17,15 @@ Gleip favors precision over recall before 1.0. False positives are worse than mi
 suspicious cases because noisy guardrails train agents and reviewers to ignore the signal.
 
 - Multi-file and cross-module changes are normal in enterprise repositories.
-- Scope expansion is not automatically a failure and is WARN-only in 0.5.0.
+- Ordinary source and test scope expansion is not automatically a failure and remains warning-based in 0.7.0.
 - Local mode remains advisory unless a finding is clearly severe.
 - `gleip check --ci` fails only for documented, high-confidence blocking finding codes.
 - Gleip should reduce agent chatter, not require justification for every changed file.
 - Stable finding codes improve clarity and automation; they are not a proxy metric or a target to maximize.
 - Plan validation remains structural. It does not attempt semantic correctness judgments.
+- Scope rationale checks require named scope, a reason, and verification, but do not
+  judge whether the rationale is true.
+- Dependency requirement checks use task text, plan text, and local manifests only.
 - The goal is not to make every suspicious external benchmark case fail.
 - The goal is to preserve valid work while improving deterministic signal quality.
 

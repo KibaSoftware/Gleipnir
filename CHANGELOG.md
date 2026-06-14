@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.7.0
+
+### Added
+
+- Added `gleip preflight --file <path>` for full task contracts.
+- Added `gleip validate-plan --file <path>` with clear missing-plan and mixed-input errors.
+- Added first-class read-only context-file tracking in task and plan analysis.
+- Added deterministic structural checks for implementation, file/module scope,
+  verification, and risk/scope-rationale information.
+- Added local mentioned-file validation, explicit new-file handling, output-artifact
+  handling, and excluded vendor/generated edit-target findings.
+- Added scope-expansion rationale checks that require a named area, reason, and
+  verification without judging whether the rationale is semantically correct.
+- Added local dependency requirement conflict detection for common Python and Node
+  packages using task text, plan text, and repository manifests only.
+- Added stable structural finding codes for plan sections, mentioned files, scope
+  expansion, dependency conflicts, risky changes, and scope-budget mismatches.
+- Added declared-breadth detection so explicit multi-area release, feature, docs,
+  tests, package metadata, and smoke-test tasks scale their scope budgets.
+
+### Changed
+
+- Included the scope-hygiene work prepared for 0.6.0 in this 0.7.0 release.
+- Excluded dependency, virtualenv, vendor, generated, cache, coverage, and binary
+  build artifacts from repository relevance and scope discovery.
+- Narrowed scope budgets for explicit `modify only` task constraints.
+- Recognized existing-test runs, smoke tests, typechecks, compile checks, and
+  common test runners as valid plan verification.
+- Kept ordinary source and test expansion advisory while preserving stronger
+  findings for dependency, lockfile, CI, secret, and security-sensitive changes.
+- Distinguished changes aligned with declared task scope from unexpected expansion;
+  scope rationale is required only beyond the declared contract.
+- Scaled budgets from generic declared files, directories, subsystems, categories,
+  and multi-area work lists without treating release/version wording as a scope
+  shortcut.
+- Kept specifically named test paths exact instead of opening every test directory.
+- Allowed explicitly requested package metadata/version edits without opening
+  dependency additions or lockfile changes.
+- Updated plan wording to request clarification and scope rationale rather than
+  claiming semantic plan quality.
+
+### Security / Privacy
+
+- Preserved local-only operation with no telemetry, analytics, network calls,
+  cloud behavior, external API/LLM calls, source upload, repository metadata
+  upload, dashboards, or account systems.
+
 ## 0.5.0
 
 ### Added

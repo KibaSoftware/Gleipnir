@@ -9,7 +9,7 @@ import {
   unlinkSync,
   writeFileSync
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { Command } from "commander";
@@ -114,6 +114,7 @@ interface CreateGleipCommandOptions {
   loadConfig?: LoadConfig;
   nodeVersion?: string;
   now?: () => Date;
+  readStdin?: () => string;
   stderr?: OutputWriter;
   stdout?: OutputWriter;
   generateSessionReport?: GenerateSessionReport;
@@ -135,6 +136,7 @@ interface CommandRuntime {
   loadConfig: LoadConfig;
   nodeVersion: string;
   now: () => Date;
+  readStdin: () => string;
   stderr: OutputWriter;
   stdout: OutputWriter;
   generateSessionReport: GenerateSessionReport;
@@ -182,6 +184,10 @@ interface ValidatePlanOptions {
   json?: boolean;
 }
 
+interface PreflightOptions {
+  file?: string;
+}
+
 interface ReportOptions {
   json?: boolean;
 }
@@ -217,6 +223,7 @@ interface TaskClassification {
 interface DiscoverRepoContextOptions {
   classification: TaskClassification;
   config: GleipConfigLike;
+  contextFiles?: string[];
   cwd: string;
   task: string;
 }
@@ -236,6 +243,9 @@ interface ValidateAgentPlanInput {
   planText: string;
   scopeBudget: ScopeBudget;
   config?: GleipConfigLike;
+  cwd?: string;
+  taskText?: string;
+  contextFiles?: string[];
 }
 
 interface CollectWorkingTreeDiffOptions {
@@ -331,6 +341,7 @@ interface RepoContext {
   likelyRelevantFiles: RepoFileMatch[];
   likelyTestFiles: RepoFileMatch[];
   existingPatternMatches: RepoPatternMatch[];
+  contextFiles?: string[];
   dependencyFiles: string[];
   ciFiles: string[];
   riskyMatchedPaths: string[];
@@ -365,6 +376,7 @@ interface ScopeBudget {
   };
   hardGates: {
     newDependenciesAllowed: boolean;
+    dependencyMetadataChangesAllowed?: boolean;
     ciChangesAllowed: boolean;
     skippedTestsAllowed: boolean;
     deletedTestsAllowed: boolean;
@@ -400,6 +412,13 @@ interface PlanValidationFinding {
 interface AgentPlan {
   rawText: string;
   proposedFiles: string[];
+  contextFiles?: string[];
+  outputFiles?: string[];
+  fileMentions?: Array<{
+    path: string;
+    role: "edit" | "context" | "output";
+    markedNew: boolean;
+  }>;
   proposedDependencies: string[];
   proposedTests: string[];
   mentionedRiskyAreas: string[];
@@ -505,6 +524,7 @@ interface GleipSession {
   baseline?: BaselineSummary;
   scopeBudgetSummary?: ScopeBudgetSummary;
   task?: string;
+  taskFile?: string;
   [key: string]: unknown;
 }
 
@@ -546,6 +566,7 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
     loadConfig: options.loadConfig ?? loadConfigFromPackage,
     nodeVersion: options.nodeVersion ?? process.versions.node,
     now: options.now ?? (() => new Date()),
+    readStdin: options.readStdin ?? (() => readFileSync(0, "utf8")),
     stderr: options.stderr ?? ((message) => console.error(message)),
     stdout: options.stdout ?? ((message) => console.log(message)),
     generateSessionReport: options.generateSessionReport ?? generateSessionReportFromPackage,
@@ -602,21 +623,28 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
   program
     .command("preflight")
     .description("Create a local-only brief, scope budget, and status baseline for a task.")
-    .argument("<task>", "Task the coding agent is about to implement.")
+    .argument("[task...]", "Task the coding agent is about to implement.")
+    .option("--file <path>", "Read the full task text from a file.")
     .addHelpText(
       "after",
-      '\nExample:\n  $ gleip preflight "Fix the checkout discount calculation bug without changing payment provider integration or checkout routing"'
+      [
+        "",
+        "Examples:",
+        '  $ gleip preflight "Fix the checkout discount calculation bug without changing payment provider integration or checkout routing"',
+        "  $ gleip preflight --file task.md"
+      ].join("\n")
     )
-    .action(async (task: string) => {
-      await preflight(runtime, task);
+    .action(async (task: string[] | undefined, commandOptions: PreflightOptions) => {
+      await runPreflightCommand(runtime, task ?? [], commandOptions);
     });
 
   program
     .command("start")
     .description("Alias for gleip preflight.")
-    .argument("<task>", "Task the coding agent is about to implement.")
-    .action(async (task: string) => {
-      await preflight(runtime, task);
+    .argument("[task...]", "Task the coding agent is about to implement.")
+    .option("--file <path>", "Read the full task text from a file.")
+    .action(async (task: string[] | undefined, commandOptions: PreflightOptions) => {
+      await runPreflightCommand(runtime, task ?? [], commandOptions);
     });
 
   program
@@ -877,13 +905,67 @@ function initRepository(runtime: CommandRuntime, options: InitOptions): void {
   runtime.stdout(output.join("\n"));
 }
 
-async function preflight(runtime: CommandRuntime, task: string): Promise<void> {
+async function runPreflightCommand(
+  runtime: CommandRuntime,
+  taskParts: string[],
+  options: PreflightOptions
+): Promise<void> {
+  const inlineTask = taskParts.join(" ").trim();
+
+  if (inlineTask.length > 0 && options.file !== undefined) {
+    runtime.stdout("Provide either inline task text or --file, not both.");
+    runtime.setExitCode(1);
+    return;
+  }
+
+  if (options.file !== undefined) {
+    const taskPath = resolve(runtime.cwd, options.file);
+
+    if (!existsSync(taskPath)) {
+      runtime.stdout(`Task file not found: ${options.file}.`);
+      runtime.setExitCode(1);
+      return;
+    }
+
+    if (!statSync(taskPath).isFile()) {
+      runtime.stdout(`Task file is not a file: ${options.file}.`);
+      runtime.setExitCode(1);
+      return;
+    }
+
+    const task = readFileSync(taskPath, "utf8");
+
+    if (task.trim().length === 0) {
+      runtime.stdout(`Task file is empty: ${options.file}.`);
+      runtime.setExitCode(1);
+      return;
+    }
+
+    await preflight(runtime, task, normalizeRepoRelativePath(runtime.cwd, taskPath));
+    return;
+  }
+
+  if (inlineTask.length === 0) {
+    runtime.stdout('No task text provided. Pass `gleip preflight "<task>"` or use `--file <path>`.');
+    runtime.setExitCode(1);
+    return;
+  }
+
+  await preflight(runtime, inlineTask);
+}
+
+async function preflight(
+  runtime: CommandRuntime,
+  task: string,
+  taskFile?: string
+): Promise<void> {
   const state = loadGleipState(runtime.cwd);
   const config = (await runtime.loadConfig(runtime.cwd)) as GleipConfigLike;
   const classification = await runtime.classifyTask(task);
   const repoContext = await runtime.discoverRepoContext({
     cwd: runtime.cwd,
     task,
+    contextFiles: taskFile === undefined ? [] : [taskFile],
     config,
     classification
   });
@@ -921,6 +1003,7 @@ async function preflight(runtime: CommandRuntime, task: string): Promise<void> {
         version: 1,
         sessionId,
         task,
+        ...(taskFile === undefined ? {} : { taskFile }),
         classification,
         repoContext,
         baseline: summarizeBaseline(baseline),
@@ -997,26 +1080,30 @@ async function validatePlan(
     return;
   }
 
-  const planText = readPlanText(runtime, planTextParts, options);
+  const planInput = readPlanText(runtime, planTextParts, options);
 
-  if (planText === undefined) {
+  if (planInput === undefined) {
     return;
   }
 
-  if (planText.trim().length === 0) {
+  if (planInput.text.trim().length === 0) {
     runtime.stdout(
       'No plan text provided. Pass `npx --no-install gleip validate-plan "<plan>"`, use `--file <file>`, or pipe a plan on stdin.'
     );
+    runtime.setExitCode(1);
     return;
   }
 
   const config = (await runtime.loadConfig(runtime.cwd)) as GleipConfigLike;
-  const result = await runtime.validateAgentPlan({
-    planText,
-    scopeBudget,
-    config
-  });
   const session = readJsonFile<GleipSession>(sessionPath);
+  const result = await runtime.validateAgentPlan({
+    planText: planInput.text,
+    scopeBudget,
+    config,
+    cwd: runtime.cwd,
+    taskText: session.value?.task ?? "",
+    contextFiles: planInput.planFile === undefined ? [] : [planInput.planFile]
+  });
 
   if (session.value !== undefined) {
     writeFileSync(
@@ -1054,27 +1141,51 @@ function readPlanText(
   runtime: CommandRuntime,
   planTextParts: string[],
   options: ValidatePlanOptions
-): string | undefined {
+): { text: string; planFile?: string } | undefined {
+  if (options.file !== undefined && planTextParts.length > 0) {
+    runtime.stdout("Provide either inline plan text or --file, not both.");
+    runtime.setExitCode(1);
+    return undefined;
+  }
+
   if (options.file !== undefined) {
     const planPath = resolve(runtime.cwd, options.file);
 
     if (!existsSync(planPath)) {
       runtime.stdout(`Plan file not found: ${options.file}.`);
+      runtime.setExitCode(1);
       return undefined;
     }
 
-    return readFileSync(planPath, "utf8");
+    if (!statSync(planPath).isFile()) {
+      runtime.stdout(`Plan file is not a file: ${options.file}.`);
+      runtime.setExitCode(1);
+      return undefined;
+    }
+
+    const text = readFileSync(planPath, "utf8");
+
+    if (text.trim().length === 0) {
+      runtime.stdout(`Plan file is empty: ${options.file}.`);
+      runtime.setExitCode(1);
+      return undefined;
+    }
+
+    return {
+      text,
+      planFile: normalizeRepoRelativePath(runtime.cwd, planPath)
+    };
   }
 
   if (planTextParts.length > 0) {
-    return planTextParts.join(" ");
+    return { text: planTextParts.join(" ") };
   }
 
   if (!process.stdin.isTTY) {
-    return readFileSync(0, "utf8");
+    return { text: runtime.readStdin() };
   }
 
-  return "";
+  return { text: "" };
 }
 
 function printGleipState(runtime: CommandRuntime): void {
@@ -2230,12 +2341,17 @@ function emptyRepoContext(): RepoContext {
     likelyRelevantFiles: [],
     likelyTestFiles: [],
     existingPatternMatches: [],
+    contextFiles: [],
     dependencyFiles: [],
     ciFiles: [],
     riskyMatchedPaths: [],
     scannedFileCount: 0,
     skippedDirectoryCount: 0
   };
+}
+
+function normalizeRepoRelativePath(cwd: string, absolutePath: string): string {
+  return relative(cwd, absolutePath).replace(/\\/gu, "/");
 }
 
 function summarizeScopeBudget(scopeBudget: ScopeBudget): ScopeBudgetSummary {

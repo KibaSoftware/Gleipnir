@@ -223,6 +223,57 @@ describe("discoverRepoContext", () => {
     );
   });
 
+  it("excludes dependency, virtualenv, vendor, generated, and binary artifacts", () => {
+    const repo = createTempRepo({
+      "src/tool.py": "def tool(): pass",
+      "tests/test_tool.py": "def test_tool(): pass",
+      "venv/lib/python/site-packages/tool.py": "def tool(): pass",
+      ".venv/lib/python/site-packages/test_tool.py": "def test_tool(): pass",
+      "vendor/tool.ts": "export const tool = true",
+      "generated/tool.ts": "export const tool = true",
+      "build/tool.js": "export const tool = true",
+      "coverage/tool.test.ts": "describe('tool', () => {})",
+      "__pycache__/tool.pyc": "generated",
+      "src/tool.pyc": "generated",
+      "src/tool.js.map": "{}"
+    });
+
+    const context = discoverRepoContext({
+      cwd: repo,
+      task: "Update tool behavior"
+    });
+    const allEvidencePaths = [
+      ...context.likelyRelevantFiles.map((file) => file.path),
+      ...context.likelyTestFiles.map((file) => file.path),
+      ...context.existingPatternMatches.map((match) => match.path)
+    ];
+
+    expect(allEvidencePaths).toContain("src/tool.py");
+    expect(allEvidencePaths).toContain("tests/test_tool.py");
+    expect(allEvidencePaths).not.toEqual(
+      expect.arrayContaining([
+        "venv/lib/python/site-packages/tool.py",
+        ".venv/lib/python/site-packages/test_tool.py",
+        "vendor/tool.ts",
+        "generated/tool.ts",
+        "build/tool.js",
+        "coverage/tool.test.ts",
+        "__pycache__/tool.pyc",
+        "src/tool.pyc",
+        "src/tool.js.map"
+      ])
+    );
+
+    const budget = createScopeBudget({
+      task: "Update tool behavior",
+      classification: classifyTask("Update tool behavior"),
+      repoContext: context
+    });
+    expect(budget.allowedPaths.join("\n")).not.toMatch(
+      /(?:^|\/)(?:venv|\.venv|vendor|generated|build|coverage|__pycache__)(?:\/|$)/u
+    );
+  });
+
   it("detects likely relevant files from filenames and paths", () => {
     const repo = createTempRepo({
       "src/features/users/UserTable.tsx": "import { toCsv } from '../../utils/csv';",
@@ -446,6 +497,196 @@ describe("createScopeBudget", () => {
     expect(budget.hardGates.deletedTestsAllowed).toBe(false);
     expect(budget.hardGates.secretsAllowed).toBe(false);
   });
+
+  it("narrows modify-only tasks to the explicit file", () => {
+    const task = "Modify only src/foo.ts";
+    const budget = createScopeBudget({
+      task,
+      classification: classifyTask(task),
+      repoContext: repoContextWith({
+        likelyRelevantFiles: [
+          { path: "src/foo.ts", score: 10, reasons: ["match"] },
+          { path: "src/unrelated.ts", score: 9, reasons: ["match"] }
+        ],
+        likelyTestFiles: [{ path: "src/foo.test.ts", score: 8, reasons: ["match"] }]
+      })
+    });
+
+    expect(budget.expectedFilesChanged).toEqual({ min: 1, max: 1 });
+    expect(budget.softLimits.maxFilesChanged).toBe(1);
+    expect(budget.allowedPaths).toEqual(["src/foo.ts"]);
+  });
+
+  it("keeps dependency files protected for explicit-only tasks", () => {
+    const task = "Edit only scripts/tool.py and do not change dependencies";
+    const budget = createScopeBudget({
+      task,
+      classification: classifyTask(task),
+      repoContext: repoContextWith({
+        dependencyFiles: ["package.json", "pnpm-lock.yaml"],
+        likelyRelevantFiles: [
+          { path: "scripts/tool.py", score: 10, reasons: ["match"] },
+          { path: "package.json", score: 9, reasons: ["match"] }
+        ]
+      })
+    });
+
+    expect(budget.allowedPaths).toEqual(["scripts/tool.py"]);
+    expect(budget.expectedFilesChanged).toEqual({ min: 1, max: 1 });
+    expect(budget.hardGates.newDependenciesAllowed).toBe(false);
+    expect(budget.blockedWithoutApproval).toContain(
+      "Dependency files: package.json, pnpm-lock.yaml"
+    );
+  });
+
+  it("allows an explicitly requested test file with an explicit-only implementation file", () => {
+    const task = "Modify only src/foo.ts and update tests/foo.test.ts";
+    const budget = createScopeBudget({
+      task,
+      classification: classifyTask(task),
+      repoContext: emptyRepoContext()
+    });
+
+    expect(budget.expectedFilesChanged).toEqual({ min: 2, max: 2 });
+    expect(budget.allowedPaths).toEqual(["src/foo.ts", "tests/foo.test.ts"]);
+  });
+
+  it("does not add test files when an explicit-only task only runs existing tests", () => {
+    const task = "Modify only src/foo.ts and run existing tests";
+    const budget = createScopeBudget({
+      task,
+      classification: classifyTask(task),
+      repoContext: repoContextWith({
+        likelyTestFiles: [{ path: "tests/foo.test.ts", score: 8, reasons: ["match"] }]
+      })
+    });
+
+    expect(budget.expectedFilesChanged).toEqual({ min: 1, max: 1 });
+    expect(budget.allowedPaths).toEqual(["src/foo.ts"]);
+  });
+
+  it("allows explicitly targeted generated paths only as suspicious exact targets", () => {
+    const task = "Modify only vendor/tool.ts";
+    const budget = createScopeBudget({
+      task,
+      classification: classifyTask(task),
+      repoContext: emptyRepoContext()
+    });
+
+    expect(budget.allowedPaths).toEqual(["vendor/tool.ts"]);
+    expect(budget.suspiciousPaths).toContain("vendor/tool.ts");
+  });
+
+  it("keeps context files out of allowed paths", () => {
+    const task = "Use FULL_CONTEXT.md as context and modify src/foo.ts";
+    const budget = createScopeBudget({
+      task,
+      classification: classifyTask(task),
+      repoContext: repoContextWith({
+        contextFiles: ["FULL_CONTEXT.md"],
+        likelyRelevantFiles: [
+          { path: "FULL_CONTEXT.md", score: 20, reasons: ["match"] },
+          { path: "src/foo.ts", score: 10, reasons: ["match"] }
+        ]
+      })
+    });
+
+    expect(budget.allowedPaths).toContain("src/foo.ts");
+    expect(budget.allowedPaths).not.toContain("FULL_CONTEXT.md");
+  });
+
+  it("keeps a declared narrow bugfix to one implementation file and an optional focused test", () => {
+    const task =
+      "Modify only src/foo.ts to fix the null input bug. Do not change dependencies, CI, config, or unrelated modules. Add or run focused tests.";
+    const budget = createScopeBudget({
+      task,
+      classification: classifyTask(task),
+      repoContext: repoContextWith({
+        dependencyFiles: ["package.json"],
+        ciFiles: [".github/workflows/ci.yml"]
+      })
+    });
+
+    expect(budget.expectedFilesChanged).toEqual({ min: 1, max: 2 });
+    expect(budget.softLimits.maxFilesChanged).toBe(2);
+    expect(budget.allowedPaths).toContain("src/foo.ts");
+    expect(budget.allowedPaths).toContain("tests");
+    expect(budget.allowedPaths).not.toContain("src/unrelated.ts");
+    expect(budget.hardGates.newDependenciesAllowed).toBe(false);
+    expect(budget.hardGates.ciChangesAllowed).toBe(false);
+  });
+
+  it("scales budget and allowed paths for a generic feature spanning declared areas", () => {
+    const task =
+      "Implement a new local CLI feature spanning planner, CLI, tests, docs, and smoke coverage.";
+    const budget = createScopeBudget({
+      task,
+      classification: classifyTask(task),
+      repoContext: emptyRepoContext()
+    });
+
+    expect(budget.taskType).not.toBe("test_only");
+    expect(budget.requiredTests).toBe(true);
+    expect(budget.expectedFilesChanged.max).toBeGreaterThanOrEqual(15);
+    expect(budget.softLimits.maxFilesChanged).toBeGreaterThan(6);
+    expect(budget.allowedPaths).toEqual(
+      expect.arrayContaining([
+        "packages/cli",
+        "packages/planner",
+        "tests",
+        "docs",
+        "scripts/*smoke*"
+      ])
+    );
+    expect(budget.hardGates.newDependenciesAllowed).toBe(false);
+    expect(budget.hardGates.dependencyMetadataChangesAllowed).toBe(false);
+    expect(budget.hardGates.ciChangesAllowed).toBe(false);
+  });
+
+  it("keeps specifically named source and test files exact", () => {
+    const task = "Update src/foo.ts and tests/foo.test.ts to cover the null input fix.";
+    const budget = createScopeBudget({
+      task,
+      classification: classifyTask(task),
+      repoContext: emptyRepoContext()
+    });
+
+    expect(budget.allowedPaths).toEqual(["src/foo.ts", "tests/foo.test.ts"]);
+    expect(budget.allowedPaths).not.toContain("tests");
+    expect(budget.allowedPaths).not.toContain("**/*.test.*");
+  });
+
+  it("extracts generic named subsystem lists without relying on release wording", () => {
+    const task = "Update parser, formatter, and renderer with shared tests.";
+    const budget = createScopeBudget({
+      task,
+      classification: classifyTask(task),
+      repoContext: emptyRepoContext()
+    });
+
+    expect(budget.allowedPaths).toEqual(
+      expect.arrayContaining([
+        "src/parser",
+        "src/formatter",
+        "src/renderer",
+        "tests"
+      ])
+    );
+    expect(budget.softLimits.maxFilesChanged).toBeGreaterThan(6);
+  });
+
+  it("does not treat release wording alone as package metadata scope", () => {
+    const task = "Update docs for a release.";
+    const budget = createScopeBudget({
+      task,
+      classification: classifyTask(task),
+      repoContext: repoContextWith({ dependencyFiles: ["package.json"] })
+    });
+
+    expect(budget.allowedPaths).toContain("docs");
+    expect(budget.allowedPaths).not.toContain("package.json");
+    expect(budget.hardGates.dependencyMetadataChangesAllowed).toBe(false);
+  });
 });
 
 describe("parseAgentPlan", () => {
@@ -485,6 +726,38 @@ describe("parseAgentPlan", () => {
     const plan = parseAgentPlan("Rewrite the users feature across the app.");
 
     expect(plan.mentionsBroadRefactor).toBe(true);
+  });
+
+  it("distinguishes context references from proposed edits", () => {
+    const plan = parseAgentPlan(
+      "Read FULL_CONTEXT.md for reference, then modify src/features/users/UserTable.tsx."
+    );
+
+    expect(plan.contextFiles).toContain("FULL_CONTEXT.md");
+    expect(plan.proposedFiles).toEqual(["src/features/users/UserTable.tsx"]);
+  });
+
+  it("recognizes read-only context phrases for neutral filenames", () => {
+    const plan = parseAgentPlan(
+      "Read from README.md for reference and modify src/features/users/UserTable.tsx."
+    );
+
+    expect(plan.contextFiles).toContain("README.md");
+    expect(plan.proposedFiles).toEqual(["src/features/users/UserTable.tsx"]);
+  });
+
+  it("keeps based-on files read-only while retaining the edit target", () => {
+    const plan = parseAgentPlan("Update src/foo.ts based on README.md and run tests.");
+
+    expect(plan.contextFiles).toContain("README.md");
+    expect(plan.proposedFiles).toEqual(["src/foo.ts"]);
+  });
+
+  it("treats an explicit context-file edit as a proposed edit", () => {
+    const plan = parseAgentPlan("Modify FULL_CONTEXT.md to correct the requirements.");
+
+    expect(plan.contextFiles).not.toContain("FULL_CONTEXT.md");
+    expect(plan.proposedFiles).toContain("FULL_CONTEXT.md");
   });
 });
 
@@ -579,6 +852,20 @@ describe("validateAgentPlan", () => {
     );
   });
 
+  it("detects proposed test deletion", () => {
+    const result = validateAgentPlan({
+      planText: "Update src/users.ts and delete tests for the legacy behavior.",
+      scopeBudget: sampleScopeBudget({ requiredTests: false })
+    });
+
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({
+        code: "TEST_WEAKENED",
+        severity: "fail"
+      })
+    );
+  });
+
   it("warns for files outside allowed paths", () => {
     const result = validateAgentPlan({
       planText: "Modify src/admin/AdminTable.tsx for the focused behavior.",
@@ -596,6 +883,783 @@ describe("validateAgentPlan", () => {
         title: "Files outside allowed scope",
         evidence: ["src/admin/AdminTable.tsx"]
       })
+    );
+  });
+
+  it.each([
+    "Modify src/foo.ts and run existing tests",
+    "Modify src/foo.ts and run focused pytest",
+    "Modify src/foo.ts and run CLI smoke test",
+    "Modify src/foo.ts and run typecheck"
+  ])("recognizes structural verification in: %s", (planText) => {
+    const result = validateAgentPlan({
+      planText,
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["src/foo.ts"],
+        requiredTests: true
+      })
+    });
+
+    expect(result.findings).not.toContainEqual(
+      expect.objectContaining({ code: "MISSING_TEST_STRATEGY" })
+    );
+  });
+
+  it("does not treat a context reference as an out-of-scope edit", () => {
+    const result = validateAgentPlan({
+      planText: "Read FULL_CONTEXT.md for reference, then modify src/foo.ts and run tests.",
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["src/foo.ts"],
+        requiredTests: true
+      })
+    });
+
+    expect(result.status).toBe("approved");
+    expect(result.parsedPlan.contextFiles).toContain("FULL_CONTEXT.md");
+  });
+
+  it("checks a proposed context-file edit normally", () => {
+    const result = validateAgentPlan({
+      planText: "Modify FULL_CONTEXT.md and run tests.",
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["src/foo.ts"],
+        requiredTests: true
+      })
+    });
+
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({
+        code: "SCOPE_EXPANSION_WARN",
+        evidence: ["FULL_CONTEXT.md"]
+      })
+    );
+  });
+
+  it("passes a well-structured plan", () => {
+    const result = validateAgentPlan({
+      planText: [
+        "## Files",
+        "- src/foo.ts",
+        "## Implementation",
+        "- Update src/foo.ts with the requested behavior.",
+        "## Verification",
+        "- Run focused tests and typecheck."
+      ].join("\n"),
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["src/foo.ts"],
+        requiredTests: true
+      })
+    });
+
+    expect(result.status).toBe("approved");
+    expect(result.findings).toEqual([]);
+  });
+
+  it("warns when implementation structure is missing", () => {
+    const result = validateAgentPlan({
+      planText: ["Files:", "- src/foo.ts", "Verification:", "- Run tests."].join("\n"),
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["src/foo.ts"],
+        requiredTests: true
+      })
+    });
+
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({ code: "PLAN_REQUIRED_SECTION_MISSING", severity: "warn" })
+    );
+  });
+
+  it("warns when a code plan has no file or module scope", () => {
+    const result = validateAgentPlan({
+      planText: ["Implementation: Update the normalization behavior.", "Verification: Run tests."].join(
+        "\n"
+      ),
+      scopeBudget: sampleScopeBudget({ requiredTests: true })
+    });
+
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({ code: "PLAN_NO_FILES_MENTIONED", severity: "warn" })
+    );
+  });
+
+  it("accepts free-form plans with clear structural signals", () => {
+    const result = validateAgentPlan({
+      planText: "Update src/foo.ts to normalize input, then run focused tests and typecheck.",
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["src/foo.ts"],
+        requiredTests: true
+      })
+    });
+
+    expect(result.status).toBe("approved");
+  });
+
+  it("keeps the existing missing-test warning and adds a structural verification code", () => {
+    const result = validateAgentPlan({
+      planText: "Update src/foo.ts with the requested behavior.",
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["src/foo.ts"],
+        requiredTests: true
+      })
+    });
+
+    expect(result.findings.map((finding) => finding.code)).toEqual(
+      expect.arrayContaining(["MISSING_TEST_STRATEGY", "PLAN_NO_VERIFICATION"])
+    );
+  });
+
+  it("accepts existing mentioned files", () => {
+    const repo = createTempRepo({ "src/foo.ts": "export const foo = true;" });
+    const result = validateAgentPlan({
+      cwd: repo,
+      planText: "Update src/foo.ts and run tests.",
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["src/foo.ts"],
+        requiredTests: true
+      })
+    });
+
+    expect(result.findings).not.toContainEqual(
+      expect.objectContaining({ code: "PLAN_MENTIONED_FILE_MISSING" })
+    );
+  });
+
+  it("accepts missing files explicitly marked for creation", () => {
+    const repo = createTempRepo({});
+    const result = validateAgentPlan({
+      cwd: repo,
+      planText: "Create src/new-tool.ts and run tests.",
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["src/new-tool.ts"],
+        requiredTests: true
+      })
+    });
+
+    expect(result.findings).not.toContainEqual(
+      expect.objectContaining({ code: "PLAN_MENTIONED_FILE_MISSING" })
+    );
+  });
+
+  it("warns for missing unmarked edit targets", () => {
+    const repo = createTempRepo({});
+    const result = validateAgentPlan({
+      cwd: repo,
+      planText: "Update src/missing.ts and run tests.",
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["src/missing.ts"],
+        requiredTests: true
+      })
+    });
+
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({
+        code: "PLAN_MENTIONED_FILE_MISSING",
+        evidence: ["src/missing.ts"]
+      })
+    );
+  });
+
+  it("keeps context references out of missing edit-target findings", () => {
+    const repo = createTempRepo({ "src/foo.ts": "export const foo = true;" });
+    const result = validateAgentPlan({
+      cwd: repo,
+      planText: "Read TASK.md for reference, update src/foo.ts, and run tests.",
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["src/foo.ts"],
+        requiredTests: true
+      })
+    });
+
+    expect(result.parsedPlan.contextFiles).toContain("TASK.md");
+    expect(result.findings).not.toContainEqual(
+      expect.objectContaining({ code: "PLAN_MENTIONED_FILE_MISSING", evidence: ["TASK.md"] })
+    );
+  });
+
+  it.each([
+    "vendor/tool.ts",
+    "venv/lib/tool.py",
+    "node_modules/pkg/index.js"
+  ])("warns when excluded path %s is an edit target", (path) => {
+    const result = validateAgentPlan({
+      planText: `Update ${path} and run tests.`,
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: [path],
+        requiredTests: true
+      })
+    });
+
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({ code: "PLAN_VENDOR_EDIT_TARGET", evidence: [path] })
+    );
+  });
+
+  it("treats generated output artifacts as output rather than implementation scope", () => {
+    const result = validateAgentPlan({
+      planText: [
+        "Implementation: Update src/foo.ts.",
+        "Output: emit generated artifact dist/report.json.",
+        "Verification: Run tests."
+      ].join("\n"),
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["src/foo.ts"],
+        requiredTests: true
+      })
+    });
+
+    expect(result.parsedPlan.proposedFiles).toEqual(["src/foo.ts"]);
+    expect(result.parsedPlan.outputFiles).toEqual(["dist/report.json"]);
+  });
+
+  it("requires scope rationale for ordinary source expansion without hard blocking it", () => {
+    const result = validateAgentPlan({
+      planText: "Update src/foo.ts and src/extra.ts, then run tests.",
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["src/foo.ts"],
+        requiredTests: true
+      })
+    });
+
+    expect(result.status).toBe("needs_revision");
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({
+        code: "SCOPE_EXPANSION_RATIONALE_REQUIRED",
+        severity: "warn",
+        evidence: ["src/extra.ts"]
+      })
+    );
+    expect(result.findings).not.toContainEqual(
+      expect.objectContaining({ code: "PLAN_HARD_GATE_VIOLATION", evidence: ["src/extra.ts"] })
+    );
+  });
+
+  it("accepts a specific scope expansion rationale structurally", () => {
+    const result = validateAgentPlan({
+      planText: [
+        "Update src/foo.ts.",
+        "src/billing/invoice.ts is included because ownership changes affect invoices; verify with billing invoice tests."
+      ].join("\n"),
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["src/foo.ts"],
+        requiredTests: true
+      })
+    });
+
+    expect(result.findings).not.toContainEqual(
+      expect.objectContaining({ code: "SCOPE_EXPANSION_RATIONALE_REQUIRED" })
+    );
+    expect(result.findings).not.toContainEqual(
+      expect.objectContaining({ code: "SCOPE_EXPANSION_RATIONALE_VAGUE" })
+    );
+  });
+
+  it("warns when scope expansion rationale is vague", () => {
+    const result = validateAgentPlan({
+      planText: "Update src/foo.ts and src/extra.ts because it is needed for implementation. Run tests.",
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["src/foo.ts"],
+        requiredTests: true
+      })
+    });
+
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({
+        code: "SCOPE_EXPANSION_RATIONALE_VAGUE",
+        evidence: ["src/extra.ts"]
+      })
+    );
+  });
+
+  it("detects a required missing Python dependency when additions are blocked", () => {
+    const repo = createTempRepo({ "pyproject.toml": "[project]\ndependencies = []\n" });
+    const result = validateAgentPlan({
+      cwd: repo,
+      taskText: "Build the CLI with Typer.",
+      planText: "Implementation: use Typer in src/cli.py. Verification: run tests.",
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["src/cli.py"],
+        hardGates: sampleHardGates({ newDependenciesAllowed: false })
+      })
+    });
+
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({
+        code: "DEPENDENCY_REQUIREMENT_CONFLICT",
+        severity: "warn",
+        evidence: ["typer"]
+      })
+    );
+  });
+
+  it("does not report a declared Python dependency conflict", () => {
+    const repo = createTempRepo({
+      "pyproject.toml": '[project]\ndependencies = ["typer>=0.12"]\n'
+    });
+    const result = validateAgentPlan({
+      cwd: repo,
+      taskText: "Build the CLI with Typer.",
+      planText: "Update src/cli.py using Typer and run tests.",
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["src/cli.py"],
+        hardGates: sampleHardGates({ newDependenciesAllowed: false })
+      })
+    });
+
+    expect(result.findings).not.toContainEqual(
+      expect.objectContaining({ code: "DEPENDENCY_REQUIREMENT_CONFLICT" })
+    );
+  });
+
+  it("does not treat a preferred dependency as required", () => {
+    const repo = createTempRepo({ "pyproject.toml": "[project]\ndependencies = []\n" });
+    const result = validateAgentPlan({
+      cwd: repo,
+      taskText: "Prefer Typer if available.",
+      planText: "Update src/cli.py and run tests.",
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["src/cli.py"],
+        hardGates: sampleHardGates({ newDependenciesAllowed: false })
+      })
+    });
+
+    expect(result.findings).not.toContainEqual(
+      expect.objectContaining({ code: "DEPENDENCY_REQUIREMENT_CONFLICT" })
+    );
+  });
+
+  it("requires approval for substituting a required dependency", () => {
+    const result = validateAgentPlan({
+      taskText: "Build the CLI with Typer.",
+      planText: "Use argparse instead of Typer in src/cli.py and run pytest.",
+      scopeBudget: sampleScopeBudget({ allowedPaths: ["src/cli.py"] })
+    });
+
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({
+        code: "DEPENDENCY_SUBSTITUTION_REQUIRES_APPROVAL",
+        severity: "fail",
+        evidence: ["typer -> argparse"]
+      })
+    );
+  });
+
+  it("detects a required missing Node dependency", () => {
+    const repo = createTempRepo({ "package.json": '{"dependencies":{}}' });
+    const result = validateAgentPlan({
+      cwd: repo,
+      taskText: "Validate payloads with Zod.",
+      planText: "Update src/schema.ts using Zod and run tests.",
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["src/schema.ts"],
+        hardGates: sampleHardGates({ newDependenciesAllowed: false })
+      })
+    });
+
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({
+        code: "DEPENDENCY_REQUIREMENT_CONFLICT",
+        evidence: ["zod"]
+      })
+    );
+  });
+
+  it("does not report a declared Node test dependency conflict", () => {
+    const repo = createTempRepo({
+      "package.json": '{"devDependencies":{"vitest":"^2.0.0"}}'
+    });
+    const result = validateAgentPlan({
+      cwd: repo,
+      taskText: "Use Vitest for verification.",
+      planText: "Update src/foo.ts and run Vitest.",
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["src/foo.ts"],
+        hardGates: sampleHardGates({ newDependenciesAllowed: false })
+      })
+    });
+
+    expect(result.findings).not.toContainEqual(
+      expect.objectContaining({ code: "DEPENDENCY_REQUIREMENT_CONFLICT" })
+    );
+  });
+
+  it("uses the task request as package.json rationale", () => {
+    const result = validateAgentPlan({
+      taskText: "Update package.json to expose the CLI bin entry.",
+      planText: "Update package.json and verify with npm pack smoke test.",
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["package.json"],
+        requiredTests: true
+      })
+    });
+
+    expect(result.findings).not.toContainEqual(
+      expect.objectContaining({ code: "RISKY_CHANGE_RATIONALE_REQUIRED" })
+    );
+  });
+
+  it("requires rationale for an unrequested package.json change", () => {
+    const result = validateAgentPlan({
+      taskText: "Update the CLI output.",
+      planText: "Update package.json and run tests.",
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["package.json"],
+        requiredTests: true
+      })
+    });
+
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({
+        code: "RISKY_CHANGE_RATIONALE_REQUIRED",
+        severity: "fail",
+        evidence: ["package.json"]
+      })
+    );
+  });
+
+  it("requires approval and rationale for a lockfile change caused by dependency addition", () => {
+    const result = validateAgentPlan({
+      taskText: "Update the CLI output.",
+      planText:
+        "Add Zod dependency and update package-lock.json because dependency resolution changes; verify with npm test.",
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["src"],
+        hardGates: sampleHardGates({ newDependenciesAllowed: false })
+      })
+    });
+
+    expect(result.findings.map((finding) => finding.code)).toEqual(
+      expect.arrayContaining([
+        "DEPENDENCY_CHANGE_INTENT",
+        "PLAN_HARD_GATE_VIOLATION",
+        "PLAN_RISKY_FILE_MENTIONED"
+      ])
+    );
+  });
+
+  it("requires rationale for an unrequested CI change", () => {
+    const result = validateAgentPlan({
+      taskText: "Update the CLI output.",
+      planText: "Update .github/workflows/ci.yml and run tests.",
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: [".github/workflows/ci.yml"],
+        hardGates: sampleHardGates({ ciChangesAllowed: true })
+      })
+    });
+
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({
+        code: "RISKY_CHANGE_RATIONALE_REQUIRED",
+        evidence: [".github/workflows/ci.yml"]
+      })
+    );
+  });
+
+  it("keeps specifically explained ordinary config changes advisory", () => {
+    const result = validateAgentPlan({
+      taskText: "Update the CLI output.",
+      planText:
+        "Update tsconfig.json because the CLI declaration output needs NodeNext resolution; verify with typecheck and build.",
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["tsconfig.json"],
+        requiredTests: true
+      })
+    });
+
+    expect(result.findings).not.toContainEqual(
+      expect.objectContaining({ code: "RISKY_CHANGE_RATIONALE_REQUIRED" })
+    );
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({ code: "PLAN_RISKY_FILE_MENTIONED", severity: "warn" })
+    );
+  });
+
+  it("warns when proposed file count exceeds the soft maximum", () => {
+    const result = validateAgentPlan({
+      planText: "Update src/a.ts, src/b.ts, and src/c.ts, then run tests.",
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["src"],
+        softLimits: { maxFilesChanged: 2, maxLinesAdded: 200, maxLinesDeleted: 120 }
+      })
+    });
+
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({ code: "PLAN_SCOPE_EXCEEDS_BUDGET", severity: "warn" })
+    );
+  });
+
+  it("emits a stable hard-gate finding for blocked dependency paths", () => {
+    const result = validateAgentPlan({
+      planText: "Update package.json because a new Zod dependency is required; verify with tests.",
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["src"],
+        hardGates: sampleHardGates({ newDependenciesAllowed: false })
+      })
+    });
+
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({ code: "PLAN_HARD_GATE_VIOLATION", severity: "fail" })
+    );
+  });
+
+  it("keeps every structural finding machine-readable", () => {
+    const result = validateAgentPlan({
+      planText: "Update src/missing.ts.",
+      cwd: createTempRepo({}),
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["src/foo.ts"],
+        requiredTests: true
+      })
+    });
+
+    for (const finding of result.findings) {
+      expect(finding.code).toEqual(expect.any(String));
+      expect(finding.severity).toEqual(expect.any(String));
+      expect(finding.title).toEqual(expect.any(String));
+      expect(finding.message).toEqual(expect.any(String));
+      expect(finding.recommendation).toEqual(expect.any(String));
+    }
+  });
+
+  it("accepts a narrow bugfix and focused test while flagging unrelated and risky expansion", () => {
+    const task =
+      "Modify only src/foo.ts to fix the null input bug. Do not change dependencies, CI, config, or unrelated modules. Add or run focused tests.";
+    const scopeBudget = createScopeBudget({
+      task,
+      classification: classifyTask(task),
+      repoContext: repoContextWith({
+        dependencyFiles: ["package.json"],
+        ciFiles: [".github/workflows/ci.yml"]
+      })
+    });
+    const aligned = validateAgentPlan({
+      taskText: task,
+      planText: "Update src/foo.ts, add tests/foo.test.ts, and run focused tests.",
+      scopeBudget
+    });
+    const expanded = validateAgentPlan({
+      taskText: task,
+      planText: [
+        "Update src/foo.ts and src/unrelated.ts.",
+        "Update package.json, tsconfig.json, and .github/workflows/ci.yml.",
+        "Run focused tests."
+      ].join("\n"),
+      scopeBudget
+    });
+
+    expect(aligned.findings).not.toContainEqual(
+      expect.objectContaining({ code: "PLAN_SCOPE_OUTSIDE_BUDGET" })
+    );
+    expect(expanded.findings).toContainEqual(
+      expect.objectContaining({
+        code: "SCOPE_EXPANSION_RATIONALE_REQUIRED",
+        evidence: expect.arrayContaining(["src/unrelated.ts"])
+      })
+    );
+    expect(expanded.findings.map((finding) => finding.code)).toEqual(
+      expect.arrayContaining([
+        "PLAN_RISKY_FILE_MENTIONED",
+        "PLAN_HARD_GATE_VIOLATION"
+      ])
+    );
+  });
+
+  it("accepts a generic broad feature aligned with every declared area", () => {
+    const task =
+      "Implement a new local CLI feature spanning planner, CLI, tests, docs, and smoke coverage.";
+    const scopeBudget = createScopeBudget({
+      task,
+      classification: classifyTask(task),
+      repoContext: emptyRepoContext()
+    });
+    const result = validateAgentPlan({
+      taskText: task,
+      planText: [
+        "## Files",
+        "- Add packages/planner/src/local-feature.ts",
+        "- Add packages/cli/src/local-feature.ts",
+        "- Add tests/local-feature.test.ts",
+        "- Add docs/local-feature.md",
+        "- Add scripts/local-feature-smoke.mjs",
+        "## Implementation",
+        "- Implement the feature across the declared planner and CLI areas.",
+        "## Verification",
+        "- Run tests and smoke coverage."
+      ].join("\n"),
+      scopeBudget
+    });
+
+    expect(result.status).toBe("approved");
+    expect(result.summary).toContain("aligned with declared task scope");
+    expect(result.findings).toEqual([]);
+  });
+
+  it("accepts a generic subsystem's declared source, config, tests, docs, and output", () => {
+    const task =
+      "Add a new report exporter with source files, config, tests, README updates, and sample output.";
+    const scopeBudget = createScopeBudget({
+      task,
+      classification: classifyTask(task),
+      repoContext: emptyRepoContext()
+    });
+    const result = validateAgentPlan({
+      taskText: task,
+      planText: [
+        "## Files",
+        "- Add src/report-exporter.ts",
+        "- Add report-exporter.config.ts",
+        "- Add tests/report-exporter.test.ts",
+        "- Update README.md",
+        "- The exporter emits samples/report.json as a sample output artifact.",
+        "## Implementation",
+        "- Implement the report exporter and its declared config.",
+        "## Verification",
+        "- Run report exporter tests and verify the sample output."
+      ].join("\n"),
+      scopeBudget
+    });
+
+    expect(result.findings).not.toContainEqual(
+      expect.objectContaining({ code: "PLAN_SCOPE_OUTSIDE_BUDGET" })
+    );
+    expect(result.findings).not.toContainEqual(
+      expect.objectContaining({ code: "RISKY_CHANGE_RATIONALE_REQUIRED" })
+    );
+    expect(result.parsedPlan.outputFiles).toContain("samples/report.json");
+  });
+
+  it("keeps dependency additions gated inside a generic broad task", () => {
+    const task =
+      "Implement a new local CLI feature spanning planner, CLI, tests, docs, and smoke coverage.";
+    const scopeBudget = createScopeBudget({
+      task,
+      classification: classifyTask(task),
+      repoContext: repoContextWith({ dependencyFiles: ["package.json"] })
+    });
+    const result = validateAgentPlan({
+      taskText: task,
+      planText: [
+        "Update packages/planner/src/index.ts and package.json.",
+        "Add Zod dependency for validation.",
+        "Run tests and smoke coverage."
+      ].join("\n"),
+      scopeBudget
+    });
+
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({ code: "DEPENDENCY_CHANGE_INTENT", severity: "fail" })
+    );
+  });
+
+  it("requires clarification when a narrow task proposes a broad plan", () => {
+    const task = "Fix typo in CLI help text.";
+    const scopeBudget = createScopeBudget({
+      task,
+      classification: classifyTask(task),
+      repoContext: emptyRepoContext()
+    });
+    const result = validateAgentPlan({
+      taskText: task,
+      planText: [
+        "Update packages/cli/src/index.ts and packages/planner/src/index.ts.",
+        "Add Zod dependency in package.json.",
+        "Update .github/workflows/ci.yml.",
+        "Run tests."
+      ].join("\n"),
+      scopeBudget
+    });
+
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({
+        code: "SCOPE_EXPANSION_RATIONALE_REQUIRED",
+        severity: "warn"
+      })
+    );
+    expect(result.findings.map((finding) => finding.code)).toEqual(
+      expect.arrayContaining([
+        "DEPENDENCY_CHANGE_INTENT",
+        "CI_CHANGE_INTENT",
+        "PLAN_HARD_GATE_VIOLATION"
+      ])
+    );
+  });
+
+  it("accepts package metadata and changelog only when explicitly requested", () => {
+    const task = "Update package version and changelog for a release.";
+    const scopeBudget = createScopeBudget({
+      task,
+      classification: classifyTask(task),
+      repoContext: repoContextWith({ dependencyFiles: ["package.json"] })
+    });
+    const result = validateAgentPlan({
+      taskText: task,
+      planText: [
+        "## Files",
+        "- Update package.json.",
+        "- Update CHANGELOG.md.",
+        "## Implementation",
+        "- Update the declared package version and changelog.",
+        "## Verification",
+        "- Run npm pack."
+      ].join("\n"),
+      scopeBudget
+    });
+
+    expect(result.findings).not.toContainEqual(
+      expect.objectContaining({ code: "PLAN_SCOPE_OUTSIDE_BUDGET" })
+    );
+    expect(result.findings).not.toContainEqual(
+      expect.objectContaining({ code: "RISKY_CHANGE_RATIONALE_REQUIRED" })
+    );
+  });
+
+  it("does not broaden one named test file to every test path", () => {
+    const task = "Update src/foo.ts and tests/foo.test.ts for the null input fix.";
+    const scopeBudget = createScopeBudget({
+      task,
+      classification: classifyTask(task),
+      repoContext: emptyRepoContext()
+    });
+    const result = validateAgentPlan({
+      taskText: task,
+      planText: [
+        "Update src/foo.ts, tests/foo.test.ts, and tests/unrelated.test.ts.",
+        "Run tests/foo.test.ts."
+      ].join("\n"),
+      scopeBudget
+    });
+
+    expect(scopeBudget.allowedPaths).toEqual(["src/foo.ts", "tests/foo.test.ts"]);
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({
+        code: "SCOPE_EXPANSION_RATIONALE_REQUIRED",
+        evidence: ["tests/unrelated.test.ts"]
+      })
+    );
+  });
+
+  it("keeps unrelated CI changes outside a broad declared task", () => {
+    const task = "Implement a feature spanning planner, CLI, tests, and docs.";
+    const scopeBudget = createScopeBudget({
+      task,
+      classification: classifyTask(task),
+      repoContext: repoContextWith({ ciFiles: [".github/workflows/ci.yml"] })
+    });
+    const result = validateAgentPlan({
+      taskText: task,
+      planText: [
+        "Update packages/planner/src/index.ts and packages/cli/src/index.ts.",
+        "Update .github/workflows/ci.yml.",
+        "Run tests."
+      ].join("\n"),
+      scopeBudget
+    });
+
+    expect(result.findings.map((finding) => finding.code)).toEqual(
+      expect.arrayContaining([
+        "CI_CHANGE_INTENT",
+        "RISKY_CHANGE_RATIONALE_REQUIRED",
+        "PLAN_HARD_GATE_VIOLATION"
+      ])
     );
   });
 });
@@ -757,6 +1821,7 @@ function repoContextWith(overrides: Partial<RepoContext>): RepoContext {
     likelyRelevantFiles: [],
     likelyTestFiles: [],
     existingPatternMatches: [],
+    contextFiles: [],
     dependencyFiles: [],
     ciFiles: [],
     riskyMatchedPaths: [],

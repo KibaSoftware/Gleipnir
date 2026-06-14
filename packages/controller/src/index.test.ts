@@ -112,6 +112,57 @@ describe("detectScopeDrift", () => {
     );
   });
 
+  it("allows declared package metadata edits without allowing dependency additions", () => {
+    const metadataBudget = budget({
+      allowedPaths: ["package.json", "**/package.json"],
+      hardGates: {
+        ...budget().hardGates,
+        dependencyMetadataChangesAllowed: true
+      }
+    });
+    const versionOnly = detectScopeDrift({
+      scopeBudget: metadataBudget,
+      gitDiffContext: diff({
+        changedFiles: ["package.json"],
+        fileStats: [{ path: "package.json", added: 1, deleted: 1 }],
+        rawDiff: [
+          "diff --git a/package.json b/package.json",
+          "--- a/package.json",
+          "+++ b/package.json",
+          '@@ -2 +2 @@',
+          '-  "version": "0.6.0",',
+          '+  "version": "0.7.0",'
+        ].join("\n"),
+        totalLinesAdded: 1,
+        totalLinesDeleted: 1
+      })
+    });
+    const dependencyAddition = detectScopeDrift({
+      scopeBudget: metadataBudget,
+      gitDiffContext: diff({
+        changedFiles: ["package.json"],
+        fileStats: [{ path: "package.json", added: 1, deleted: 0 }],
+        rawDiff: [
+          "diff --git a/package.json b/package.json",
+          "--- a/package.json",
+          "+++ b/package.json",
+          '@@ -10,2 +10,3 @@',
+          '   "dependencies": {',
+          '+    "zod": "^3.0.0",',
+          '     "yaml": "^2.0.0"'
+        ].join("\n"),
+        totalLinesAdded: 1
+      })
+    });
+
+    expect(versionOnly.findings).not.toContainEqual(
+      expect.objectContaining({ code: "DEPENDENCY_FILE_CHANGED" })
+    );
+    expect(dependencyAddition.findings).toContainEqual(
+      expect.objectContaining({ code: "DEPENDENCY_FILE_CHANGED", severity: "fail" })
+    );
+  });
+
   it("requires approval when CI files change but CI is not allowed", () => {
     const result = detectScopeDrift({
       scopeBudget: budget(),
@@ -143,6 +194,31 @@ describe("detectScopeDrift", () => {
         severity: "warn",
         title: "Files outside allowed scope"
       })
+    );
+  });
+
+  it("treats declared glob paths as allowed scope", () => {
+    const result = detectScopeDrift({
+      scopeBudget: budget({
+        allowedPaths: ["**/planner/**", "**/*.test.*", "docs", "**/README.md"]
+      }),
+      gitDiffContext: diff({
+        changedFiles: [
+          "packages/planner/src/index.ts",
+          "packages/planner/src/index.test.ts",
+          "docs/plan-validation.md"
+        ],
+        fileStats: [
+          { path: "packages/planner/src/index.ts", added: 1, deleted: 0 },
+          { path: "packages/planner/src/index.test.ts", added: 1, deleted: 0 },
+          { path: "docs/plan-validation.md", added: 1, deleted: 0 }
+        ],
+        totalLinesAdded: 3
+      })
+    });
+
+    expect(result.findings).not.toContainEqual(
+      expect.objectContaining({ code: "SCOPE_EXPANSION_WARN" })
     );
   });
 

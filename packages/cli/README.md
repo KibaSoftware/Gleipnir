@@ -12,6 +12,7 @@ Gleip makes no network calls and uses no telemetry, LLM/API calls, account, dash
 npm i -D gleip
 npx gleip init
 npx gleip preflight "<task>"
+npx gleip preflight --file task.md
 npx gleip status
 ```
 
@@ -80,18 +81,20 @@ Generated agent instructions use these commands through `npx --no-install` so th
 | Command                                         | Agent use                                                             | Main artifacts                                                                                                   |
 | ----------------------------------------------- | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | `npx --no-install gleip preflight "<task>"`     | Classify the task and establish local scope before editing.           | `.gleip/session.json`, `.gleip/baseline.json`, `.gleip/brief.md`, `.gleip/scope-budget.json`, `.gleip/status.md` |
+| `npx --no-install gleip preflight --file task.md` | Read a full task contract as read-only context and establish scope. | Same preflight artifacts; full task text is stored in the local session. |
 | `npx --no-install gleip validate-plan "<plan>"` | Check a proposed implementation plan against the active scope budget. | Latest plan validation in `.gleip/session.json`                                                                  |
+| `npx --no-install gleip validate-plan --file plan.md` | Read and structurally validate a plan file as read-only context. | Latest plan validation and stable finding codes in `.gleip/session.json` |
 | `npx --no-install gleip check`                  | Check current changes before claiming completion.                     | Concise drift result; does not update `.gleip/status.md`                                                         |
 | `npx --no-install gleip status`                 | Update drift and status evidence before the final response.           | `.gleip/status.md`, updated `.gleip/session.json`                                                                |
 | `npx --no-install gleip report`                 | Generate the canonical final status and compact response block.       | `.gleip/report.md`, `.gleip/report.json`                                                                         |
 
-`gleip start` is an implemented alias for `gleip preflight`. Plan validation also accepts `--file <path>` or stdin, while `status` supports `--json` and `--include-baseline`.
+`gleip start` is an implemented alias for `gleip preflight`. Preflight and plan validation accept `--file <path>`; plan validation also accepts stdin. Task and plan files are read-only context unless explicitly proposed as edit targets. `status` supports `--json` and `--include-baseline`.
 
 Normal workflow commands print concise 1-5 line summaries that confirm the completed phase and the next expected agent action. JSON modes remain machine-readable without human summary noise.
 
 ## Stable Findings and CI
 
-Gleip 0.5.0 is conservative by design. It reports stable finding codes but only fails
+Gleip 0.7.0 is conservative by design. It reports stable finding codes but only fails
 CI on high-confidence blocking findings. Scope expansion is warning-only because
 valid enterprise work often touches multiple files or modules.
 
@@ -101,8 +104,20 @@ and severity, for example `[TEST_SKIPPED] blocking: Skipped test added`.
 `npx gleip check` remains advisory. `npx gleip check --ci` exits `1` only for
 `TEST_SKIPPED`, `TEST_DELETED`, or `LOCAL_ARTIFACT_INCLUDED`; otherwise it exits `0`.
 `NO_ACTIVE_SESSION` exits non-zero for commands that require a session. Dependency,
-lockfile, plan structure, and `SCOPE_EXPANSION_WARN` findings do not block CI in
-0.5.0.
+lockfile, plan structure, and scope-expansion findings do not block CI in 0.7.0.
+
+Plan validation is deterministic and structural. It checks recognizable plan
+sections or equivalent language, mentioned files, scope expansion rationale, risky
+file rationale, and explicit dependency requirements against local manifests. It
+does not judge whether a design is correct or best. Ordinary source and test
+expansion remains advisory.
+
+Budgets scale with affirmative task scope. Named files, directories, subsystems,
+and categories such as source, CLI, planner, tests, docs, config, package metadata,
+and smoke coverage are aligned only when the task declares them. Exact named test
+paths remain exact, and `modify only` tasks remain narrow. Dependency additions,
+lockfiles, CI, env, and secrets retain their existing gates unless the task
+explicitly requests the relevant category and policy allows it.
 
 Before 1.0, Gleip favors precision over recall. False positives are worse than missed
 suspicious cases, multi-file changes are normal, and stable codes should improve
@@ -110,7 +125,7 @@ clarity without creating extra justification work.
 
 ## Reports and Metrics
 
-Gleip 0.5.0 generates:
+Gleip 0.7.0 generates:
 
 - `.gleip/report.md`: concise scores, risks, findings, actions, and the recommended final-response block.
 - `.gleip/report.json`: stable machine-readable report data, warnings, evidence, summary, and efficiency estimate.
@@ -188,6 +203,6 @@ pnpm pack:cli
 
 ## Status
 
-- Current release: `0.5.0`
+- Current release: `0.7.0`
 - License: Apache-2.0
 - Local-only developer preview

@@ -1,0 +1,210 @@
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const tarball = join(root, "gleip-0.7.0.tgz");
+const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
+const npxCommand = process.platform === "win32" ? "npx.cmd" : "npx";
+
+if (!existsSync(tarball)) {
+  throw new Error(`Packed tarball not found: ${tarball}`);
+}
+
+const repo = mkdtempSync(join(tmpdir(), "gleip-packed-"));
+
+run("git", ["init"], repo);
+run(npmCommand, ["init", "-y"], repo);
+run(npmCommand, ["install", "--save-dev", tarball], repo);
+
+writeRepoFile(".gitignore", "node_modules/\n");
+writeRepoFile("src/foo.ts", "export const foo = true;\n");
+writeRepoFile("tests/foo.test.ts", "describe('foo', () => {});\n");
+writeRepoFile("src/extra.ts", "export const extra = true;\n");
+writeRepoFile("vendor/foo.ts", "export const vendorFoo = true;\n");
+writeRepoFile("generated/foo.ts", "export const generatedFoo = true;\n");
+writeRepoFile(
+  "task.md",
+  [
+    "# Task contract",
+    "",
+    "Modify only src/foo.ts and tests/foo.test.ts.",
+    "Use Typer for CLI parsing.",
+    "Do not add new dependencies.",
+    "Run existing tests."
+  ].join("\n")
+);
+writeRepoFile(
+  "plan.md",
+  [
+    "## Files",
+    "- src/foo.ts",
+    "- tests/foo.test.ts",
+    "## Implementation",
+    "- Update src/foo.ts using Typer.",
+    "## Verification",
+    "- Run existing tests."
+  ].join("\n")
+);
+writeRepoFile(
+  "expanded-plan.md",
+  [
+    "## Files",
+    "- src/foo.ts",
+    "- src/extra.ts",
+    "## Implementation",
+    "- Update src/foo.ts.",
+    "- src/extra.ts is included because it covers the shared behavior; verify with focused tests.",
+    "## Verification",
+    "- Run focused tests."
+  ].join("\n")
+);
+writeRepoFile("packages/planner/src/index.ts", "export const planner = true;\n");
+writeRepoFile("packages/cli/src/index.ts", "export const cli = true;\n");
+writeRepoFile("packages/planner/src/index.test.ts", "describe('planner', () => {});\n");
+writeRepoFile("packages/cli/package.json", '{"name":"fixture-cli","version":"0.6.0"}\n');
+writeRepoFile("docs/release.md", "# Release\n");
+writeRepoFile("README.md", "# Fixture\n");
+writeRepoFile("CHANGELOG.md", "# Changelog\n");
+writeRepoFile("scripts/smoke-cli.mjs", "console.log('smoke');\n");
+writeRepoFile(
+  "broad-task.md",
+  [
+    "Implement a new local CLI feature spanning planner, CLI, tests, docs, and smoke coverage.",
+    "Do not add dependencies, change CI, or publish."
+  ].join("\n")
+);
+writeRepoFile(
+  "broad-plan.md",
+  [
+    "## Files",
+    "- packages/planner/src/index.ts",
+    "- packages/cli/src/index.ts",
+    "- packages/planner/src/index.test.ts",
+    "- docs/release.md",
+    "- scripts/smoke-cli.mjs",
+    "## Implementation",
+    "- Implement the feature across the declared planner and CLI areas.",
+    "## Verification",
+    "- Run lint, typecheck, tests, build, pack, and smoke coverage."
+  ].join("\n")
+);
+
+assertEqual(runGleip(["--version"], repo).trim(), "0.7.0", "packed version");
+runGleip(["init"], repo);
+runGleip(["preflight", "--file", "task.md"], repo);
+
+const session = readJson(".gleip/session.json");
+const allowedPaths = readJson(".gleip/scope-budget.json").allowedPaths;
+const evidencePaths = [
+  ...session.repoContext.likelyRelevantFiles.map((entry) => entry.path),
+  ...session.repoContext.likelyTestFiles.map((entry) => entry.path),
+  ...session.repoContext.existingPatternMatches.map((entry) => entry.path)
+];
+
+assertIncludes(session.repoContext.contextFiles, "task.md", "task file context");
+assertNotIncludes(allowedPaths, "task.md", "task file editable scope");
+assertNotIncludes(evidencePaths, "vendor/foo.ts", "vendor relevance exclusion");
+assertNotIncludes(evidencePaths, "generated/foo.ts", "generated relevance exclusion");
+
+const planResult = JSON.parse(
+  runGleip(["validate-plan", "--json", "--file", "plan.md"], repo)
+);
+const planCodes = planResult.findings.map((finding) => finding.code);
+
+assertIncludes(planResult.parsedPlan.contextFiles, "plan.md", "plan file context");
+assertNotIncludes(planResult.parsedPlan.proposedFiles, "plan.md", "plan file editable scope");
+assertIncludes(
+  planCodes,
+  "DEPENDENCY_REQUIREMENT_CONFLICT",
+  "missing dependency conflict"
+);
+
+const expandedResult = JSON.parse(
+  runGleip(["validate-plan", "--json", "--file", "expanded-plan.md"], repo)
+);
+const expandedCodes = expandedResult.findings.map((finding) => finding.code);
+
+assertNotIncludes(
+  expandedCodes,
+  "SCOPE_EXPANSION_RATIONALE_REQUIRED",
+  "specific expansion rationale"
+);
+assertNotIncludes(
+  expandedCodes,
+  "SCOPE_EXPANSION_RATIONALE_VAGUE",
+  "specific expansion rationale"
+);
+
+runGleip(["preflight", "--file", "broad-task.md"], repo);
+const broadBudget = readJson(".gleip/scope-budget.json");
+const broadResult = JSON.parse(
+  runGleip(["validate-plan", "--json", "--file", "broad-plan.md"], repo)
+);
+const broadCodes = broadResult.findings.map((finding) => finding.code);
+
+if (broadBudget.softLimits.maxFilesChanged <= 8) {
+  throw new Error(
+    `declared broad task did not scale the file budget: ${broadBudget.softLimits.maxFilesChanged}`
+  );
+}
+if (broadBudget.hardGates.newDependenciesAllowed !== false) {
+  throw new Error("declared task breadth unexpectedly allowed new dependencies");
+}
+for (const code of [
+  "PLAN_SCOPE_OUTSIDE_BUDGET",
+  "SCOPE_EXPANSION_RATIONALE_REQUIRED",
+  "SCOPE_EXPANSION_RATIONALE_VAGUE",
+  "RISKY_CHANGE_RATIONALE_REQUIRED"
+]) {
+  assertNotIncludes(broadCodes, code, "declared broad task alignment");
+}
+
+runGleip(["check"], repo);
+runGleip(["check", "--ci"], repo);
+runGleip(["doctor"], repo);
+
+console.log(`Packed Gleip 0.7.0 smoke test passed in ${repo}`);
+
+function runGleip(args, cwd) {
+  return run(npxCommand, ["--no-install", "gleip", ...args], cwd);
+}
+
+function run(command, args, cwd) {
+  return execFileSync(command, args, {
+    cwd,
+    encoding: "utf8",
+    shell: process.platform === "win32" && command.endsWith(".cmd"),
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+}
+
+function writeRepoFile(path, content) {
+  const absolutePath = join(repo, path);
+  mkdirSync(dirname(absolutePath), { recursive: true });
+  writeFileSync(absolutePath, content);
+}
+
+function readJson(path) {
+  return JSON.parse(readFileSync(join(repo, path), "utf8"));
+}
+
+function assertEqual(actual, expected, label) {
+  if (actual !== expected) {
+    throw new Error(`${label}: expected ${expected}, received ${actual}`);
+  }
+}
+
+function assertIncludes(values, expected, label) {
+  if (!values.includes(expected)) {
+    throw new Error(`${label}: expected ${JSON.stringify(values)} to include ${expected}`);
+  }
+}
+
+function assertNotIncludes(values, unexpected, label) {
+  if (values.includes(unexpected)) {
+    throw new Error(`${label}: did not expect ${unexpected} in ${JSON.stringify(values)}`);
+  }
+}

@@ -1,6 +1,6 @@
 {
   "name": "gleip",
-  "version": "0.5.0",
+  "version": "0.7.0",
   "description": "Local-only guardrails that AI coding agents use automatically.",
   "license": "Apache-2.0",
   "repository": {

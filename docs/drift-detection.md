@@ -38,12 +38,12 @@ Each finding also has a stable code and severity:
 
 - `info`: Context only.
 - `warn`: Advisory signal that does not block CI.
-- `fail`: Strong local finding that does not block CI in 0.5.0.
+- `fail`: Strong local finding that does not block CI in 0.7.0.
 - `blocking`: High-confidence finding eligible to block CI.
 
 Text output uses a concise form such as `[TEST_SKIPPED] blocking: Skipped test added`.
 
-## Finding Codes in 0.5.0
+## Finding Codes in 0.7.0
 
 | Code | Severity | Current signal |
 | --- | --- | --- |
@@ -66,8 +66,24 @@ Text output uses a concise form such as `[TEST_SKIPPED] blocking: Skipped test a
 | `DEPENDENCY_CHANGE_INTENT` | `fail` | A plan explicitly proposes a disallowed dependency change. |
 | `CI_CHANGE_INTENT` | `fail` | A plan explicitly proposes a disallowed CI change. |
 | `BROAD_REFACTOR_INTENT` | `warn` or `fail` | A plan explicitly proposes a broad refactor outside the task type. |
+| `PLAN_MISSING` | `fail` | Structural validation received no plan text. |
+| `PLAN_REQUIRED_SECTION_MISSING` | `warn` | Implementation/change structure is absent. |
+| `PLAN_NO_FILES_MENTIONED` | `warn` | A code-task plan has no file, module, or scope signal. |
+| `PLAN_NO_VERIFICATION` | `warn` | Required verification structure or language is absent. |
+| `PLAN_RISK_RATIONALE_MISSING` | `warn` | Risky or expanded scope lacks risk/assumption/rationale structure. |
+| `PLAN_MENTIONED_FILE_MISSING` | `warn` | An edit target does not exist and is not marked new. |
+| `PLAN_SCOPE_OUTSIDE_BUDGET` | `warn` | Proposed files fall outside active allowed paths. |
+| `PLAN_RISKY_FILE_MENTIONED` | `warn` | A dependency, CI, config, secret, or security-sensitive file is named. |
+| `PLAN_VENDOR_EDIT_TARGET` | `warn` | An excluded dependency/vendor/generated path is proposed for editing. |
+| `SCOPE_EXPANSION_RATIONALE_REQUIRED` | `warn` | Expanded scope lacks a named reason and verification. |
+| `SCOPE_EXPANSION_RATIONALE_VAGUE` | `warn` | Expansion rationale uses only generic wording. |
+| `DEPENDENCY_REQUIREMENT_CONFLICT` | `warn` | A required package is absent while new dependencies are blocked. |
+| `DEPENDENCY_SUBSTITUTION_REQUIRES_APPROVAL` | `fail` | A required package is replaced without an approval marker. |
+| `RISKY_CHANGE_RATIONALE_REQUIRED` | `warn` or `fail` | A risky file category lacks a named reason. |
+| `PLAN_SCOPE_EXCEEDS_BUDGET` | `warn` | Proposed file count exceeds the soft maximum. |
+| `PLAN_HARD_GATE_VIOLATION` | `fail` | A proposed path crosses an active hard gate. |
 
-`MISSING_IMPLEMENTATION_CHANGE` is reserved but intentionally not emitted in 0.5.0.
+`MISSING_IMPLEMENTATION_CHANGE` is reserved but intentionally not emitted in 0.7.0.
 Gleip does not yet have a high-confidence structural detector for that condition.
 
 ## How Agents Should Use It
@@ -125,7 +141,7 @@ JSON output includes:
 non-mutating. It exits `1` only when a documented blocking code is present and exits
 `0` for OK, INFO, WARN, and non-blocking FAIL findings.
 
-The 0.5.0 CI blocking codes are:
+The 0.7.0 CI blocking codes are:
 
 - `TEST_SKIPPED`
 - `TEST_DELETED`
@@ -133,7 +149,7 @@ The 0.5.0 CI blocking codes are:
 - `NO_ACTIVE_SESSION` for commands that require an active session
 
 Dependency and lockfile changes use `DEPENDENCY_FILE_CHANGED` and `LOCKFILE_CHANGED`
-with `fail` severity, but do not block `check --ci` in 0.5.0. Scope expansion uses
+with `fail` severity, but do not block `check --ci` in 0.7.0. Scope expansion uses
 `SCOPE_EXPANSION_WARN` with `warn` severity.
 
 ## Limitations

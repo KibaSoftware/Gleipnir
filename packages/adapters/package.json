@@ -1,6 +1,6 @@
 {
   "name": "@gleip/adapters",
-  "version": "0.5.0",
+  "version": "0.7.0",
   "description": "External tool and coding-agent adapters for Gleip.",
   "license": "Apache-2.0",
   "type": "module",

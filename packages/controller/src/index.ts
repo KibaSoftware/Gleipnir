@@ -67,6 +67,7 @@ export interface ScopeBudgetLike {
   };
   hardGates: {
     newDependenciesAllowed: boolean;
+    dependencyMetadataChangesAllowed?: boolean;
     ciChangesAllowed: boolean;
     skippedTestsAllowed: boolean;
     deletedTestsAllowed: boolean;
@@ -177,7 +178,12 @@ export function detectScopeDrift(input: DetectScopeDriftInput): DriftResult {
   addSecretFindings(findings, changedFiles, input.scopeBudget);
   addSkippedTestFindings(findings, input.gitDiffContext.rawDiff, input.scopeBudget);
   addDeletedTestFindings(findings, fileStats, input.scopeBudget);
-  addDependencyFindings(findings, changedFiles, input.scopeBudget);
+  addDependencyFindings(
+    findings,
+    changedFiles,
+    input.gitDiffContext.rawDiff,
+    input.scopeBudget
+  );
   addCiFindings(findings, changedFiles, input.scopeBudget);
   addSoftLimitFindings(findings, input.scopeBudget, {
     filesChanged: changedFiles.length,
@@ -275,6 +281,7 @@ function addSoftLimitFindings(
 function addDependencyFindings(
   findings: DriftFinding[],
   changedFiles: string[],
+  rawDiff: string,
   scopeBudget: ScopeBudgetLike
 ): void {
   if (scopeBudget.hardGates.newDependenciesAllowed) {
@@ -282,7 +289,11 @@ function addDependencyFindings(
   }
 
   const dependencyFiles = changedFiles.filter(
-    (path) => isDependencyFile(path) && !isLockfile(path)
+    (path) =>
+      isDependencyFile(path) &&
+      !isLockfile(path) &&
+      (scopeBudget.hardGates.dependencyMetadataChangesAllowed !== true ||
+        diffShowsDependencyAddition(rawDiff, path))
   );
 
   if (dependencyFiles.length > 0) {
@@ -312,6 +323,52 @@ function addDependencyFindings(
       category: "dependencies"
     });
   }
+}
+
+function diffShowsDependencyAddition(rawDiff: string, path: string): boolean {
+  const normalizedPath = normalizePath(path);
+  const fileName = normalizedPath.split("/").at(-1) ?? "";
+  const section = rawDiffSectionForPath(rawDiff, normalizedPath);
+
+  if (section.length === 0) {
+    return false;
+  }
+
+  const addedLines = section
+    .split(/\r?\n/u)
+    .filter((line) => line.startsWith("+") && !line.startsWith("+++"))
+    .map((line) => line.slice(1));
+
+  if (fileName === "requirements.txt") {
+    return addedLines.some(
+      (line) => line.trim().length > 0 && !line.trimStart().startsWith("#")
+    );
+  }
+
+  const dependencyContext =
+    /\b(?:dependencies|devDependencies|peerDependencies|optionalDependencies|project\.dependencies|install_requires|requires-dist)\b/iu.test(
+      section
+    );
+
+  return (
+    dependencyContext &&
+    addedLines.some(
+      (line) =>
+        /["'][@a-z0-9_.-]+["']\s*[:=]/iu.test(line) ||
+        /^\s*[@a-z0-9_.-]+(?:\[[^\]]+\])?\s*(?:[<>=~!]|$)/iu.test(line)
+    )
+  );
+}
+
+function rawDiffSectionForPath(rawDiff: string, path: string): string {
+  const sections = rawDiff.split(/(?=^diff --git )/gmu);
+
+  return (
+    sections.find((section) => {
+      const header = section.split(/\r?\n/u)[0] ?? "";
+      return header.includes(` a/${path} b/${path}`);
+    }) ?? ""
+  );
 }
 
 function addCiFindings(
@@ -662,7 +719,8 @@ function isAllowedPath(path: string, allowedPaths: string[]): boolean {
     return (
       path === normalizedAllowedPath ||
       path.startsWith(`${normalizedAllowedPath}/`) ||
-      normalizedAllowedPath.startsWith(`${path}/`)
+      normalizedAllowedPath.startsWith(`${path}/`) ||
+      matchesPathPattern(path, normalizedAllowedPath)
     );
   });
 }

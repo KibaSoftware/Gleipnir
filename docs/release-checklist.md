@@ -2,9 +2,10 @@
 
 Use this checklist for the local-only developer preview.
 
-Current release target: `0.5.0`.
+Current release target: `0.7.0`.
 
-Release focus: stable findings, conservative CI behavior, and precision-first policy.
+Release focus: deterministic structural plan validation, stable findings,
+conservative CI behavior, and precision-first policy.
 
 ## Signal Quality Gates
 
@@ -32,11 +33,13 @@ Release focus: stable findings, conservative CI behavior, and precision-first po
 
 ## Packed Install
 
-- Install `dist-pack/gleip-0.5.0.tgz` into a clean external temp repo.
+- Install `dist-pack/gleip-0.7.0.tgz` into a clean external temp repo.
 - Verify:
   - `npx gleip --help`
   - `npx gleip --version`
   - `npx gleip init`
+  - `npx gleip preflight --file task.md`
+  - `npx gleip validate-plan --file plan.md`
   - `npx gleip status`
   - `npx gleip doctor`
   - `npx gleip check`
@@ -52,8 +55,10 @@ Release focus: stable findings, conservative CI behavior, and precision-first po
 Task workflow commands are for agents and direct release testing, not the normal developer workflow.
 
 - `npx gleip preflight "Fix the checkout discount calculation bug without changing payment provider integration or checkout routing."`
+- `npx gleip preflight --file task.md`
 - `npx gleip brief`
 - `npx gleip validate-plan "Update the discount calculation and its focused checkout tests."`
+- `npx gleip validate-plan --file plan.md`
 - `npx gleip status`
 - `npx gleip report`
 - `npx gleip report --json`
