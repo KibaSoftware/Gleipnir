@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.7.1
+
+### Added
+
+- Added guidance-oriented top-level statuses: `clean`, `advisory`,
+  `needs_attention`, `needs_cleanup`, and `needs_approval`.
+- Added finding-aware next actions for cleanup, approval, verification, secret,
+  CI, dependency, and scope findings.
+- Added compatibility aliases for `expectedPaths`, `protectedChecks`,
+  `approvalRequiredChanges`, `verificationExpected`, and
+  `pauseAndClarifyConditions`.
+- Added generic context-document handling and runtime/output/cache scope hygiene.
+
+### Changed
+
+- Reframed Gleip as a local guidance tool rather than a permission system.
+- Made local `status`, `check`, and valid `validate-plan` findings advisory in
+  process behavior; CI may still fail on documented high-confidence findings.
+- Reframed dependency, lockfile, CI, config, and security-sensitive changes as
+  approval or cleanup work instead of task denial.
+- Treated expected scope as a declared likelihood signal rather than exclusive
+  permission, with scope rationale used to explain expansion.
+- Scaled advisory file and line budgets for explicitly broad, multi-area tasks
+  while keeping narrow `modify only` tasks tight.
+- Accepted focused existing tests, smoke tests, typechecks, compile checks, and
+  appropriate manual checks as verification evidence.
+- Treated small context and architecture documentation updates as low-risk
+  touches when aligned with the declared work.
+- Excluded common runtime, output, cache, coverage, and build paths from passive
+  relevance discovery without globally forbidding task-declared artifacts.
+
+### Security / Privacy
+
+- Preserved local-only operation with no telemetry, analytics, network calls,
+  cloud behavior, external API/LLM calls, source upload, repository metadata
+  upload, dashboards, or account systems.
+
 ## 0.7.0
 
 ### Added

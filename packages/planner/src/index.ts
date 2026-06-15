@@ -94,13 +94,20 @@ export interface ScopeBudget {
     deletedTestsAllowed: boolean;
     secretsAllowed: boolean;
   };
+  protectedChecks?: ScopeBudget["hardGates"];
   allowedPaths: string[];
+  expectedPaths?: string[];
   suspiciousPaths: string[];
   approvalRequiredFor: string[];
   blockedWithoutApproval: string[];
+  approvalRequiredChanges?: string[];
   requiredTests: boolean;
+  verificationExpected?: boolean;
   testGuidance: string[];
   stopConditions: string[];
+  pauseAndClarifyConditions?: string[];
+  contextDocsTouchAllowed?: boolean;
+  readOnlyContextPaths?: string[];
   reasons: string[];
 }
 
@@ -153,7 +160,12 @@ export interface PlanFileMention {
   markedNew: boolean;
 }
 
-export type PlanValidationStatus = "approved" | "needs_revision" | "requires_approval";
+export type PlanValidationStatus =
+  | "aligned"
+  | "advisory"
+  | "needs_clarification"
+  | "needs_approval"
+  | "needs_cleanup";
 
 export interface PlanValidationFinding {
   code: FindingCode;
@@ -209,6 +221,7 @@ interface TaskScopeHints {
   declaredScopeLabels: string[];
   hasBroadScopeSignal: boolean;
   explicitEditTargets: string[];
+  explicitOutputTargets: string[];
   explicitOnlyTargets: string[];
 }
 
@@ -438,6 +451,16 @@ const ignoredDirectories = new Set([
   "dist",
   "build",
   "generated",
+  "tmp",
+  "temp",
+  ".tmp",
+  "cache",
+  "logs",
+  "runs",
+  "output",
+  "outputs",
+  "artifacts",
+  "test-results",
   "coverage",
   ".coverage",
   ".next",
@@ -572,14 +595,19 @@ const lockfileNames = new Set([
 ]);
 
 const expectedOutputDirectories = new Set([
+  "artifacts",
   "build",
+  "cache",
   "coverage",
   "dist",
   "examples",
   "generated",
+  "logs",
   "out",
   "output",
+  "outputs",
   "reports",
+  "runs",
   "samples"
 ]);
 
@@ -882,6 +910,19 @@ export function createScopeBudget(input: CreateScopeBudgetInput): ScopeBudget {
     newDependenciesAllowed,
     ciChangesAllowed
   );
+  const hardGates = {
+    newDependenciesAllowed,
+    dependencyMetadataChangesAllowed,
+    ciChangesAllowed,
+    skippedTestsAllowed: false,
+    deletedTestsAllowed: false,
+    secretsAllowed: false
+  };
+  const contextDocsTouchAllowed =
+    taskScopeHints.hasBroadScopeSignal ||
+    taskScopeHints.declaredScopeLabels.some((label) =>
+      ["docs", "readme", "changelog", "context_docs"].includes(label)
+    );
 
   return {
     taskType: input.classification.taskType,
@@ -891,21 +932,21 @@ export function createScopeBudget(input: CreateScopeBudgetInput): ScopeBudget {
     expectedLinesAdded: defaults.expectedLinesAdded,
     expectedLinesDeleted: defaults.expectedLinesDeleted,
     softLimits,
-    hardGates: {
-      newDependenciesAllowed,
-      dependencyMetadataChangesAllowed,
-      ciChangesAllowed,
-      skippedTestsAllowed: false,
-      deletedTestsAllowed: false,
-      secretsAllowed: false
-    },
+    hardGates,
+    protectedChecks: hardGates,
     allowedPaths,
+    expectedPaths: allowedPaths,
     suspiciousPaths,
     approvalRequiredFor,
     blockedWithoutApproval,
+    approvalRequiredChanges: blockedWithoutApproval,
     requiredTests,
+    verificationExpected: requiredTests,
     testGuidance: testGuidanceFor(input.classification.taskType),
     stopConditions,
+    pauseAndClarifyConditions: stopConditions,
+    contextDocsTouchAllowed,
+    readOnlyContextPaths: taskScopeHints.contextFiles,
     reasons: buildBudgetReasons(input, defaults, allowedPaths, blockedWithoutApproval)
   };
 }
@@ -922,16 +963,16 @@ ${task}
 - Type: ${classification.taskType}
 - Risk: ${classification.riskLevel}
 - Confidence: ${classification.confidence}
-- Tests likely required: ${formatYesNo(classification.likelyRequiresTests)}
+- Focused verification likely expected: ${formatYesNo(classification.likelyRequiresTests)}
 - New dependencies likely allowed: ${formatYesNo(classification.likelyAllowsNewDependencies)}
 
 ## Working rule
-Implement the smallest safe change that satisfies the task. Stay inside the scope budget. Do not perform speculative refactors.
+Implement the smallest clear change that satisfies the task. Use the expected scope as guidance, explain necessary expansion, and avoid speculative refactors.
 
 ## Before editing code
 1. Draft a short implementation plan.
 2. Run \`npx --no-install gleip validate-plan "<plan>"\` or \`npx --no-install gleip validate-plan --file <file>\`.
-3. Proceed only if approved or the user explicitly approves.
+3. Address clarification, cleanup, or approval findings before finalizing the plan.
 
 ## Repo context
 Likely relevant files:
@@ -959,24 +1000,23 @@ ${formatStringListForBrief(repoContext.riskyMatchedPaths, 5)}
 - Soft max added lines: ${scopeBudget.softLimits.maxLinesAdded}
 - Soft max deleted lines: ${scopeBudget.softLimits.maxLinesDeleted}
 
-## Allowed scope
+## Expected scope
 ${formatAllowedScope(scopeBudget.allowedPaths)}
 
 ## Approval required
 ${formatApprovalRequired(scopeBudget.approvalRequiredFor)}
 
-## Hard gates
-- Do not skip tests.
-- Do not delete tests.
-- Do not weaken CI.
-- Do not expose or modify secrets.
+## Protected checks
+- Preserve test integrity.
+- Preserve CI unless the task requests or approves a change.
+- Keep secrets and environment files out of the change set.
 - ${formatDependencyGate(scopeBudget)}
 - ${formatCiGate(scopeBudget)}
 
-## Required tests
+## Verification expected
 ${formatRequiredTests(scopeBudget)}
 
-## Stop conditions
+## Pause and clarify conditions
 ${formatStringListForBrief(scopeBudget.stopConditions, 8)}
 
 ## Before final response
@@ -984,7 +1024,7 @@ ${formatStringListForBrief(scopeBudget.stopConditions, 8)}
 2. Run relevant tests if available.
 3. Report files changed.
 4. Report tests run.
-5. Report whether Gleip status is within scope, warning, approval_required, or blocked.
+5. Report whether Gleip status is clean, advisory, needs_attention, needs_cleanup, or needs_approval.
 `;
 }
 
@@ -1034,7 +1074,7 @@ export function validateAgentPlan(input: ValidateAgentPlanInput): PlanValidation
   if (input.planText.trim().length === 0) {
     findings.push({
       code: "PLAN_MISSING",
-      severity: "fail",
+      severity: "action_required",
       title: "Plan text missing",
       message: "Structural plan validation requires plan text.",
       recommendation: "Provide an inline plan, a plan file, or plan text on stdin."
@@ -1067,9 +1107,9 @@ export function validateAgentPlan(input: ValidateAgentPlanInput): PlanValidation
   ) {
     findings.push({
       code: "DEPENDENCY_CHANGE_INTENT",
-      severity: "fail",
+      severity: "approval_required",
       title: "New dependency intent",
-      message: "The plan proposes a new dependency, but new dependency is blocked by current policy.",
+      message: "The plan proposes a new dependency that requires approval under the current guidance.",
       recommendation: "Request approval to add the dependency, or revise the plan without it.",
       evidence: parsedPlan.proposedDependencies
     });
@@ -1078,7 +1118,7 @@ export function validateAgentPlan(input: ValidateAgentPlanInput): PlanValidation
   if (parsedPlan.mentionsCiChanges && !input.scopeBudget.hardGates.ciChangesAllowed) {
     findings.push({
       code: "CI_CHANGE_INTENT",
-      severity: "fail",
+      severity: "approval_required",
       title: "CI change intent",
       message: "The plan proposes CI or workflow changes that require clarification under the current policy.",
       recommendation: "Provide the requested CI scope or ask the user for approval.",
@@ -1089,7 +1129,7 @@ export function validateAgentPlan(input: ValidateAgentPlanInput): PlanValidation
   if (parsedPlan.mentionsTestWeakening) {
     findings.push({
       code: "TEST_WEAKENED",
-      severity: "fail",
+      severity: "action_required",
       title: "Test weakening intent",
       message: "The plan mentions skipping, deleting, disabling, or weakening tests.",
       recommendation: "Revise the plan to preserve tests and CI. Do not weaken tests without explicit user approval."
@@ -1163,9 +1203,9 @@ export function validateAgentPlan(input: ValidateAgentPlanInput): PlanValidation
     findings.push({
       code: "MISSING_TEST_STRATEGY",
       severity: "warn",
-      title: "Missing test plan",
-      message: "The scope budget requires tests, but the plan does not mention adding, updating, or running tests.",
-      recommendation: "Add a focused test plan covering the intended behavior."
+      title: "Verification expectation missing",
+      message: "The scope guidance expects verification, but the plan does not mention tests, checks, a smoke run, or manual verification.",
+      recommendation: "Add the focused verification that will be run; a new test file is not required."
     });
     findings.push({
       code: "PLAN_NO_VERIFICATION",
@@ -1181,7 +1221,7 @@ export function validateAgentPlan(input: ValidateAgentPlanInput): PlanValidation
 
     findings.push({
       code: "BROAD_REFACTOR_INTENT",
-      severity: severeRefactor ? "fail" : "warn",
+      severity: severeRefactor ? "action_required" : "warn",
       title: "Broad refactor intent",
       message: "The plan uses broad refactor wording, but the task was not classified as a refactor.",
       recommendation: "Narrow the plan to the smallest change needed for the task, or ask for approval."
@@ -1293,8 +1333,13 @@ function scanRepository(
 
 function analyzeTaskScope(task: string, additionalContextFiles: string[] = []): TaskScopeHints {
   const explicitEditTargets = new Set(extractExplicitEditTargets(task));
+  const explicitOutputTargets = new Set(extractExplicitOutputTargets(task));
   const explicitOnlyTargets = new Set<string>();
   const declaredScope = extractDeclaredTaskScope(task);
+
+  for (const path of explicitOutputTargets) {
+    explicitEditTargets.delete(path);
+  }
 
   for (const line of task.split(/\r?\n/u)) {
     const onlyMatch =
@@ -1334,15 +1379,30 @@ function analyzeTaskScope(task: string, additionalContextFiles: string[] = []): 
     declaredScopeLabels: declaredScope.labels,
     hasBroadScopeSignal: declaredScope.hasBroadScopeSignal,
     explicitEditTargets: [...explicitEditTargets].sort(comparePaths),
+    explicitOutputTargets: [...explicitOutputTargets].sort(comparePaths),
     explicitOnlyTargets: [...explicitOnlyTargets].sort(comparePaths)
   };
+}
+
+function extractExplicitOutputTargets(task: string): string[] {
+  const outputTargets = new Set<string>();
+
+  for (const clause of splitIntentClauses(task)) {
+    for (const path of extractPathTokens(clause)) {
+      if (isOutputArtifactMention(clause, path)) {
+        outputTargets.add(path);
+      }
+    }
+  }
+
+  return [...outputTargets].sort(comparePaths);
 }
 
 function extractDeclaredTaskScope(task: string): DeclaredTaskScope {
   const paths = new Set<string>();
   const labels = new Set<string>();
   const hasBroadScopeSignal =
-    /\b(?:spanning|across)\b|\b(?:touch(?:es|ing)?|cover(?:s|ing)?|involv(?:es|ing))\s+(?:multiple|several)\s+(?:areas|modules|packages|components|subsystems|workstreams)\b/iu.test(
+    /\b(?:spanning|across)\b|\b(?:broad patch|full implementation|multi-area|multiple workstreams?|large patch)\b|\b(?:touch(?:es|ing)?|cover(?:s|ing)?|involv(?:es|ing))\s+(?:multiple|several)\s+(?:areas|modules|packages|components|subsystems|workstreams)\b/iu.test(
       task
     );
   const contextPaths = new Set(extractPhraseContextPaths(task));
@@ -1398,8 +1458,26 @@ function extractDeclaredTaskScope(task: string): DeclaredTaskScope {
     addDeclaredCategory(
       categoryText,
       "docs",
-      /\bdocs?|documentation\b/iu,
+      /\bdocs?|documentation|architecture|project context|context maintenance|context polish\b/iu,
       ["docs", "**/docs/**"],
+      paths,
+      labels
+    );
+    addDeclaredCategory(
+      categoryText,
+      "context_docs",
+      /\b(?:context|architecture)\s+(?:files?|docs?|documentation|updates?|maintenance|polish)\b/iu,
+      [
+        "FULL_CONTEXT.md",
+        "PROJECT_CONTEXT.md",
+        "ARCHITECTURE.md",
+        "AGENTS.md",
+        "CLAUDE.md",
+        "CONTRIBUTING.md",
+        "NOTES.md",
+        "docs",
+        "**/docs/**"
+      ],
       paths,
       labels
     );
@@ -1449,8 +1527,8 @@ function extractDeclaredTaskScope(task: string): DeclaredTaskScope {
     addDeclaredCategory(
       categoryText,
       "output",
-      /\b(?:sample output|output artifacts?|generated output)\b/iu,
-      ["examples", "out", "output", "reports", "samples"],
+      /\b(?:sample output|output artifacts?|generated output|reports?|results?|fixtures?|state files?|cache files?)\b/iu,
+      ["artifacts", "examples", "out", "output", "outputs", "reports", "results", "samples"],
       paths,
       labels
     );
@@ -1936,7 +2014,6 @@ function extractPlanFileMentions(planText: string, additionalContextFiles: strin
 
   for (const path of explicitEditTargets) {
     contextFiles.delete(path);
-    outputFiles.delete(path);
   }
 
   const proposedFiles = [...allPaths]
@@ -1979,10 +2056,11 @@ function isOutputArtifactMention(clause: string, path: string): boolean {
   const firstSegment = normalizePath(path).toLowerCase().split("/")[0] ?? "";
 
   return (
-    expectedOutputDirectories.has(firstSegment) &&
-    /\b(?:artifact|generated|output|produce|write|emit|build output|coverage report)\b/iu.test(
+    /\b(?:artifact|generated|output|produce|write|emit|build output|coverage report|report|result|fixture|cache|state file)\b/iu.test(
       clause
-    )
+    ) &&
+    (expectedOutputDirectories.has(firstSegment) ||
+      /\b(?:artifact|generated output|report|result|fixture|cache|state file)\b/iu.test(clause))
   );
 }
 
@@ -2064,7 +2142,7 @@ function splitDependencyTokens(value: string): string[] {
 
 function detectsNewDependencyIntent(planText: string): boolean {
   return /\b(?:npm\s+(?:install|i)|pnpm\s+add|yarn\s+add|bun\s+add|install\s+[@a-z0-9._/-]+|add\s+(?:a\s+|new\s+)?dependenc(?:y|ies)|add\s+[@a-z0-9._/-]+\s+dependenc(?:y|ies))\b/iu.test(
-    planText
+    withoutNegatedPlanClauses(planText)
   );
 }
 
@@ -2109,10 +2187,21 @@ function extractPlanTests(planText: string, proposedFiles: string[]): string[] {
 }
 
 function detectsCiIntent(planText: string, proposedFiles: string[]): boolean {
+  const affirmativeText = withoutNegatedPlanClauses(planText);
+
   return (
     proposedFiles.some(isCiFile) ||
-    /\b(?:github actions?|workflows?|ci|pipeline|jenkinsfile|gitlab-ci)\b/iu.test(planText) ||
-    /\.github\/workflows\//iu.test(normalizePath(planText))
+    /\b(?:github actions?|workflows?|ci|pipeline|jenkinsfile|gitlab-ci)\b/iu.test(
+      affirmativeText
+    ) ||
+    /\.github\/workflows\//iu.test(normalizePath(affirmativeText))
+  );
+}
+
+function withoutNegatedPlanClauses(planText: string): string {
+  return planText.replace(
+    /\b(?:do not|don't|must not|never|without)\b[^\n.;]*?(?=\bbut\b|[.;\n]|$)/giu,
+    " "
   );
 }
 
@@ -2288,8 +2377,8 @@ function validateDependencyRequirements(
     findings.push({
       code: "DEPENDENCY_REQUIREMENT_CONFLICT",
       severity: "warn",
-      title: "Required dependency is unavailable under current policy",
-      message: `The task appears to require a missing dependency (${missingBlockedPackages.join(", ")}), and new dependency is blocked by current policy.`,
+      title: "Required dependency needs approval or an accepted alternative",
+      message: `The task appears to require a missing dependency (${missingBlockedPackages.join(", ")}), and adding it requires approval under the current guidance.`,
       recommendation:
         "Request approval to add it, or revise the plan with an explicitly accepted alternative.",
       evidence: missingBlockedPackages
@@ -2303,7 +2392,7 @@ function validateDependencyRequirements(
   if (substitutions.length > 0 && !hasDependencyAlternativeApproval(planText)) {
     findings.push({
       code: "DEPENDENCY_SUBSTITUTION_REQUIRES_APPROVAL",
-      severity: "fail",
+      severity: "approval_required",
       title: "Dependency substitution requires approval",
       message: "The plan substitutes an explicitly required dependency without an accepted-alternative or user-approval marker.",
       recommendation: "Request approval for the named alternative or use the required dependency.",
@@ -2470,14 +2559,30 @@ function validateRiskyChangeRationales(
   const findings: PlanValidationFinding[] = [];
 
   if (strongMissing.length > 0) {
+    const cleanupPaths = strongMissing.filter((path) => riskyPathCategory(path) === "secret");
+    const approvalPaths = strongMissing.filter((path) => !cleanupPaths.includes(path));
+
+    if (cleanupPaths.length > 0) {
+      findings.push({
+        code: "RISKY_CHANGE_RATIONALE_REQUIRED",
+        severity: "cleanup_required",
+        title: "Secret or env file should be removed",
+        message: "The plan includes a secret or environment file.",
+        recommendation: "Remove the file from the plan and verify it is ignored.",
+        evidence: cleanupPaths
+      });
+    }
+
+    if (approvalPaths.length > 0) {
     findings.push({
       code: "RISKY_CHANGE_RATIONALE_REQUIRED",
-      severity: "fail",
+      severity: "approval_required",
       title: "Risky change rationale required",
-      message: "The plan proposes dependency, lockfile, CI, secret, or security-sensitive changes without a named reason.",
+      message: "The plan proposes dependency, lockfile, CI, or security-sensitive changes without a named reason.",
       recommendation: "Name why each risky file is needed and how it will be verified, or request approval.",
-      evidence: strongMissing
+      evidence: approvalPaths
     });
+    }
   }
 
   if (missing.length > 0) {
@@ -2584,25 +2689,38 @@ function validatePlanFilesAgainstScope(
   const approvalRequiredPaths = outsideAllowedPaths.filter((path) =>
     isPlanPathApprovalRequired(path, scopeBudget, config)
   );
+  const cleanupPaths = approvalRequiredPaths.filter(isSecretPath);
+  const approvalPaths = approvalRequiredPaths.filter((path) => !cleanupPaths.includes(path));
   const warningPaths = outsideAllowedPaths.filter((path) => !approvalRequiredPaths.includes(path));
   const findings: PlanValidationFinding[] = [];
 
-  if (approvalRequiredPaths.length > 0) {
+  if (cleanupPaths.length > 0) {
+    findings.push({
+      code: "PLAN_HARD_GATE_VIOLATION",
+      severity: "cleanup_required",
+      title: "Plan includes a secret or env file",
+      message: "The plan includes a secret or environment file that should not be part of the change set.",
+      recommendation: "Remove the file from the plan and verify it is ignored.",
+      evidence: cleanupPaths
+    });
+  }
+
+  if (approvalPaths.length > 0) {
     findings.push({
       code: "APPROVAL_REQUIRED_PATH_CHANGED",
-      severity: "fail",
+      severity: "approval_required",
       title: "Files require approval",
-      message: `${approvalRequiredPaths.length} proposed file(s) are outside allowed scope and match approval-required paths or categories.`,
-      recommendation: "Ask the user for approval before planning these files, or revise the plan to stay in allowed paths.",
-      evidence: approvalRequiredPaths
+      message: `${approvalPaths.length} proposed file(s) are outside expected scope and match approval-required paths or categories.`,
+      recommendation: "Request approval for these files or revise the plan to remove them.",
+      evidence: approvalPaths
     });
     findings.push({
       code: "PLAN_HARD_GATE_VIOLATION",
-      severity: "fail",
-      title: "Plan includes a hard-gated category",
-      message: "The plan includes dependency, CI, secret, or protected paths that require approval under the active scope budget.",
-      recommendation: "Request approval or revise the plan to remove the hard-gated paths.",
-      evidence: approvalRequiredPaths
+      severity: "approval_required",
+      title: "Plan includes an approval-required category",
+      message: "The plan includes dependency, CI, security-sensitive, or protected paths that require approval under the active guidance.",
+      recommendation: "Request approval or revise the plan to remove the approval-required paths.",
+      evidence: approvalPaths
     });
   }
 
@@ -2610,7 +2728,7 @@ function validatePlanFilesAgainstScope(
     findings.push({
       code: "SCOPE_EXPANSION_WARN",
       severity: "warn",
-      title: "Files outside allowed scope",
+      title: "Files outside expected scope",
       message: `${warningPaths.length} proposed file(s) exceed declared task scope.`,
       recommendation: "Narrow the plan or add a specific scope rationale for the expanded files.",
       evidence: warningPaths
@@ -2656,12 +2774,44 @@ function validatePlanFilesAgainstScope(
 }
 
 function findOutsideAllowedPaths(parsedPlan: AgentPlan, scopeBudget: ScopeBudget): string[] {
-  if (parsedPlan.proposedFiles.length === 0 || scopeBudget.allowedPaths.length === 0) {
+  const expectedPaths = scopeBudget.expectedPaths ?? scopeBudget.allowedPaths;
+
+  if (parsedPlan.proposedFiles.length === 0 || expectedPaths.length === 0) {
     return [];
   }
 
   return parsedPlan.proposedFiles.filter(
-    (path) => !isWithinAllowedPaths(path, scopeBudget.allowedPaths)
+    (path) =>
+      !isWithinAllowedPaths(path, expectedPaths) &&
+      !isAcceptedContextDocsPlanTouch(path, scopeBudget)
+  );
+}
+
+function isAcceptedContextDocsPlanTouch(path: string, scopeBudget: ScopeBudget): boolean {
+  if (scopeBudget.contextDocsTouchAllowed !== true || !isContextDocsPath(path)) {
+    return false;
+  }
+
+  return !(scopeBudget.readOnlyContextPaths ?? []).some(
+    (contextPath) => normalizePath(contextPath) === normalizePath(path)
+  );
+}
+
+function isContextDocsPath(path: string): boolean {
+  const normalized = normalizePath(path);
+  const fileName = basename(normalized).toLowerCase();
+
+  return (
+    normalized.toLowerCase().startsWith("docs/") ||
+    [
+      "full_context.md",
+      "project_context.md",
+      "architecture.md",
+      "agents.md",
+      "claude.md",
+      "contributing.md",
+      "notes.md"
+    ].includes(fileName)
   );
 }
 
@@ -2817,42 +2967,74 @@ function isPlanVague(parsedPlan: AgentPlan): boolean {
 }
 
 function planValidationStatus(findings: PlanValidationFinding[]): PlanValidationStatus {
+  if (findings.some((finding) => finding.severity === "cleanup_required")) {
+    return "needs_cleanup";
+  }
+
   if (
     findings.some(
-      (finding) => finding.severity === "fail" || finding.severity === "blocking"
+      (finding) =>
+        finding.severity === "approval_required" ||
+        finding.severity === "fail" ||
+        finding.severity === "blocking"
     )
   ) {
-    return "requires_approval";
+    return "needs_approval";
+  }
+
+  if (findings.some((finding) => finding.severity === "action_required")) {
+    return "needs_clarification";
   }
 
   if (findings.some((finding) => finding.severity === "warn")) {
-    return "needs_revision";
+    const clarificationCodes = new Set<FindingCode>([
+      "PLAN_REQUIRED_SECTION_MISSING",
+      "PLAN_NO_FILES_MENTIONED",
+      "PLAN_NO_VERIFICATION",
+      "MISSING_TEST_STRATEGY",
+      "PLAN_RISK_RATIONALE_MISSING",
+      "SCOPE_EXPANSION_RATIONALE_REQUIRED",
+      "SCOPE_EXPANSION_RATIONALE_VAGUE",
+      "DEPENDENCY_REQUIREMENT_CONFLICT"
+    ]);
+
+    return findings.some((finding) => clarificationCodes.has(finding.code))
+      ? "needs_clarification"
+      : "advisory";
   }
 
-  return "approved";
+  return "aligned";
 }
 
 function planValidationSummary(
   status: PlanValidationStatus,
   findings: PlanValidationFinding[]
 ): string {
-  if (status === "approved") {
+  if (status === "aligned") {
     return "Plan is aligned with declared task scope.";
   }
 
-  return `${findings.length} finding(s) require attention before implementation.`;
+  return `${findings.length} finding(s) provide guidance before implementation.`;
 }
 
 function planValidationNextAction(status: PlanValidationStatus): string {
-  if (status === "approved") {
-    return "Proceed with implementation within the validated scope budget.";
+  if (status === "aligned") {
+    return "Implement the plan, keep expansion explained, and run the stated verification.";
   }
 
-  if (status === "needs_revision") {
-    return "Revise the plan and run npx --no-install gleip validate-plan again before editing code.";
+  if (status === "advisory") {
+    return "Review the advisory findings and add scope rationale where useful.";
   }
 
-  return "Ask the user for approval before proceeding, or revise the plan to avoid approval-required work.";
+  if (status === "needs_clarification") {
+    return "Clarify the plan structure, scope rationale, or verification, then run validate-plan again.";
+  }
+
+  if (status === "needs_cleanup") {
+    return "Remove cleanup-required files or artifacts from the plan, then run validate-plan again.";
+  }
+
+  return "Request approval for the identified change or remove it from the plan.";
 }
 
 function orderPlanFindings(findings: PlanValidationFinding[]): PlanValidationFinding[] {
@@ -2869,11 +3051,15 @@ function orderPlanFindings(findings: PlanValidationFinding[]): PlanValidationFin
 }
 
 function planFindingSeverityRank(severity: PlanValidationFinding["severity"]): number {
-  if (severity === "blocking") {
+  if (severity === "cleanup_required") {
+    return 5;
+  }
+
+  if (severity === "approval_required" || severity === "fail" || severity === "blocking") {
     return 4;
   }
 
-  if (severity === "fail") {
+  if (severity === "action_required") {
     return 3;
   }
 
@@ -2905,6 +3091,10 @@ function buildAllowedPaths(
   }
 
   for (const path of explicitTargets) {
+    paths.add(path);
+  }
+
+  for (const path of taskScopeHints.explicitOutputTargets) {
     paths.add(path);
   }
 
@@ -3052,7 +3242,7 @@ function isDeclaredTestPattern(path: string): boolean {
 function declaredBreadthUnits(taskScopeHints: TaskScopeHints): number {
   return Math.max(
     taskScopeHints.declaredScopeLabels.length,
-    taskScopeHints.explicitEditTargets.length
+    taskScopeHints.explicitEditTargets.length + taskScopeHints.explicitOutputTargets.length
   );
 }
 
@@ -3137,7 +3327,7 @@ function buildApprovalRequiredFor(
   }
 
   if (blockedWithoutApproval.length > 0) {
-    approval.add("blocked_paths_or_categories");
+    approval.add("approval_required_changes");
   }
 
   if (classification.taskType === "refactor") {
@@ -3158,23 +3348,23 @@ function buildStopConditions(
   ciChangesAllowed: boolean
 ): string[] {
   const conditions = [
-    `Stop if more than ${softLimits.maxFilesChanged} files are needed.`,
-    "Stop if tests need to be skipped, deleted, or weakened.",
-    "Stop if the task appears broader than classified."
+    `Pause and clarify if more than ${softLimits.maxFilesChanged} files are needed without declared breadth.`,
+    "Pause and clarify if tests would be skipped, deleted, or weakened.",
+    "Add a scope rationale if the task expands beyond the expected paths."
   ];
 
   if (!ciChangesAllowed) {
-    conditions.push("Stop if implementation requires changing CI configuration.");
+    conditions.push("Request approval if implementation requires changing CI configuration.");
   }
 
   if (!newDependenciesAllowed) {
-    conditions.push("Stop if a new dependency seems necessary.");
+    conditions.push("Request approval if a new dependency seems necessary.");
   }
 
   if (!["auth_security_change", "infra_ci_change", "migration"].includes(classification.taskType)) {
-    conditions.push("Stop if auth, payments, infra, migrations, or secrets need to be modified.");
+    conditions.push("Request approval for auth, payments, infra, or migration changes; remove secrets from the change set.");
   } else {
-    conditions.push("Stop if secrets need to be modified.");
+    conditions.push("Remove secrets from the change set and verify they are ignored.");
   }
 
   return conditions;
@@ -3234,7 +3424,7 @@ function buildBudgetReasons(
 
   if (allowedPaths.length > 0) {
     reasons.push(
-      `Allowed paths seeded from ${allowedPaths.length} likely relevant paths/directories.`
+      `Expected paths seeded from ${allowedPaths.length} likely relevant paths/directories.`
     );
   }
 
@@ -3245,7 +3435,7 @@ function buildBudgetReasons(
   }
 
   if (blockedWithoutApproval.length > 0) {
-    reasons.push(`Blocked without approval: ${blockedWithoutApproval.length} categories.`);
+    reasons.push(`Approval-required changes: ${blockedWithoutApproval.length} categories.`);
   }
 
   return reasons;
@@ -3308,7 +3498,7 @@ function formatStringListForBrief(values: string[], limit: number): string {
 
 function formatAllowedScope(paths: string[]): string {
   if (paths.length === 0) {
-    return "- No precise allowed paths were identified. Keep changes tightly aligned with the task and existing nearby patterns.";
+    return "- No precise expected paths were identified. Keep changes aligned with the task and explain necessary expansion.";
   }
 
   return formatStringListForBrief(paths, 8);
@@ -3316,7 +3506,7 @@ function formatAllowedScope(paths: string[]): string {
 
 function formatApprovalRequired(values: string[]): string {
   if (values.length === 0) {
-    return "- None beyond default hard gates.";
+    return "- None beyond default protected checks.";
   }
 
   return formatStringListForBrief(values, 8);
@@ -3325,22 +3515,22 @@ function formatApprovalRequired(values: string[]): string {
 function formatDependencyGate(scopeBudget: ScopeBudget): string {
   return scopeBudget.hardGates.newDependenciesAllowed
     ? "Dependencies may be changed only when directly required by the task and justified."
-    : "Do not add dependencies.";
+    : "New dependencies require approval unless explicitly requested.";
 }
 
 function formatCiGate(scopeBudget: ScopeBudget): string {
   return scopeBudget.hardGates.ciChangesAllowed
     ? "CI changes are allowed only within the task scope."
-    : "Do not change CI configuration.";
+    : "CI changes require approval unless explicitly requested.";
 }
 
 function formatRequiredTests(scopeBudget: ScopeBudget): string {
   if (!scopeBudget.requiredTests) {
-    return "- Tests may be skipped only if the change is clearly non-behavioral, such as copy or visual-only.";
+    return "- Use proportionate verification; manual review may be enough for docs-only or non-behavioral changes.";
   }
 
   return [
-    "- Add or update focused tests.",
+    "- Run focused verification appropriate to the change. Existing tests, smoke tests, typecheck, compile checks, CLI dry runs, or manual verification may satisfy this.",
     ...scopeBudget.testGuidance.slice(0, 5).map((guidance) => `- ${guidance}`)
   ].join("\n");
 }

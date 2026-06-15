@@ -82,7 +82,9 @@ export interface ReportScopeBudget {
     maxLinesDeleted: number;
   };
   allowedPaths: string[];
+  expectedPaths?: string[];
   requiredTests: boolean;
+  verificationExpected?: boolean;
 }
 
 export interface ReportDiff {
@@ -106,6 +108,8 @@ export interface ReportDriftFinding {
     | "warn"
     | "fail"
     | "blocking"
+    | "action_required"
+    | "cleanup_required"
     | "warning"
     | "approval_required"
     | "blocked";
@@ -117,12 +121,29 @@ export interface ReportDriftFinding {
 }
 
 export interface ReportDriftResult {
-  status: "within_scope" | "warning" | "approval_required" | "blocked";
+  status:
+    | "clean"
+    | "advisory"
+    | "needs_attention"
+    | "needs_cleanup"
+    | "needs_approval"
+    | "within_scope"
+    | "warning"
+    | "approval_required"
+    | "blocked";
   findings: ReportDriftFinding[];
 }
 
 export interface ReportPlanValidation {
-  status: "approved" | "needs_revision" | "requires_approval";
+  status:
+    | "aligned"
+    | "advisory"
+    | "needs_clarification"
+    | "needs_cleanup"
+    | "needs_approval"
+    | "approved"
+    | "needs_revision"
+    | "requires_approval";
   findings: Array<{
     title: string;
     message: string;
@@ -177,10 +198,14 @@ export function generateSessionReport(input: GenerateSessionReportInput): Sessio
       ? []
       : changedFiles.filter((path) => !plannedFiles.some((planned) => pathsOverlap(path, planned)));
   const outsideScopeFiles =
-    input.scopeBudget === undefined || input.scopeBudget.allowedPaths.length === 0
+    input.scopeBudget === undefined ||
+    (input.scopeBudget.expectedPaths ?? input.scopeBudget.allowedPaths).length === 0
       ? []
       : changedFiles.filter(
-          (path) => !input.scopeBudget!.allowedPaths.some((allowed) => pathsOverlap(path, allowed))
+          (path) =>
+            !(input.scopeBudget!.expectedPaths ?? input.scopeBudget!.allowedPaths).some(
+              (expected) => pathsOverlap(path, expected)
+            )
         );
   const statusContent = input.statusContent ?? "";
   const changedFilesMentioned = hasChangedFilesEvidence(statusContent);
@@ -224,22 +249,24 @@ export function generateSessionReport(input: GenerateSessionReportInput): Sessio
     });
     deductions.planAlignment += 25;
     deductions.reviewReadiness += changedFiles.length > 0 ? 10 : 0;
-  } else if (input.planValidation.status !== "approved") {
-    const requiresApproval = input.planValidation.status === "requires_approval";
+  } else if (!isPlanAligned(input.planValidation.status)) {
+    const requiresApproval =
+      input.planValidation.status === "requires_approval" ||
+      input.planValidation.status === "needs_approval";
     addWarning(warnings, {
-      id: "plan.not-approved",
+      id: "plan.guidance",
       type: "plan",
       severity: requiresApproval ? "high" : "medium",
       message: `Latest plan validation is ${input.planValidation.status}.`,
-      reason: "Implementation should proceed only from an approved plan.",
+      reason: "The plan includes guidance that should be addressed or explicitly accepted.",
       evidence: input.planValidation.findings.flatMap((finding) => [
         finding.message,
         ...(finding.evidence ?? [])
       ]),
       files: input.planValidation.parsedPlan.proposedFiles,
       suggestedAction: requiresApproval
-        ? "Stop and obtain approval or revise the plan."
-        : "Revise the plan and validate it again."
+        ? "Request approval for the identified change or revise the plan."
+        : "Clarify the plan and validate it again."
     });
     deductions.planAlignment += requiresApproval ? 40 : 25;
     deductions.reviewReadiness += requiresApproval ? 20 : 10;
@@ -267,11 +294,12 @@ export function generateSessionReport(input: GenerateSessionReportInput): Sessio
       id: "scope.outside-budget",
       type: "scope",
       severity: outsideScopeFiles.length > 3 ? "high" : "medium",
-      message: `${outsideScopeFiles.length} changed file(s) are outside the scope budget's allowed paths.`,
-      reason: "Out-of-scope files are direct evidence of scope drift.",
+      message: `${outsideScopeFiles.length} changed file(s) are outside the scope budget's expected paths.`,
+      reason: "Unexpected files need scope review or rationale.",
       evidence: outsideScopeFiles,
       files: outsideScopeFiles,
-      suggestedAction: "Reduce the diff to allowed paths or obtain approval for the expanded scope."
+      suggestedAction:
+        "Review the expanded scope and add rationale, or remove unrelated changes."
     });
     deductions.scopeAdherence += Math.min(48, outsideScopeFiles.length * 12);
     deductions.planAlignment += Math.min(20, outsideScopeFiles.length * 5);
@@ -301,7 +329,10 @@ export function generateSessionReport(input: GenerateSessionReportInput): Sessio
   );
 
   deductions.reviewReadiness += riskDeduction(driftRisk);
-  if (input.scopeBudget?.requiredTests === true && !testsMentioned) {
+  if (
+    (input.scopeBudget?.verificationExpected ?? input.scopeBudget?.requiredTests) === true &&
+    !testsMentioned
+  ) {
     deductions.reviewReadiness += 15;
   }
   if (!risksMentioned) {
@@ -482,7 +513,12 @@ function addDriftWarnings(
 
     if (finding.category === "tests") {
       deductions.reviewReadiness +=
-        finding.severity === "blocking" || finding.severity === "blocked" ? 30 : 15;
+        finding.severity === "blocking" ||
+        finding.severity === "blocked" ||
+        finding.severity === "action_required" ||
+        finding.severity === "cleanup_required"
+          ? 30
+          : 15;
     }
   }
 }
@@ -521,7 +557,10 @@ function addOutputWarnings(
     addWarning(warnings, {
       id: "output.tests-missing",
       type: "output",
-      severity: input.scopeBudget?.requiredTests === true ? "medium" : "low",
+      severity:
+        (input.scopeBudget?.verificationExpected ?? input.scopeBudget?.requiredTests) === true
+          ? "medium"
+          : "low",
       message: "Status output does not include explicit test evidence.",
       reason:
         "Reviewers cannot tell which validation commands ran from the available status artifact.",
@@ -632,7 +671,7 @@ function calculateEfficiency(
     }
   }
 
-  if (input.planValidation !== undefined && input.planValidation.status !== "approved") {
+  if (input.planValidation !== undefined && !isPlanAligned(input.planValidation.status)) {
     const evidenceCharacters = input.planValidation.findings
       .flatMap((finding) => [finding.message, ...(finding.evidence ?? [])])
       .join("\n").length;
@@ -643,7 +682,7 @@ function calculateEfficiency(
       basis.push({
         source: "rejected_plan_item",
         description:
-          "Plan validation surfaced non-approved plan evidence before further implementation.",
+          "Plan validation surfaced guidance before further implementation.",
         estimatedTokens,
         confidence: "medium"
       });
@@ -690,7 +729,11 @@ function testIntegrityFor(input: GenerateSessionReportInput): TestIntegrity {
 
   if (
     testFindings.some(
-      (finding) => finding.severity === "blocking" || finding.severity === "blocked"
+      (finding) =>
+        finding.severity === "blocking" ||
+        finding.severity === "blocked" ||
+        finding.severity === "action_required" ||
+        finding.severity === "cleanup_required"
     )
   ) {
     return "fail";
@@ -698,7 +741,7 @@ function testIntegrityFor(input: GenerateSessionReportInput): TestIntegrity {
 
   if (
     testFindings.length > 0 ||
-    (input.scopeBudget?.requiredTests === true &&
+    ((input.scopeBudget?.verificationExpected ?? input.scopeBudget?.requiredTests) === true &&
       !hasEvidenceSection(input.statusContent ?? "", "tests"))
   ) {
     return "warning";
@@ -712,15 +755,19 @@ function driftRiskFor(status: ReportDriftResult["status"], isGitRepo: boolean): 
     return "medium";
   }
 
-  if (status === "blocked") {
+  if (
+    status === "blocked" ||
+    status === "needs_cleanup" ||
+    status === "needs_attention"
+  ) {
     return "high";
   }
 
-  if (status === "approval_required") {
+  if (status === "approval_required" || status === "needs_approval") {
     return "medium";
   }
 
-  if (status === "warning") {
+  if (status === "warning" || status === "advisory") {
     return "low";
   }
 
@@ -741,6 +788,8 @@ function overEditRisk(
         finding.category === "dependencies" &&
         (finding.severity === "fail" ||
           finding.severity === "blocking" ||
+          finding.severity === "action_required" ||
+          finding.severity === "cleanup_required" ||
           finding.severity === "approval_required" ||
           finding.severity === "blocked")
     )
@@ -897,7 +946,12 @@ function orderWarnings(warnings: ReportWarning[]): ReportWarning[] {
 }
 
 function reportSeverity(severity: ReportDriftFinding["severity"]): ReportWarningSeverity {
-  if (severity === "blocking" || severity === "blocked") {
+  if (
+    severity === "blocking" ||
+    severity === "blocked" ||
+    severity === "action_required" ||
+    severity === "cleanup_required"
+  ) {
     return "high";
   }
 
@@ -986,4 +1040,8 @@ function outputDisciplineNote(report: SessionReport): string {
     .slice(0, 3)
     .map((warning) => warning.message.replace(/\.$/, "").toLowerCase())
     .join("; ");
+}
+
+function isPlanAligned(status: ReportPlanValidation["status"]): boolean {
+  return status === "aligned" || status === "approved";
 }

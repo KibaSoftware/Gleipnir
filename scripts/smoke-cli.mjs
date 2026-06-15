@@ -80,18 +80,18 @@ if (
 
 run("git", ["check-ignore", "-q", ".gleip/session.json"], repo);
 
-if (!validation.includes("Gleip plan check passed · ready to implement within scope")) {
-  throw new Error(`Expected approved plan validation, received:\n${validation}`);
+if (!validation.includes("Gleip plan check aligned with declared task scope")) {
+  throw new Error(`Expected aligned plan validation, received:\n${validation}`);
 }
 
 const report = JSON.parse(reportJson);
 
-if (version !== "0.7.0") {
-  throw new Error(`Expected Gleip 0.7.0, received: ${version}`);
+if (version !== "0.7.1") {
+  throw new Error(`Expected Gleip 0.7.1, received: ${version}`);
 }
 
-if (report.schemaVersion !== "1.0.0" || report.version !== "0.7.0") {
-  throw new Error(`Expected Gleip 0.7.0 report schema 1.0.0, received:\n${reportJson}`);
+if (report.schemaVersion !== "1.0.0" || report.version !== "0.7.1") {
+  throw new Error(`Expected Gleip 0.7.1 report schema 1.0.0, received:\n${reportJson}`);
 }
 
 if (!report.finalResponse?.markdown?.includes("### Gleip")) {

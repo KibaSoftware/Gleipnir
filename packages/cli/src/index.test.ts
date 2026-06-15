@@ -75,7 +75,7 @@ describe("createGleipCommand", () => {
   it("--version prints the package version", async () => {
     const output = (await runHelpCommand(["--version"])).join("\n");
 
-    expect(output).toBe("0.7.0");
+    expect(output).toBe("0.7.1");
   });
 
   it("command help shows important flags and stdin support", async () => {
@@ -132,7 +132,7 @@ describe("createGleipCommand", () => {
     expect(packageJson.exports["."].import).toBe("./dist/index.js");
     expect(packageJson.exports["."].types).toBe("./dist/index.d.ts");
     expect(packageJson.name).toBe("gleip");
-    expect(packageJson.version).toBe("0.7.0");
+    expect(packageJson.version).toBe("0.7.1");
     expect(packageJson.dependencies).toEqual({
       commander: "^12.0.0",
       yaml: "^2.0.0",
@@ -176,7 +176,7 @@ describe("createGleipCommand", () => {
     });
   });
 
-  it("release metadata uses version 0.7.0 across packages", () => {
+  it("release metadata uses version 0.7.1 across packages", () => {
     const packagePaths = [
       "package.json",
       "packages/cli/package.json",
@@ -192,7 +192,7 @@ describe("createGleipCommand", () => {
       const packageJson = JSON.parse(readFileSync(join(repoRoot, packagePath), "utf8")) as {
         version: string;
       };
-      expect(packageJson.version).toBe("0.7.0");
+      expect(packageJson.version).toBe("0.7.1");
     }
 
     const cliPackageJson = readFileSync(join(repoRoot, "packages", "cli", "package.json"), "utf8");
@@ -478,7 +478,7 @@ describe("createGleipCommand", () => {
     const agents = readFileSync(join(repo, "AGENTS.md"), "utf8");
     expect(agents).toContain("<!-- GLEIP:START -->");
     expect(agents).toContain("This repository uses Gleip");
-    expect(agents).toContain("local guardrails");
+    expect(agents).toContain("local guidance");
     expect(agents).toContain("check `.gleip/state.json`");
     expect(agents).toContain('run `npx --no-install gleip preflight "<user task>"`');
     expect(agents).toContain("Read `.gleip/brief.md` and `.gleip/scope-budget.json`");
@@ -489,25 +489,25 @@ describe("createGleipCommand", () => {
       "Run `npx --no-install gleip status` whenever Gleip's expected next action is unclear"
     );
     expect(agents).toContain("Do not edit or commit files under `.gleip/`");
-    expect(agents).toContain("Do not bypass a failing Gleip check without explaining");
+    expect(agents).toContain("Address cleanup and action-required findings");
     expect(agents).toContain("Keep changes minimal and scoped to the requested task");
-    expect(agents).toContain("needs_revision");
-    expect(agents).toContain("requires_approval");
+    expect(agents).toContain("needs_clarification");
+    expect(agents).toContain("needs_approval");
     expect(agents).toContain("Gleip is currently inactive");
     expect(agents).toContain("Gleip is configured for this repository");
     expect(agents).toContain(
-      "Gleip is configured for this repository, but I could not run it through the local package command. Do you want me to proceed without Gleip guardrails? y/n"
+      "Gleip is configured for this repository, but I could not run it through the local package command. Do you want me to continue without Gleip guidance? y/n"
     );
     expect(agents).toContain("Before the final response, run `npx --no-install gleip status`");
     expect(agents).toContain(
       "Before the final response, run or read `npx --no-install gleip report`"
     );
-    expect(agents).toContain("Stop if status is `approval_required` or `blocked`");
+    expect(agents).toContain("Report `advisory`, `needs_attention`, `needs_cleanup`, or `needs_approval`");
     expect(agents).toContain("scope adherence, drift risk, output discipline");
     expect(agents).toContain("estimated token waste avoided");
     expect(agents).toContain("Gleip checklist for every coding task");
-    expect(agents).toContain("approval_required");
-    expect(agents).toContain("blocked");
+    expect(agents).toContain("approval-required");
+    expect(agents).not.toContain("task blocked");
     expect(agents).toContain("<!-- GLEIP:END -->");
   });
 
@@ -703,7 +703,7 @@ describe("createGleipCommand", () => {
     expect(report).toContain("WARN Missing .gleip.yml or GLEIP.md");
     expect(report).toContain("WARN Missing Gleip-managed agent instructions");
     expect(report).toContain("WARN Missing or incomplete Gleip .gitignore block");
-    expect(report).toContain("OK   CLI version resolved (0.7.0)");
+    expect(report).toContain("OK   CLI version resolved (0.7.1)");
     expect(report).toContain("OK   Built-in init assets available");
     expect(report).toContain("Run: npx gleip init");
   });
@@ -839,7 +839,9 @@ describe("createGleipCommand", () => {
       updatedBy: "local-cli",
       reason: "manual test"
     });
-    expect(output.join("\n")).toContain("Agents should ask before proceeding");
+    expect(output.join("\n")).toContain(
+      "Agents should confirm whether to continue without Gleip guidance"
+    );
   });
 
   it("state prints enabled and disabled state", async () => {
@@ -1055,7 +1057,7 @@ describe("createGleipCommand", () => {
     expect(brief).toContain("# Gleip Implementation Brief");
     expect(brief).toContain("- Type: small_feature");
     expect(brief).toContain("- Risk: medium");
-    expect(brief).toContain("- Tests likely required: yes");
+    expect(brief).toContain("- Focused verification likely expected: yes");
     expect(brief).toContain("- New dependencies likely allowed: no");
   });
 
@@ -1123,7 +1125,7 @@ describe("createGleipCommand", () => {
     const repo = createTempRepo();
     const result = await runCommandResult(repo, ["brief"]);
 
-    expect(result.output.join("\n")).toContain("[NO_ACTIVE_SESSION] blocking");
+    expect(result.output.join("\n")).toContain("[NO_ACTIVE_SESSION] action_required");
     expect(result.output.join("\n")).toContain('Run: npx gleip preflight "<task>"');
     expect(result.exitCode).toBe(1);
   });
@@ -1143,7 +1145,7 @@ describe("createGleipCommand", () => {
     const repo = createTempRepo();
     const result = await runCommandResult(repo, ["status"]);
 
-    expect(result.output.join("\n")).toContain("[NO_ACTIVE_SESSION] blocking");
+    expect(result.output.join("\n")).toContain("[NO_ACTIVE_SESSION] action_required");
     expect(result.output.join("\n")).toContain('Run: npx gleip preflight "<task>"');
     expect(result.exitCode).toBe(1);
   });
@@ -1152,7 +1154,7 @@ describe("createGleipCommand", () => {
     const repo = createTempRepo();
     const result = await runCommandResult(repo, ["validate-plan", "Update src/index.ts"]);
 
-    expect(result.output.join("\n")).toContain("[NO_ACTIVE_SESSION] blocking");
+    expect(result.output.join("\n")).toContain("[NO_ACTIVE_SESSION] action_required");
     expect(result.exitCode).toBe(1);
   });
 
@@ -1177,7 +1179,7 @@ describe("createGleipCommand", () => {
 
     const status = readFileSync(join(targetCwd, ".gleip", "status.md"), "utf8");
     expect(status).toContain("# Gleip Status");
-    expect(status).toContain("- Status: within_scope");
+    expect(status).toContain("- Status: clean");
     expect(existsSync(join(processCwd, ".gleip", "status.md"))).toBe(false);
   });
 
@@ -1188,7 +1190,7 @@ describe("createGleipCommand", () => {
 
     const output = await runCommand(repo, ["status"]);
 
-    expect(output.join("\n")).toContain("Gleip status complete · drift: none");
+    expect(output.join("\n")).toContain("Gleip status complete · status: clean");
     expect(output.join("\n")).toContain("Gleip is currently disabled");
     expect(output.join("\n")).toContain("Status can still be checked manually.");
   });
@@ -1202,7 +1204,7 @@ describe("createGleipCommand", () => {
 
     expect(statusOutput).toBe(
       [
-        "Gleip status complete · drift: none",
+        "Gleip status complete · status: clean",
         "Changes: 0 files, +0/-0",
         "Next: generate report"
       ].join("\n")
@@ -1343,7 +1345,7 @@ describe("createGleipCommand", () => {
     });
 
     const statusOutput = output.join("\n");
-    expect(statusOutput).toContain("Gleip status complete · drift: none");
+    expect(statusOutput).toContain("Gleip status complete · status: clean");
     expect(statusOutput).toContain("Changes: 1 files, +3/-1");
     expect(statusOutput).not.toContain("Findings:");
     expect(statusOutput).toContain("Next: generate report");
@@ -1404,8 +1406,8 @@ describe("createGleipCommand", () => {
     const brief = readFileSync(join(repo, ".gleip", "brief.md"), "utf8");
     expect(brief).toContain("## Scope budget");
     expect(brief).toContain("- Expected files changed: 2-6");
-    expect(brief).toContain("## Hard gates");
-    expect(brief).toContain("## Stop conditions");
+    expect(brief).toContain("## Protected checks");
+    expect(brief).toContain("## Pause and clarify conditions");
   });
 
   it("preflight writes the generated implementation brief", async () => {
@@ -1444,8 +1446,8 @@ describe("createGleipCommand", () => {
     ]);
 
     const validationOutput = output.join("\n");
-    expect(validationOutput).toContain("Gleip plan check passed · ready to implement within scope");
-    expect(validationOutput).toContain("Next: implement within scope, then run status");
+    expect(validationOutput).toContain("Gleip plan check aligned with declared task scope");
+    expect(validationOutput).toContain("Next: implement the plan, run verification, then run status");
     expect(validationOutput.split("\n")).toHaveLength(2);
   });
 
@@ -1470,9 +1472,9 @@ describe("createGleipCommand", () => {
       parsedPlan: { proposedFiles: string[] };
     };
 
-    expect(json.status).toBe("approved");
+    expect(json.status).toBe("aligned");
     expect(json.findings).toEqual([]);
-    expect(json.nextAction).toContain("Proceed");
+    expect(json.nextAction).toContain("Implement");
     expect(json.parsedPlan.proposedFiles).toContain("src/features/users/UserTable.tsx");
   });
 
@@ -1493,7 +1495,7 @@ describe("createGleipCommand", () => {
         validatedAt: string;
       };
     };
-    expect(session.latestPlanValidation.status).toBe("approved");
+    expect(session.latestPlanValidation.status).toBe("aligned");
     expect(session.latestPlanValidation.validatedAt).toBe("2026-05-30T00:00:00.000Z");
   });
 
@@ -1525,7 +1527,7 @@ describe("createGleipCommand", () => {
     expect(session.latestPlanValidation.parsedPlan.proposedFiles).not.toContain("plan.md");
 
     expect(output.join("\n")).toContain(
-      "Gleip plan check passed · ready to implement within scope"
+      "Gleip plan check aligned with declared task scope"
     );
   });
 
@@ -1581,7 +1583,7 @@ describe("createGleipCommand", () => {
       "Update src/foo.ts and run existing tests."
     ]);
 
-    expect(output.join("\n")).toContain("Gleip plan check passed");
+    expect(output.join("\n")).toContain("Gleip plan check aligned");
   });
 
   it("status command prints drift result", async () => {
@@ -1605,7 +1607,7 @@ describe("createGleipCommand", () => {
             severity: "approval_required",
             title: "Dependency files changed",
             message: "package.json changed, but dependency changes are not allowed.",
-            recommendation: "Stop and ask for approval before changing dependency files.",
+            recommendation: "Request approval before changing dependency files.",
             category: "dependencies"
           }
         ],
@@ -1619,13 +1621,11 @@ describe("createGleipCommand", () => {
     });
 
     const statusOutput = output.join("\n");
-    expect(statusOutput).toContain("Gleip status complete · drift: medium");
+    expect(statusOutput).toContain("Gleip status complete · status: needs_approval");
     expect(statusOutput).toContain("Changes: 1 files, +1/-0");
     expect(statusOutput).toContain("Findings: 1");
     expect(statusOutput).toContain("Dependency files changed");
-    expect(statusOutput).toContain(
-      "Stop and ask for approval before continuing, or revise the implementation to stay within budget."
-    );
+    expect(statusOutput).toContain("Review the listed findings");
   });
 
   it("status command writes drift result to .gleip/status.md", async () => {
@@ -1663,8 +1663,8 @@ describe("createGleipCommand", () => {
     });
 
     const status = readFileSync(join(repo, ".gleip", "status.md"), "utf8");
-    expect(status).toContain("- Status: blocked");
-    expect(status).toContain("### Blocking");
+    expect(status).toContain("- Status: needs_attention");
+    expect(status).toContain("### Action required");
     expect(status).toContain("Skipped test added");
   });
 
@@ -1678,9 +1678,9 @@ describe("createGleipCommand", () => {
         findings: [
           {
             severity: "warning",
-            title: "Files outside allowed scope",
+            title: "Files outside expected scope",
             message:
-              "4 files changed outside the approved scope. Examples: src/a.ts, src/b.ts, src/c.ts.",
+              "4 files changed outside the expected scope. Examples: src/a.ts, src/b.ts, src/c.ts.",
             recommendation: "Confirm this is required or reduce the change.",
             category: "allowed_scope"
           },
@@ -1695,7 +1695,7 @@ describe("createGleipCommand", () => {
             severity: "approval_required",
             title: "Dependency files changed",
             message: "2 dependency files changed. Examples: package.json, pnpm-lock.yaml.",
-            recommendation: "Stop and ask for approval.",
+            recommendation: "Request approval.",
             category: "dependencies"
           }
         ],
@@ -1709,10 +1709,10 @@ describe("createGleipCommand", () => {
     });
 
     const statusOutput = output.join("\n");
-    expect(statusOutput).toContain("Gleip status complete · drift: high");
+    expect(statusOutput).toContain("Gleip status complete · status: needs_approval");
     expect(statusOutput).toContain("Findings: 3");
-    expect(statusOutput).toContain("highest: blocking: Skipped test added");
-    expect(statusOutput).not.toContain("4 files changed outside the approved scope");
+    expect(statusOutput).toContain("highest: approval_required: Dependency files changed");
+    expect(statusOutput).not.toContain("4 files changed outside the expected scope");
     expect(statusOutput.split("\n")).toHaveLength(4);
   });
 
@@ -1736,7 +1736,7 @@ describe("createGleipCommand", () => {
         findings: [
           {
             severity: "warning",
-            title: "Files outside allowed scope",
+            title: "Files outside expected scope",
             message: "1 file changed outside the allowed paths: src/other.ts.",
             recommendation: "Confirm this file is necessary for the task.",
             category: "allowed_scope"
@@ -1751,11 +1751,11 @@ describe("createGleipCommand", () => {
       })
     });
 
-    expect(output.join("\n")).toContain("Gleip check complete · drift: low");
+    expect(output.join("\n")).toContain("Gleip check complete · status: advisory");
     expect(readFileSync(join(repo, ".gleip", "status.md"), "utf8")).toBe(originalStatus);
   });
 
-  it("check --ci exits non-zero for documented blocking findings", async () => {
+  it("check --ci exits non-zero for documented action-required findings", async () => {
     const repo = createTempRepo();
     await runCommand(repo, ["preflight", "Add CSV export to users table"]);
 
@@ -1777,9 +1777,41 @@ describe("createGleipCommand", () => {
     });
 
     expect(result.output.join("\n")).toContain(
-      "[TEST_SKIPPED] blocking: Skipped test added"
+      "[TEST_SKIPPED] action_required: Skipped test added"
     );
     expect(result.exitCode).toBe(1);
+  });
+
+  it("reports local artifacts as cleanup with a specific next action", async () => {
+    const repo = createTempRepo();
+    await runCommand(repo, ["preflight", "Update local documentation"]);
+
+    const result = await runCommandResult(repo, ["check"], {
+      detectScopeDrift: () => ({
+        status: "blocked",
+        findings: [
+          {
+            code: "LOCAL_ARTIFACT_INCLUDED",
+            severity: "blocking",
+            title: "Local Gleip artifact included",
+            message: ".gleip/session.json is tracked.",
+            category: "local_artifacts"
+          }
+        ],
+        metrics: { filesChanged: 0, linesAdded: 0, linesDeleted: 0 },
+        summary: "Local artifact detected."
+      })
+    });
+    const output = result.output.join("\n");
+
+    expect(output).toContain("status: needs_cleanup");
+    expect(output).toContain(
+      "Remove .gleip session artifacts from the change set or ensure .gleip/ is ignored, then rerun status."
+    );
+    expect(output).not.toContain("skipped");
+    expect(output).not.toContain("secret");
+    expect(output).not.toContain("task blocked");
+    expect(result.exitCode).toBe(0);
   });
 
   it("check --ci exits zero for warning and non-blocking fail findings", async () => {
@@ -1800,7 +1832,7 @@ describe("createGleipCommand", () => {
           {
             code: "SCOPE_EXPANSION_WARN",
             severity: "warn",
-            title: "Files outside allowed scope",
+            title: "Files outside expected scope",
             message: "Multiple files changed.",
             category: "allowed_scope"
           }
@@ -1844,7 +1876,7 @@ describe("createGleipCommand", () => {
 
     const output = await runCommand(repo, ["check"]);
 
-    expect(output.join("\n")).toContain("Gleip check complete · drift: none");
+    expect(output.join("\n")).toContain("Gleip check complete · status: clean");
     expect(output.join("\n")).toContain("Gleip is currently disabled");
     expect(output.join("\n")).toContain("Check can still be run manually.");
   });
@@ -1977,8 +2009,8 @@ describe("createGleipCommand", () => {
         findings: [
           {
             severity: "warning",
-            title: "Files outside allowed scope",
-            message: "1 file changed outside the approved scope.",
+            title: "Files outside expected scope",
+            message: "1 file changed outside the expected scope.",
             category: "allowed_scope"
           }
         ],
@@ -2002,7 +2034,7 @@ describe("createGleipCommand", () => {
       nextAction: string;
       status: string;
     };
-    expect(json.status).toBe("warning");
+    expect(json.status).toBe("advisory");
     expect(json.metrics.filesChanged).toBe(1);
     expect(json.baseline).toMatchObject({
       hasBaseline: true,
@@ -2010,10 +2042,10 @@ describe("createGleipCommand", () => {
       sessionFilesChanged: 1
     });
     expect(json.findings[0]).toMatchObject({
-      severity: "warning",
-      title: "Files outside allowed scope"
+      severity: "warn",
+      title: "Files outside expected scope"
     });
-    expect(json.nextAction).toContain("Review warnings");
+    expect(json.nextAction).toContain("Review the listed findings");
   });
 
   it("report generates report.json and report.md", async () => {
@@ -2062,7 +2094,7 @@ describe("createGleipCommand", () => {
     expect(output).toHaveLength(1);
     expect(output[0]?.trimStart().startsWith("{")).toBe(true);
     expect(output.join("\n")).not.toContain("Gleip report ready");
-    expect(report.version).toBe("0.7.0");
+    expect(report.version).toBe("0.7.1");
     expect(report.generatedAt).toBe("2026-05-30T00:00:00.000Z");
     expect(report.summary.filesChanged).toBe(0);
     expect(existsSync(join(repo, ".gleip", "report.json"))).toBe(true);
@@ -2170,12 +2202,12 @@ describe("createGleipCommand", () => {
       nextAction: string;
       status: string;
     };
-    expect(json.status).toBe("within_scope");
+    expect(json.status).toBe("clean");
     expect(json.baseline.hasBaseline).toBe(true);
     expect(json.baseline.sessionFilesChanged).toBe(0);
     expect(json.metrics.linesAdded).toBe(2);
     expect(json.findings).toEqual([]);
-    expect(json.nextAction).toBe("Continue. Run relevant tests before final response.");
+    expect(json.nextAction).toContain("focused verification");
   });
 
   it("stop archives the active session in the target cwd", async () => {
@@ -2465,19 +2497,19 @@ function assertGleipWorkflowInstructions(content: string): void {
   expect(content).toContain("npx --no-install gleip check");
   expect(content).toContain("npx --no-install gleip status");
   expect(content).toContain("npx --no-install gleip report");
-  expect(content).toContain("needs_revision");
-  expect(content).toContain("requires_approval");
+  expect(content).toContain("needs_clarification");
+  expect(content).toContain("needs_approval");
   expect(content).toContain("Gleip is currently inactive");
-  expect(content).toContain("proceed without Gleip guardrails");
+  expect(content).toContain("continue without Gleip guidance");
   expect(content).toContain("Gleip is configured for this repository");
   expect(content).toContain(
-    "Gleip is configured for this repository, but I could not run it through the local package command. Do you want me to proceed without Gleip guardrails? y/n"
+    "Gleip is configured for this repository, but I could not run it through the local package command. Do you want me to continue without Gleip guidance? y/n"
   );
   expect(content).toContain("Gleip checklist for every coding task");
   expect(content).toContain("Check `.gleip/state.json`");
   expect(content).toContain("Validate plan with `npx --no-install gleip validate-plan`");
   expect(content).toContain("Do not edit or commit files under `.gleip/`");
-  expect(content).toContain("Do not bypass a failing Gleip check without explaining");
+  expect(content).toContain("Address cleanup and action-required findings");
   expect(content).toContain("Keep changes minimal and scoped to the requested task");
   expect(content).toContain("scope adherence, drift risk, output discipline");
   expect(content).toContain("estimated token waste avoided");

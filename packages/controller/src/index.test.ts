@@ -21,13 +21,13 @@ describe("packageName", () => {
 });
 
 describe("detectScopeDrift", () => {
-  it("returns within_scope for no changes", () => {
+  it("returns clean for no changes", () => {
     const result = detectScopeDrift({
       scopeBudget: budget(),
       gitDiffContext: diff()
     });
 
-    expect(result.status).toBe("within_scope");
+    expect(result.status).toBe("clean");
     expect(result.summary).toBe("No working tree changes detected.");
   });
 
@@ -46,7 +46,7 @@ describe("detectScopeDrift", () => {
       })
     });
 
-    expect(result.status).toBe("warning");
+    expect(result.status).toBe("advisory");
     expect(result.findings[0]).toMatchObject({
       code: "SCOPE_LIMIT_EXCEEDED",
       severity: "warn",
@@ -66,7 +66,7 @@ describe("detectScopeDrift", () => {
       })
     });
 
-    expect(result.status).toBe("warning");
+    expect(result.status).toBe("advisory");
     expect(result.findings.map((finding) => finding.title)).toContain(
       "Added lines exceed scope budget"
     );
@@ -82,11 +82,11 @@ describe("detectScopeDrift", () => {
       })
     });
 
-    expect(result.status).toBe("approval_required");
+    expect(result.status).toBe("needs_approval");
     expect(result.findings).toContainEqual(
       expect.objectContaining({
         code: "DEPENDENCY_FILE_CHANGED",
-        severity: "fail",
+        severity: "approval_required",
         title: "Dependency files changed"
       })
     );
@@ -102,11 +102,11 @@ describe("detectScopeDrift", () => {
       })
     });
 
-    expect(result.status).toBe("approval_required");
+    expect(result.status).toBe("needs_approval");
     expect(result.findings).toContainEqual(
       expect.objectContaining({
         code: "LOCKFILE_CHANGED",
-        severity: "fail",
+        severity: "approval_required",
         title: "Lockfile changed"
       })
     );
@@ -159,7 +159,10 @@ describe("detectScopeDrift", () => {
       expect.objectContaining({ code: "DEPENDENCY_FILE_CHANGED" })
     );
     expect(dependencyAddition.findings).toContainEqual(
-      expect.objectContaining({ code: "DEPENDENCY_FILE_CHANGED", severity: "fail" })
+      expect.objectContaining({
+        code: "DEPENDENCY_FILE_CHANGED",
+        severity: "approval_required"
+      })
     );
   });
 
@@ -173,11 +176,11 @@ describe("detectScopeDrift", () => {
       })
     });
 
-    expect(result.status).toBe("approval_required");
+    expect(result.status).toBe("needs_approval");
     expect(result.findings.map((finding) => finding.title)).toContain("CI configuration changed");
   });
 
-  it("warns when changed files are outside allowed paths", () => {
+  it("advises when changed files are outside expected paths", () => {
     const result = detectScopeDrift({
       scopeBudget: budget({ allowedPaths: ["src/users/UserTable.tsx"] }),
       gitDiffContext: diff({
@@ -187,12 +190,12 @@ describe("detectScopeDrift", () => {
       })
     });
 
-    expect(result.status).toBe("warning");
+    expect(result.status).toBe("advisory");
     expect(result.findings).toContainEqual(
       expect.objectContaining({
         code: "SCOPE_EXPANSION_WARN",
         severity: "warn",
-        title: "Files outside allowed scope"
+        title: "Files outside expected scope"
       })
     );
   });
@@ -232,13 +235,13 @@ describe("detectScopeDrift", () => {
       })
     });
 
-    expect(result.status).toBe("approval_required");
+    expect(result.status).toBe("needs_approval");
     expect(result.findings.map((finding) => finding.title)).toContain(
       "Approval-required paths changed"
     );
   });
 
-  it("blocks when skipped tests are added", () => {
+  it("requires attention when skipped tests are added", () => {
     const result = detectScopeDrift({
       scopeBudget: budget(),
       gitDiffContext: diff({
@@ -249,17 +252,17 @@ describe("detectScopeDrift", () => {
       })
     });
 
-    expect(result.status).toBe("blocked");
+    expect(result.status).toBe("needs_attention");
     expect(result.findings).toContainEqual(
       expect.objectContaining({
         code: "TEST_SKIPPED",
-        severity: "blocking",
+        severity: "action_required",
         title: "Skipped test added"
       })
     );
   });
 
-  it("blocks when env files change", () => {
+  it("requires cleanup when env files change", () => {
     const result = detectScopeDrift({
       scopeBudget: budget(),
       gitDiffContext: diff({
@@ -269,17 +272,17 @@ describe("detectScopeDrift", () => {
       })
     });
 
-    expect(result.status).toBe("approval_required");
+    expect(result.status).toBe("needs_cleanup");
     expect(result.findings).toContainEqual(
       expect.objectContaining({
         code: "SECRET_FILE_CHANGED",
-        severity: "fail",
+        severity: "cleanup_required",
         title: "Secret or env file changed"
       })
     );
   });
 
-  it("blocks when a test file is deleted", () => {
+  it("requires attention when a test file is deleted", () => {
     const result = detectScopeDrift({
       scopeBudget: budget(),
       gitDiffContext: diff({
@@ -291,17 +294,17 @@ describe("detectScopeDrift", () => {
       })
     });
 
-    expect(result.status).toBe("blocked");
+    expect(result.status).toBe("needs_attention");
     expect(result.findings).toContainEqual(
       expect.objectContaining({
         code: "TEST_DELETED",
-        severity: "blocking",
+        severity: "action_required",
         title: "Test file deleted"
       })
     );
   });
 
-  it("blocks tracked local Gleip artifacts", () => {
+  it("requires cleanup for tracked local Gleip artifacts", () => {
     const result = detectScopeDrift({
       scopeBudget: budget(),
       gitDiffContext: diff({
@@ -309,11 +312,11 @@ describe("detectScopeDrift", () => {
       })
     });
 
-    expect(result.status).toBe("blocked");
+    expect(result.status).toBe("needs_cleanup");
     expect(result.findings).toContainEqual(
       expect.objectContaining({
         code: "LOCAL_ARTIFACT_INCLUDED",
-        severity: "blocking",
+        severity: "cleanup_required",
         title: "Local Gleip artifact included"
       })
     );
@@ -331,8 +334,8 @@ describe("detectScopeDrift", () => {
     expect(findings[0]).toMatchObject({
       code: "SCOPE_EXPANSION_WARN",
       severity: "warn",
-      title: "Files outside allowed scope",
-      message: "4 files changed outside the approved scope. Examples: src/a.ts, src/b.ts, src/c.ts."
+      title: "Files outside expected scope",
+      message: "4 files changed outside the expected scope. Examples: src/a.ts, src/b.ts, src/c.ts."
     });
   });
 
@@ -345,10 +348,10 @@ describe("detectScopeDrift", () => {
     expect(findings).toHaveLength(1);
     expect(findings[0]).toMatchObject({
       code: "DEPENDENCY_FILE_CHANGED",
-      severity: "fail",
+      severity: "approval_required",
       title: "Dependency files changed",
       message:
-        "2 dependency files changed, but dependency changes are not allowed by the budget. Examples: package.json, pnpm-lock.yaml."
+        "2 dependency files changed and requires approval. Examples: package.json, pnpm-lock.yaml."
     });
   });
 
@@ -363,14 +366,14 @@ describe("detectScopeDrift", () => {
       },
       {
         code: "TEST_SKIPPED",
-        severity: "blocking",
-        title: "Blocked",
-        message: "Blocked.",
-        category: "blocked"
+        severity: "cleanup_required",
+        title: "Cleanup",
+        message: "Cleanup.",
+        category: "cleanup"
       },
       {
         code: "DEPENDENCY_FILE_CHANGED",
-        severity: "fail",
+        severity: "approval_required",
         title: "Approval",
         message: "Approval.",
         category: "approval"
@@ -378,33 +381,78 @@ describe("detectScopeDrift", () => {
     ]);
 
     expect(findings.map((finding) => finding.severity)).toEqual([
-      "blocking",
-      "fail",
+      "cleanup_required",
+      "approval_required",
       "warn"
     ]);
   });
 
-  it("derives blocked next action", () => {
-    expect(deriveNextAction("blocked")).toBe(
-      "Fix blocked issues before continuing. Do not proceed until skipped/deleted tests or secret changes are resolved."
+  it("derives cleanup-specific next action", () => {
+    expect(
+      deriveNextAction([{ code: "LOCAL_ARTIFACT_INCLUDED" }])
+    ).toBe(
+      "Remove .gleip session artifacts from the change set or ensure .gleip/ is ignored, then rerun status."
     );
   });
 
-  it("derives approval_required next action", () => {
-    expect(deriveNextAction("approval_required")).toBe(
-      "Stop and ask for approval before continuing, or revise the implementation to stay within budget."
+  it("derives dependency-specific next action", () => {
+    expect(deriveNextAction([{ code: "DEPENDENCY_FILE_CHANGED" }])).toBe(
+      "Request approval for the dependency/metadata change or remove it from the change set."
     );
   });
 
-  it("derives warning next action", () => {
-    expect(deriveNextAction("warning")).toBe(
-      "Review warnings and reduce scope if practical. Continue only if the expanded scope is justified."
+  it("derives scope-specific next action", () => {
+    expect(deriveNextAction([{ code: "SCOPE_LIMIT_EXCEEDED" }])).toBe(
+      "Review whether the added scope is declared by the task. Add a scope rationale if needed."
     );
   });
 
-  it("derives within_scope next action", () => {
-    expect(deriveNextAction("within_scope")).toBe(
-      "Continue. Run relevant tests before final response."
+  it("mentions only actual categories in mixed next actions", () => {
+    const action = deriveNextAction([
+      { code: "LOCAL_ARTIFACT_INCLUDED" },
+      { code: "CI_FILE_CHANGED" }
+    ]);
+
+    expect(action).toContain(".gleip session artifacts");
+    expect(action).toContain("CI change");
+    expect(action).not.toContain("skipped");
+    expect(action).not.toContain("secret");
+  });
+
+  it("accepts small context-doc touches for broad work", () => {
+    const result = detectScopeDrift({
+      scopeBudget: budget({
+        allowedPaths: ["src"],
+        contextDocsTouchAllowed: true
+      }),
+      gitDiffContext: diff({
+        changedFiles: ["FULL_CONTEXT.md"],
+        fileStats: [{ path: "FULL_CONTEXT.md", added: 12, deleted: 3 }],
+        totalLinesAdded: 12,
+        totalLinesDeleted: 3
+      })
+    });
+
+    expect(result.status).toBe("clean");
+  });
+
+  it("advises on a large unrelated context-doc rewrite", () => {
+    const result = detectScopeDrift({
+      scopeBudget: budget({
+        allowedPaths: ["src"],
+        contextDocsTouchAllowed: true
+      }),
+      gitDiffContext: diff({
+        changedFiles: ["ARCHITECTURE.md"],
+        fileStats: [{ path: "ARCHITECTURE.md", added: 180, deleted: 40 }],
+        totalLinesAdded: 180,
+        totalLinesDeleted: 40
+      })
+    });
+
+    expect(result.status).toBe("advisory");
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({ code: "SCOPE_EXPANSION_WARN" })
     );
   });
 });
@@ -664,8 +712,8 @@ function outsideFinding(file: string) {
   return {
     code: "SCOPE_EXPANSION_WARN" as const,
     severity: "warn" as const,
-    title: "Files outside allowed scope",
-    message: `${file} changed outside the approved scope.`,
+    title: "Files outside expected scope",
+    message: `${file} changed outside the expected scope.`,
     file,
     recommendation: "Confirm this is required or reduce the change.",
     category: "allowed_scope"
@@ -675,11 +723,11 @@ function outsideFinding(file: string) {
 function dependencyFinding(file: string) {
   return {
     code: "DEPENDENCY_FILE_CHANGED" as const,
-    severity: "fail" as const,
+    severity: "approval_required" as const,
     title: "Dependency files changed",
-    message: `${file} changed, but dependency changes are not allowed by the budget.`,
+    message: `${file} changed and requires approval.`,
     file,
-    recommendation: "Stop and ask for approval before changing dependency files.",
+    recommendation: "Request approval for the dependency change or remove it.",
     category: "dependencies"
   };
 }

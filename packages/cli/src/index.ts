@@ -16,6 +16,7 @@ import { Command } from "commander";
 
 import { loadConfig as loadBundledConfig } from "../../config/src/index.js";
 import {
+  deriveNextAction as deriveBundledNextAction,
   detectScopeDrift as detectBundledScopeDrift,
   generateSessionReport as generateBundledSessionReport,
   renderSessionReportMarkdown as renderBundledSessionReportMarkdown
@@ -315,7 +316,16 @@ interface DriftResult {
   summary: string;
 }
 
-type DriftStatus = "within_scope" | "warning" | "approval_required" | "blocked";
+type DriftStatus =
+  | "clean"
+  | "advisory"
+  | "needs_attention"
+  | "needs_cleanup"
+  | "needs_approval"
+  | "within_scope"
+  | "warning"
+  | "approval_required"
+  | "blocked";
 
 interface DriftFinding {
   code?: string;
@@ -324,6 +334,8 @@ interface DriftFinding {
     | "warn"
     | "fail"
     | "blocking"
+    | "action_required"
+    | "cleanup_required"
     | "warning"
     | "approval_required"
     | "blocked";
@@ -382,17 +394,32 @@ interface ScopeBudget {
     deletedTestsAllowed: boolean;
     secretsAllowed: boolean;
   };
+  protectedChecks?: ScopeBudget["hardGates"];
   allowedPaths: string[];
+  expectedPaths?: string[];
   suspiciousPaths: string[];
   approvalRequiredFor: string[];
   blockedWithoutApproval: string[];
+  approvalRequiredChanges?: string[];
   requiredTests: boolean;
+  verificationExpected?: boolean;
   testGuidance: string[];
   stopConditions: string[];
+  pauseAndClarifyConditions?: string[];
+  contextDocsTouchAllowed?: boolean;
+  readOnlyContextPaths?: string[];
   reasons: string[];
 }
 
-type PlanValidationStatus = "approved" | "needs_revision" | "requires_approval";
+type PlanValidationStatus =
+  | "aligned"
+  | "advisory"
+  | "needs_clarification"
+  | "needs_approval"
+  | "needs_cleanup"
+  | "approved"
+  | "needs_revision"
+  | "requires_approval";
 
 interface PlanValidationFinding {
   code?: string;
@@ -401,6 +428,8 @@ interface PlanValidationFinding {
     | "warn"
     | "fail"
     | "blocking"
+    | "action_required"
+    | "cleanup_required"
     | "warning"
     | "approval_required";
   title: string;
@@ -584,7 +613,7 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
   program
     .name("gleip")
     .description(
-      "Run local-only preflight, scope budget, and status guardrails for coding-agent work."
+      "Run local-only preflight, scope guidance, and status checks for coding-agent work."
     )
     .version(GLEIP_VERSION)
     .option("--cwd <path>", "Run Gleip against a target repository.", options.cwd)
@@ -676,7 +705,7 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
 
   program
     .command("enable")
-    .description("Enable local-only Gleip guardrails for this repository.")
+    .description("Enable local-only Gleip guidance for this repository.")
     .option("--reason <reason>", "Reason for enabling Gleip.")
     .action((commandOptions: StateChangeOptions) => {
       setGleipEnabled(runtime.cwd, true, commandOptions.reason, runtime.now().toISOString());
@@ -685,12 +714,12 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
 
   program
     .command("disable")
-    .description("Disable local-only Gleip guardrails for this repository.")
+    .description("Disable local-only Gleip guidance for this repository.")
     .option("--reason <reason>", "Reason for disabling Gleip.")
     .action((commandOptions: StateChangeOptions) => {
       setGleipEnabled(runtime.cwd, false, commandOptions.reason, runtime.now().toISOString());
       runtime.stdout(
-        "Gleip disabled. Agents should ask before proceeding without Gleip guardrails."
+        "Gleip disabled. Agents should confirm whether to continue without Gleip guidance."
       );
     });
 
@@ -725,7 +754,7 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
       "--include-baseline",
       "Analyze the full working tree, including preflight baseline changes."
     )
-    .option("--ci", "Exit non-zero only for documented blocking finding codes.")
+    .option("--ci", "Exit non-zero only for documented high-confidence action findings.")
     .option("--json", "Print check result as JSON.")
     .action(async (commandOptions: StatusCommandOptions) => {
       await printStatus(runtime, {
@@ -1257,11 +1286,13 @@ async function printStatus(
   const filtered = await runtime.filterDiffSinceBaseline(gitDiffContext, baseline, {
     includeBaseline: options.includeBaseline === true
   });
-  const driftResult = await runtime.detectScopeDrift({
-    scopeBudget,
-    gitDiffContext: filtered.diff,
-    config
-  });
+  const driftResult = normalizeDriftResult(
+    await runtime.detectScopeDrift({
+      scopeBudget,
+      gitDiffContext: filtered.diff,
+      config
+    })
+  );
   const nextAction = nextActionForReport(driftResult);
   const status = statusContent(driftResult, nextAction, filtered.baseline);
 
@@ -1279,7 +1310,7 @@ async function printStatus(
           repoContext,
           scopeBudgetSummary: summarizeScopeBudget(scopeBudget),
           status: driftResult.status,
-          approval: driftResult.status === "approval_required" ? "required" : "not_required",
+          approval: driftResult.status === "needs_approval" ? "required" : "not_required",
           latestStatus: {
             status: driftResult.status,
             summary: driftResult.summary,
@@ -1364,11 +1395,13 @@ async function printReport(runtime: CommandRuntime, options: ReportOptions): Pro
   const driftResult =
     scopeBudget === undefined
       ? driftResultWithoutBudget(filtered.diff)
-      : await runtime.detectScopeDrift({
-          scopeBudget,
-          gitDiffContext: filtered.diff,
-          config: config ?? {}
-        });
+      : normalizeDriftResult(
+          await runtime.detectScopeDrift({
+            scopeBudget,
+            gitDiffContext: filtered.diff,
+            config: config ?? {}
+          })
+        );
   const statusContent =
     existsSync(statusPath) && statSync(statusPath).isFile()
       ? readFileSync(statusPath, "utf8")
@@ -1421,11 +1454,13 @@ async function printCheckWithoutSession(
     includeBaseline: options.includeBaseline === true,
     possiblyPreExistingFiles: []
   };
-  const driftResult = await runtime.detectScopeDrift({
-    scopeBudget: defaultScopeBudgetForCheck(config),
-    gitDiffContext,
-    config
-  });
+  const driftResult = normalizeDriftResult(
+    await runtime.detectScopeDrift({
+      scopeBudget: defaultScopeBudgetForCheck(config),
+      gitDiffContext,
+      config
+    })
+  );
   const nextAction = nextActionForReport(driftResult);
 
   runtime.stdout(
@@ -2098,20 +2133,20 @@ function gleipSectionContent(target: AgentInstructionTarget): string {
   return `${GLEIP_SECTION_START}
 ## Gleip Workflow
 
-- This repository uses Gleip local guardrails. ${targetLine}
-- If the local package command cannot be run, ask: "Gleip is configured for this repository, but I could not run it through the local package command. Do you want me to proceed without Gleip guardrails? y/n". Do not proceed without confirmation.
-- Before editing code, check \`.gleip/state.json\`. If \`enabled\` is false, ask: "Gleip is currently inactive. Do you want me to proceed without Gleip guardrails? y/n". Do not proceed without confirmation.
+- This repository uses Gleip local guidance. ${targetLine}
+- If the local package command cannot be run, ask: "Gleip is configured for this repository, but I could not run it through the local package command. Do you want me to continue without Gleip guidance? y/n". Wait for confirmation.
+- Before editing code, check \`.gleip/state.json\`. If \`enabled\` is false, ask: "Gleip is currently inactive. Do you want me to continue without Gleip guidance? y/n". Wait for confirmation.
 - If enabled, run \`npx --no-install gleip preflight "<user task>"\`.
 - Read \`.gleip/brief.md\` and \`.gleip/scope-budget.json\`.
 - For a non-trivial change, draft a short implementation plan and run \`npx --no-install gleip validate-plan "<plan>"\` before implementing it.
-- Proceed only if validation is \`approved\`; if \`needs_revision\`, revise and validate again; if \`requires_approval\`, stop and ask the user.
-- During implementation, stay inside \`.gleip/scope-budget.json\`.
+- Treat \`aligned\` as ready, review \`advisory\`, clarify \`needs_clarification\`, clean up \`needs_cleanup\`, and request approval for \`needs_approval\`.
+- During implementation, use the expected paths in \`.gleip/scope-budget.json\` as guidance and explain necessary expansion.
 - Keep changes minimal and scoped to the requested task.
 - Do not edit or commit files under \`.gleip/\` unless the user explicitly asks.
 - Before claiming completion, run \`npx --no-install gleip check\`.
 - Run \`npx --no-install gleip status\` whenever Gleip's expected next action is unclear.
-- Do not bypass a failing Gleip check without explaining the failure and why work is continuing.
-- Before the final response, run \`npx --no-install gleip status\`. If status is \`warning\`, \`approval_required\`, or \`blocked\`, report it clearly. Stop if status is \`approval_required\` or \`blocked\`.
+- Address cleanup and action-required findings before finalizing. Request approval for approval-required changes.
+- Before the final response, run \`npx --no-install gleip status\`. Report \`advisory\`, \`needs_attention\`, \`needs_cleanup\`, or \`needs_approval\` clearly.
 - Before the final response, run or read \`npx --no-install gleip report\`.
 - Treat \`.gleip/report.json\` and \`.gleip/report.md\` as the source of truth for Gleip final status.
 - Include only the generated compact block under \`Recommended final response\`; do not paste the full report.
@@ -2205,9 +2240,9 @@ agent_behavior:
 function defaultGleipReadmeContent(): string {
   return `# Gleip
 
-This repository uses Gleip as a local-only preflight and sidecar tool for AI coding agents. Gleip performs no external review.
+This repository uses Gleip as a local-only guidance tool for AI coding agents. Gleip is not a permission system and performs no external review.
 
-Agents should run \`npx --no-install gleip preflight "<task>"\` before editing code, validate a short plan with \`npx --no-install gleip validate-plan "<plan>"\`, follow the generated brief and scope budget, then run \`npx --no-install gleip status\` and \`npx --no-install gleip report\` before the final response.
+Agents should run \`npx --no-install gleip preflight "<task>"\` before editing code, validate a short plan with \`npx --no-install gleip validate-plan "<plan>"\`, use the generated expected scope as guidance, then run \`npx --no-install gleip status\` and \`npx --no-install gleip report\` before the final response.
 
 To remove Gleip from this repository, run \`npx --no-install gleip uninstall\`, then run \`npm uninstall gleip\` to remove the package dependency.
 `;
@@ -2263,7 +2298,7 @@ async function loadConfigForReport(runtime: CommandRuntime): Promise<GleipConfig
 
 function driftResultWithoutBudget(diff: GitDiffContext): DriftResult {
   return {
-    status: diff.isGitRepo ? "within_scope" : "warning",
+    status: diff.isGitRepo ? "clean" : "advisory",
     findings: [],
     metrics: {
       filesChanged: diff.changedFiles.length,
@@ -2274,6 +2309,56 @@ function driftResultWithoutBudget(diff: GitDiffContext): DriftResult {
       diff.changedFiles.length === 0
         ? "No working tree changes detected."
         : "Working tree changes detected without an active scope budget."
+  };
+}
+
+function normalizeDriftResult(result: DriftResult): DriftResult {
+  const findings = result.findings.map((finding) => {
+    if (
+      finding.severity === "cleanup_required" ||
+      finding.severity === "approval_required" ||
+      finding.severity === "action_required" ||
+      finding.severity === "warn" ||
+      finding.severity === "info"
+    ) {
+      return finding;
+    }
+
+    if (
+      finding.code === "LOCAL_ARTIFACT_INCLUDED" ||
+      finding.code === "SECRET_FILE_CHANGED" ||
+      finding.category === "local_artifacts" ||
+      finding.category === "secrets"
+    ) {
+      return { ...finding, severity: "cleanup_required" as const };
+    }
+
+    if (finding.severity === "fail") {
+      return { ...finding, severity: "approval_required" as const };
+    }
+
+    if (finding.severity === "warning") {
+      return { ...finding, severity: "warn" as const };
+    }
+
+    return { ...finding, severity: "action_required" as const };
+  });
+  const status: DriftStatus = findings.some(
+    (finding) => finding.severity === "cleanup_required"
+  )
+    ? "needs_cleanup"
+    : findings.some((finding) => finding.severity === "approval_required")
+      ? "needs_approval"
+      : findings.some((finding) => finding.severity === "action_required")
+        ? "needs_attention"
+        : findings.some((finding) => finding.severity === "warn")
+          ? "advisory"
+          : "clean";
+
+  return {
+    ...result,
+    status,
+    findings
   };
 }
 
@@ -2304,11 +2389,14 @@ function statusContent(
 
 ## Findings
 
-### Blocking
-${formatMarkdownFindingGroup(driftResult.findings, "blocking")}
+### Cleanup required
+${formatMarkdownFindingGroup(driftResult.findings, "cleanup_required")}
 
-### Fail
-${formatMarkdownFindingGroup(driftResult.findings, "fail")}
+### Approval required
+${formatMarkdownFindingGroup(driftResult.findings, "approval_required")}
+
+### Action required
+${formatMarkdownFindingGroup(driftResult.findings, "action_required")}
 
 ### Warn
 ${formatMarkdownFindingGroup(driftResult.findings, "warn")}
@@ -2324,7 +2412,7 @@ ${nextAction}
 
 function emptyDriftResult(): DriftResult {
   return {
-    status: "within_scope",
+    status: "clean",
     findings: [],
     metrics: {
       filesChanged: 0,
@@ -2402,6 +2490,20 @@ Pre-existing changes detected. Avoid touching unrelated pre-existing files unles
 }
 
 function defaultScopeBudgetForCheck(config: GleipConfigLike): ScopeBudget {
+  const hardGates = {
+    newDependenciesAllowed: false,
+    ciChangesAllowed: false,
+    skippedTestsAllowed: false,
+    deletedTestsAllowed: false,
+    secretsAllowed: false
+  };
+  const approvalRequiredChanges = [
+    "dependency_changes",
+    "ci_changes",
+    "secrets",
+    ...(config.protected_paths ?? [])
+  ];
+
   return {
     taskType: "unknown",
     confidence: "low",
@@ -2414,29 +2516,25 @@ function defaultScopeBudgetForCheck(config: GleipConfigLike): ScopeBudget {
       maxLinesAdded: config.limits?.max_lines_added_warning ?? 500,
       maxLinesDeleted: config.limits?.max_lines_deleted_warning ?? 250
     },
-    hardGates: {
-      newDependenciesAllowed: false,
-      ciChangesAllowed: false,
-      skippedTestsAllowed: false,
-      deletedTestsAllowed: false,
-      secretsAllowed: false
-    },
+    hardGates,
+    protectedChecks: hardGates,
     allowedPaths: [],
+    expectedPaths: [],
     suspiciousPaths: [],
     approvalRequiredFor: [
       ...(config.approval_required_for ?? []),
       ...(config.protected_paths ?? []),
       ...(config.risky_files ?? [])
     ],
-    blockedWithoutApproval: [
-      "dependency_changes",
-      "ci_changes",
-      "secrets",
-      ...(config.protected_paths ?? [])
-    ],
+    blockedWithoutApproval: approvalRequiredChanges,
+    approvalRequiredChanges,
     requiredTests: true,
+    verificationExpected: true,
     testGuidance: [],
     stopConditions: [],
+    pauseAndClarifyConditions: [],
+    contextDocsTouchAllowed: false,
+    readOnlyContextPaths: [],
     reasons: ["No active Gleip session was found; check used a conservative default budget."]
   };
 }
@@ -2458,6 +2556,15 @@ function scopeBudgetFromSummary(
     deletedTestsAllowed: false,
     secretsAllowed: false
   };
+  const approvalRequiredChanges = Array.from(
+    { length: summary?.blockedWithoutApprovalCount ?? 0 },
+    (_, index) => String(index + 1)
+  );
+  const stopConditions = Array.from(
+    { length: summary?.stopConditionsCount ?? 0 },
+    (_, index) => String(index + 1)
+  );
+  const requiredTests = summary?.requiredTests ?? classification.likelyRequiresTests;
 
   return {
     taskType: classification.taskType,
@@ -2468,20 +2575,22 @@ function scopeBudgetFromSummary(
     expectedLinesDeleted: { min: 0, max: 0 },
     softLimits,
     hardGates,
+    protectedChecks: hardGates,
     allowedPaths: [],
+    expectedPaths: [],
     suspiciousPaths: [],
     approvalRequiredFor: Array.from({ length: summary?.approvalRequiredCount ?? 0 }, (_, index) =>
       String(index + 1)
     ),
-    blockedWithoutApproval: Array.from(
-      { length: summary?.blockedWithoutApprovalCount ?? 0 },
-      (_, index) => String(index + 1)
-    ),
-    requiredTests: summary?.requiredTests ?? classification.likelyRequiresTests,
+    blockedWithoutApproval: approvalRequiredChanges,
+    approvalRequiredChanges,
+    requiredTests,
+    verificationExpected: requiredTests,
     testGuidance: [],
-    stopConditions: Array.from({ length: summary?.stopConditionsCount ?? 0 }, (_, index) =>
-      String(index + 1)
-    ),
+    stopConditions,
+    pauseAndClarifyConditions: stopConditions,
+    contextDocsTouchAllowed: false,
+    readOnlyContextPaths: [],
     reasons: []
   };
 }
@@ -2493,7 +2602,7 @@ function statusInteractionSummary(
   baseline: BaselineContext
 ): string {
   const lines = [
-    `Gleip ${commandName} complete · drift: ${driftRiskLabel(driftResult.status)}`,
+    `Gleip ${commandName} complete · status: ${driftResult.status}`,
     `Changes: ${driftResult.metrics.filesChanged} files, +${driftResult.metrics.linesAdded}/-${driftResult.metrics.linesDeleted}`
   ];
 
@@ -2510,7 +2619,7 @@ function statusInteractionSummary(
 
   lines.push(
     commandName === "status" &&
-      (driftResult.status === "within_scope" || driftResult.status === "warning")
+      (driftResult.status === "clean" || driftResult.status === "advisory")
       ? "Next: generate report"
       : `Next: ${nextAction}`
   );
@@ -2520,11 +2629,9 @@ function statusInteractionSummary(
 
 function planValidationInteractionSummary(result: PlanValidationResult): string {
   const phase =
-    result.status === "approved"
-      ? "passed · ready to implement within scope"
-      : result.status === "needs_revision"
-        ? `needs revision · ${result.findings.length} finding(s)`
-        : `requires approval · ${result.findings.length} finding(s)`;
+    result.status === "aligned"
+      ? "aligned with declared task scope"
+      : `${result.status.replace(/_/gu, " ")} · ${result.findings.length} finding(s)`;
   const lines = [`Gleip plan check ${phase}`];
   const firstFinding = orderPlanFindings(result.findings)[0];
 
@@ -2533,7 +2640,7 @@ function planValidationInteractionSummary(result: PlanValidationResult): string 
   }
 
   lines.push(
-    `Next: ${result.status === "approved" ? "implement within scope, then run status" : result.nextAction}`
+    `Next: ${result.status === "aligned" ? "implement the plan, run verification, then run status" : result.nextAction}`
   );
   return lines.join("\n");
 }
@@ -2565,11 +2672,15 @@ function orderPlanFindings(findings: PlanValidationFinding[]): PlanValidationFin
 }
 
 function planSeverityRank(severity: PlanValidationFinding["severity"]): number {
-  if (severity === "blocking") {
+  if (severity === "cleanup_required") {
+    return 5;
+  }
+
+  if (severity === "fail" || severity === "approval_required" || severity === "blocking") {
     return 4;
   }
 
-  if (severity === "fail" || severity === "approval_required") {
+  if (severity === "action_required") {
     return 3;
   }
 
@@ -2615,28 +2726,16 @@ function statusJson(
 }
 
 function nextActionForReport(driftResult: DriftResult): string {
-  if (driftResult.status === "within_scope" && driftResult.metrics.filesChanged === 0) {
+  if (driftResult.status === "clean" && driftResult.metrics.filesChanged === 0) {
     return "Begin implementation or run npx --no-install gleip preflight if this is not the intended session.";
   }
 
-  if (driftResult.status === "within_scope") {
-    return "Continue. Run relevant tests before final response.";
-  }
-
-  if (driftResult.status === "warning") {
-    return "Review warnings and reduce scope if practical. Continue only if the expanded scope is justified.";
-  }
-
-  if (driftResult.status === "approval_required") {
-    return "Stop and ask for approval before continuing, or revise the implementation to stay within budget.";
-  }
-
-  return "Fix blocked issues before continuing. Do not proceed until skipped/deleted tests or secret changes are resolved.";
+  return deriveBundledNextAction(driftResult.findings);
 }
 
 function formatMarkdownFindingGroup(
   findings: DriftFinding[],
-  severity: "info" | "warn" | "fail" | "blocking"
+  severity: "info" | "warn" | "action_required" | "approval_required" | "cleanup_required"
 ): string {
   const group = orderFindings(findings).filter(
     (finding) => displaySeverity(finding.severity) === severity
@@ -2669,11 +2768,20 @@ function orderFindings(findings: DriftFinding[]): DriftFinding[] {
 }
 
 function severityRank(severity: DriftFinding["severity"]): number {
-  if (severity === "blocking" || severity === "blocked") {
+  if (severity === "cleanup_required") {
+    return 5;
+  }
+
+  if (
+    severity === "fail" ||
+    severity === "approval_required" ||
+    severity === "blocking" ||
+    severity === "blocked"
+  ) {
     return 4;
   }
 
-  if (severity === "fail" || severity === "approval_required") {
+  if (severity === "action_required") {
     return 3;
   }
 
@@ -2696,13 +2804,17 @@ function formatFindingLabel(finding: {
 
 function displaySeverity(
   severity: DriftFinding["severity"] | PlanValidationFinding["severity"]
-): "info" | "warn" | "fail" | "blocking" {
-  if (severity === "blocking" || severity === "blocked") {
-    return "blocking";
+): "info" | "warn" | "action_required" | "approval_required" | "cleanup_required" {
+  if (severity === "cleanup_required") {
+    return "cleanup_required";
   }
 
   if (severity === "fail" || severity === "approval_required") {
-    return "fail";
+    return "approval_required";
+  }
+
+  if (severity === "blocking" || severity === "blocked" || severity === "action_required") {
+    return "action_required";
   }
 
   if (severity === "warn" || severity === "warning") {
@@ -2730,25 +2842,9 @@ function applyCiExitCode(
 
 function reportNoActiveSession(runtime: CommandRuntime): void {
   runtime.stdout(
-    '[NO_ACTIVE_SESSION] blocking: No active Gleip session found. Run: npx gleip preflight "<task>"'
+    '[NO_ACTIVE_SESSION] action_required: No active Gleip session found. Run: npx gleip preflight "<task>"'
   );
   runtime.setExitCode(1);
-}
-
-function driftRiskLabel(status: DriftStatus): "none" | "low" | "medium" | "high" {
-  if (status === "blocked") {
-    return "high";
-  }
-
-  if (status === "approval_required") {
-    return "medium";
-  }
-
-  if (status === "warning") {
-    return "low";
-  }
-
-  return "none";
 }
 
 function isSupportedNodeVersion(version: string): boolean {

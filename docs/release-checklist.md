@@ -2,17 +2,17 @@
 
 Use this checklist for the local-only developer preview.
 
-Current release target: `0.7.0`.
+Current release target: `0.7.1`.
 
-Release focus: deterministic structural plan validation, stable findings,
-conservative CI behavior, and precision-first policy.
+Release focus: guidance-first statuses, deterministic structural plan validation,
+stable findings, conservative CI behavior, and precision-first policy.
 
 ## Signal Quality Gates
 
 - Existing valid-work benchmark cases must continue to pass.
 - No new false-positive category may be introduced without a matching benchmark scenario.
 - Run external black-box benchmarks before release to check for false-positive regressions.
-- CI blocking behavior must be limited to documented blocking finding codes.
+- Non-zero CI behavior must be limited to documented high-confidence finding codes.
 - Scope expansion must remain warning-based unless there is high-confidence evidence of unrelated or risky work.
 - Multi-file changes must not fail solely because multiple files or modules changed.
 - Plan validation must remain structural rather than semantic.
@@ -33,7 +33,7 @@ conservative CI behavior, and precision-first policy.
 
 ## Packed Install
 
-- Install `dist-pack/gleip-0.7.0.tgz` into a clean external temp repo.
+- Install `dist-pack/gleip-0.7.1.tgz` into a clean external temp repo.
 - Verify:
   - `npx gleip --help`
   - `npx gleip --version`

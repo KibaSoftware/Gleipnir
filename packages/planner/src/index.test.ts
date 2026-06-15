@@ -233,6 +233,10 @@ describe("discoverRepoContext", () => {
       "generated/tool.ts": "export const tool = true",
       "build/tool.js": "export const tool = true",
       "coverage/tool.test.ts": "describe('tool', () => {})",
+      "tmp/tool.ts": "export const tool = true",
+      "logs/tool.log": "tool",
+      "cache/tool.ts": "export const tool = true",
+      "outputs/tool.json": "{}",
       "__pycache__/tool.pyc": "generated",
       "src/tool.pyc": "generated",
       "src/tool.js.map": "{}"
@@ -258,6 +262,10 @@ describe("discoverRepoContext", () => {
         "generated/tool.ts",
         "build/tool.js",
         "coverage/tool.test.ts",
+        "tmp/tool.ts",
+        "logs/tool.log",
+        "cache/tool.ts",
+        "outputs/tool.json",
         "__pycache__/tool.pyc",
         "src/tool.pyc",
         "src/tool.js.map"
@@ -270,7 +278,7 @@ describe("discoverRepoContext", () => {
       repoContext: context
     });
     expect(budget.allowedPaths.join("\n")).not.toMatch(
-      /(?:^|\/)(?:venv|\.venv|vendor|generated|build|coverage|__pycache__)(?:\/|$)/u
+      /(?:^|\/)(?:venv|\.venv|vendor|generated|build|coverage|tmp|logs|cache|outputs|__pycache__)(?:\/|$)/u
     );
   });
 
@@ -643,6 +651,62 @@ describe("createScopeBudget", () => {
     expect(budget.hardGates.ciChangesAllowed).toBe(false);
   });
 
+  it("scales advisory limits for a new script, focused test, and output artifact", () => {
+    const task =
+      "Broad patch: create a new scripts/analyze.ts tool, add focused tests, and generate output/report.json.";
+    const budget = createScopeBudget({
+      task,
+      classification: classifyTask(task),
+      repoContext: emptyRepoContext()
+    });
+
+    expect(budget.softLimits.maxFilesChanged).toBeGreaterThan(8);
+    expect(budget.softLimits.maxLinesAdded).toBeGreaterThan(300);
+    expect(budget.hardGates.newDependenciesAllowed).toBe(false);
+    expect(budget.hardGates.ciChangesAllowed).toBe(false);
+  });
+
+  it("scales advisory limits for evaluation work with a generated result", () => {
+    const task =
+      "Implement a multi-area ablation evaluation, add focused verification, and write results/ablation.json.";
+    const budget = createScopeBudget({
+      task,
+      classification: classifyTask(task),
+      repoContext: emptyRepoContext()
+    });
+
+    expect(budget.softLimits.maxFilesChanged).toBeGreaterThan(8);
+    expect(budget.softLimits.maxLinesAdded).toBeGreaterThan(300);
+  });
+
+  it("accepts an explicitly declared output artifact narrowly", () => {
+    const task =
+      "Run a local evaluation and create the generated result artifact outputs/result.json. Do not change source implementation.";
+    const budget = createScopeBudget({
+      task,
+      classification: classifyTask(task),
+      repoContext: emptyRepoContext()
+    });
+
+    expect(budget.expectedPaths).toContain("outputs/result.json");
+    expect(budget.expectedPaths).not.toContain("src");
+    expect(budget.expectedPaths).not.toContain("outputs");
+  });
+
+  it("emits guidance-first compatibility aliases", () => {
+    const budget = createScopeBudget({
+      task: "Fix src/foo.ts and run existing tests",
+      classification: classifyTask("Fix src/foo.ts and run existing tests"),
+      repoContext: emptyRepoContext()
+    });
+
+    expect(budget.expectedPaths).toEqual(budget.allowedPaths);
+    expect(budget.protectedChecks).toEqual(budget.hardGates);
+    expect(budget.verificationExpected).toBe(budget.requiredTests);
+    expect(budget.approvalRequiredChanges).toEqual(budget.blockedWithoutApproval);
+    expect(budget.pauseAndClarifyConditions).toEqual(budget.stopConditions);
+  });
+
   it("keeps specifically named source and test files exact", () => {
     const task = "Update src/foo.ts and tests/foo.test.ts to cover the null input fix.";
     const budget = createScopeBudget({
@@ -775,11 +839,11 @@ describe("validateAgentPlan", () => {
       })
     });
 
-    expect(result.status).toBe("approved");
+    expect(result.status).toBe("aligned");
     expect(result.findings).toEqual([]);
   });
 
-  it("needs_revision when tests are required but missing", () => {
+  it("needs clarification when verification is expected but missing", () => {
     const result = validateAgentPlan({
       planText: "- Modify src/features/users/UserTable.tsx",
       scopeBudget: sampleScopeBudget({
@@ -788,17 +852,17 @@ describe("validateAgentPlan", () => {
       })
     });
 
-    expect(result.status).toBe("needs_revision");
+    expect(result.status).toBe("needs_clarification");
     expect(result.findings).toContainEqual(
       expect.objectContaining({
         code: "MISSING_TEST_STRATEGY",
         severity: "warn",
-        title: "Missing test plan"
+        title: "Verification expectation missing"
       })
     );
   });
 
-  it("requires_approval for dependency when disallowed", () => {
+  it("needs approval for a dependency when not requested", () => {
     const result = validateAgentPlan({
       planText: "Add papaparse dependency and modify package.json for CSV export.",
       scopeBudget: sampleScopeBudget({
@@ -807,17 +871,17 @@ describe("validateAgentPlan", () => {
       })
     });
 
-    expect(result.status).toBe("requires_approval");
+    expect(result.status).toBe("needs_approval");
     expect(result.findings).toContainEqual(
       expect.objectContaining({
         code: "DEPENDENCY_CHANGE_INTENT",
-        severity: "fail",
+        severity: "approval_required",
         title: "New dependency intent"
       })
     );
   });
 
-  it("requires_approval for CI when disallowed", () => {
+  it("needs approval for CI when not requested", () => {
     const result = validateAgentPlan({
       planText: "Update GitHub Actions workflow in .github/workflows/ci.yml.",
       scopeBudget: sampleScopeBudget({
@@ -826,27 +890,56 @@ describe("validateAgentPlan", () => {
       })
     });
 
-    expect(result.status).toBe("requires_approval");
+    expect(result.status).toBe("needs_approval");
     expect(result.findings).toContainEqual(
       expect.objectContaining({
         code: "CI_CHANGE_INTENT",
-        severity: "fail",
+        severity: "approval_required",
         title: "CI change intent"
       })
     );
   });
 
-  it("requires_approval for test weakening", () => {
+  it("does not treat explicit dependency and CI exclusions as change intent", () => {
+    const result = validateAgentPlan({
+      planText: [
+        "## Files",
+        "- Create src/evaluate.ts.",
+        "## Implementation",
+        "- Implement the local evaluation tool.",
+        "- Do not add dependencies or change CI.",
+        "## Verification",
+        "- Run focused tests and typecheck."
+      ].join("\n"),
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["src/evaluate.ts"],
+        requiredTests: true,
+        hardGates: sampleHardGates({
+          newDependenciesAllowed: false,
+          ciChangesAllowed: false
+        })
+      })
+    });
+
+    expect(result.findings).not.toContainEqual(
+      expect.objectContaining({ code: "DEPENDENCY_CHANGE_INTENT" })
+    );
+    expect(result.findings).not.toContainEqual(
+      expect.objectContaining({ code: "CI_CHANGE_INTENT" })
+    );
+  });
+
+  it("needs clarification for test weakening", () => {
     const result = validateAgentPlan({
       planText: "Modify src/users.ts and skip test coverage for the failing case.",
       scopeBudget: sampleScopeBudget({ requiredTests: false })
     });
 
-    expect(result.status).toBe("requires_approval");
+    expect(result.status).toBe("needs_clarification");
     expect(result.findings).toContainEqual(
       expect.objectContaining({
         code: "TEST_WEAKENED",
-        severity: "fail",
+        severity: "action_required",
         title: "Test weakening intent"
       })
     );
@@ -861,7 +954,7 @@ describe("validateAgentPlan", () => {
     expect(result.findings).toContainEqual(
       expect.objectContaining({
         code: "TEST_WEAKENED",
-        severity: "fail"
+        severity: "action_required"
       })
     );
   });
@@ -875,12 +968,12 @@ describe("validateAgentPlan", () => {
       })
     });
 
-    expect(result.status).toBe("needs_revision");
+    expect(result.status).toBe("needs_clarification");
     expect(result.findings).toContainEqual(
       expect.objectContaining({
         code: "SCOPE_EXPANSION_WARN",
         severity: "warn",
-        title: "Files outside allowed scope",
+        title: "Files outside expected scope",
         evidence: ["src/admin/AdminTable.tsx"]
       })
     );
@@ -914,7 +1007,7 @@ describe("validateAgentPlan", () => {
       })
     });
 
-    expect(result.status).toBe("approved");
+    expect(result.status).toBe("aligned");
     expect(result.parsedPlan.contextFiles).toContain("FULL_CONTEXT.md");
   });
 
@@ -935,6 +1028,51 @@ describe("validateAgentPlan", () => {
     );
   });
 
+  it.each(["FULL_CONTEXT.md", "PROJECT_CONTEXT.md", "ARCHITECTURE.md"])(
+    "accepts %s as a small context-doc touch for broad patch work",
+    (path) => {
+      const task = "Implement a broad patch across source, tests, and project context docs.";
+      const scopeBudget = createScopeBudget({
+        task,
+        classification: classifyTask(task),
+        repoContext: emptyRepoContext()
+      });
+      const result = validateAgentPlan({
+        taskText: task,
+        planText: `Update src/foo.ts and ${path}, then run existing tests.`,
+        scopeBudget
+      });
+
+      expect(result.findings).not.toContainEqual(
+        expect.objectContaining({
+          code: "SCOPE_EXPANSION_WARN",
+          evidence: expect.arrayContaining([path])
+        })
+      );
+    }
+  );
+
+  it("keeps a task contract file read-only even during broad patch work", () => {
+    const task = "Implement a broad patch across source, tests, and docs.";
+    const scopeBudget = createScopeBudget({
+      task,
+      classification: classifyTask(task),
+      repoContext: repoContextWith({ contextFiles: ["FULL_CONTEXT.md"] })
+    });
+    const result = validateAgentPlan({
+      taskText: task,
+      planText: "Modify FULL_CONTEXT.md and src/foo.ts, then run existing tests.",
+      scopeBudget
+    });
+
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({
+        code: "SCOPE_EXPANSION_WARN",
+        evidence: expect.arrayContaining(["FULL_CONTEXT.md"])
+      })
+    );
+  });
+
   it("passes a well-structured plan", () => {
     const result = validateAgentPlan({
       planText: [
@@ -951,7 +1089,7 @@ describe("validateAgentPlan", () => {
       })
     });
 
-    expect(result.status).toBe("approved");
+    expect(result.status).toBe("aligned");
     expect(result.findings).toEqual([]);
   });
 
@@ -991,7 +1129,7 @@ describe("validateAgentPlan", () => {
       })
     });
 
-    expect(result.status).toBe("approved");
+    expect(result.status).toBe("aligned");
   });
 
   it("keeps the existing missing-test warning and adds a structural verification code", () => {
@@ -1111,6 +1249,27 @@ describe("validateAgentPlan", () => {
     expect(result.parsedPlan.outputFiles).toEqual(["dist/report.json"]);
   });
 
+  it.each([
+    ["Output: write outputs/report.json as a generated report.", "outputs/report.json"],
+    ["Fixture: create fixtures/session_state.json as a fixture.", "fixtures/session_state.json"],
+    ["State file: emit state/run_state.json as a state file.", "state/run_state.json"]
+  ])("accepts an explicitly declared narrow artifact: %s", (outputLine, path) => {
+    const result = validateAgentPlan({
+      planText: [
+        "Implementation: Update src/foo.ts.",
+        outputLine,
+        "Verification: Run existing focused tests."
+      ].join("\n"),
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["src/foo.ts"],
+        requiredTests: true
+      })
+    });
+
+    expect(result.parsedPlan.outputFiles).toContain(path);
+    expect(result.parsedPlan.proposedFiles).toEqual(["src/foo.ts"]);
+  });
+
   it("requires scope rationale for ordinary source expansion without hard blocking it", () => {
     const result = validateAgentPlan({
       planText: "Update src/foo.ts and src/extra.ts, then run tests.",
@@ -1120,7 +1279,7 @@ describe("validateAgentPlan", () => {
       })
     });
 
-    expect(result.status).toBe("needs_revision");
+    expect(result.status).toBe("needs_clarification");
     expect(result.findings).toContainEqual(
       expect.objectContaining({
         code: "SCOPE_EXPANSION_RATIONALE_REQUIRED",
@@ -1237,7 +1396,7 @@ describe("validateAgentPlan", () => {
     expect(result.findings).toContainEqual(
       expect.objectContaining({
         code: "DEPENDENCY_SUBSTITUTION_REQUIRES_APPROVAL",
-        severity: "fail",
+        severity: "approval_required",
         evidence: ["typer -> argparse"]
       })
     );
@@ -1310,7 +1469,7 @@ describe("validateAgentPlan", () => {
     expect(result.findings).toContainEqual(
       expect.objectContaining({
         code: "RISKY_CHANGE_RATIONALE_REQUIRED",
-        severity: "fail",
+        severity: "approval_required",
         evidence: ["package.json"]
       })
     );
@@ -1397,7 +1556,10 @@ describe("validateAgentPlan", () => {
     });
 
     expect(result.findings).toContainEqual(
-      expect.objectContaining({ code: "PLAN_HARD_GATE_VIOLATION", severity: "fail" })
+      expect.objectContaining({
+        code: "PLAN_HARD_GATE_VIOLATION",
+        severity: "approval_required"
+      })
     );
   });
 
@@ -1488,7 +1650,7 @@ describe("validateAgentPlan", () => {
       scopeBudget
     });
 
-    expect(result.status).toBe("approved");
+    expect(result.status).toBe("aligned");
     expect(result.summary).toContain("aligned with declared task scope");
     expect(result.findings).toEqual([]);
   });
@@ -1546,7 +1708,10 @@ describe("validateAgentPlan", () => {
     });
 
     expect(result.findings).toContainEqual(
-      expect.objectContaining({ code: "DEPENDENCY_CHANGE_INTENT", severity: "fail" })
+      expect.objectContaining({
+        code: "DEPENDENCY_CHANGE_INTENT",
+        severity: "approval_required"
+      })
     );
   });
 
@@ -1673,7 +1838,7 @@ describe("generateImplementationBrief", () => {
     expect(brief).toContain("- Type: small_feature");
     expect(brief).toContain("- Risk: medium");
     expect(brief).toContain("- Confidence: high");
-    expect(brief).toContain("Implement the smallest safe change that satisfies the task.");
+    expect(brief).toContain("Implement the smallest clear change that satisfies the task.");
   });
 
   it("includes top relevant files but limits count", () => {
@@ -1706,27 +1871,24 @@ describe("generateImplementationBrief", () => {
     expect(testSection).not.toContain("src/file6.test.ts");
   });
 
-  it("includes scope budget summary and allowed scope", () => {
+  it("includes scope budget summary and expected scope", () => {
     const brief = generateImplementationBrief(sampleBriefInput());
 
     expect(brief).toContain("## Scope budget");
     expect(brief).toContain("- Expected files changed: 2-6");
     expect(brief).toContain("- Expected lines added: 30-220");
     expect(brief).toContain("- Soft max files: 8");
-    expect(brief).toContain("## Allowed scope");
+    expect(brief).toContain("## Expected scope");
     expect(brief).toContain("src/features/users/UserTable.tsx");
   });
 
-  it("includes hard gates with dependencies and CI disallowed", () => {
+  it("includes protected checks with approval guidance", () => {
     const brief = generateImplementationBrief(sampleBriefInput());
 
-    expect(brief).toContain("## Hard gates");
-    expect(brief).toContain("- Do not skip tests.");
-    expect(brief).toContain("- Do not delete tests.");
-    expect(brief).toContain("- Do not weaken CI.");
-    expect(brief).toContain("- Do not expose or modify secrets.");
-    expect(brief).toContain("- Do not add dependencies.");
-    expect(brief).toContain("- Do not change CI configuration.");
+    expect(brief).toContain("## Protected checks");
+    expect(brief).toContain("- Preserve test integrity.");
+    expect(brief).toContain("New dependencies require approval");
+    expect(brief).toContain("CI changes require approval");
   });
 
   it("reflects dependencies allowed", () => {
@@ -1761,11 +1923,11 @@ describe("generateImplementationBrief", () => {
     expect(brief).toContain("- CI changes are allowed only within the task scope.");
   });
 
-  it("includes required test guidance when tests are required", () => {
+  it("includes verification guidance when verification is expected", () => {
     const brief = generateImplementationBrief(sampleBriefInput());
 
-    expect(brief).toContain("## Required tests");
-    expect(brief).toContain("- Add or update focused tests.");
+    expect(brief).toContain("## Verification expected");
+    expect(brief).toContain("- Run focused verification appropriate to the change.");
     expect(brief).toContain("Add or update tests for the new behavior and at least one edge case.");
   });
 
@@ -1782,7 +1944,7 @@ describe("generateImplementationBrief", () => {
 
     expect(brief).toContain("- None detected.");
     expect(brief).toContain(
-      "- No precise allowed paths were identified. Keep changes tightly aligned with the task and existing nearby patterns."
+      "- No precise expected paths were identified. Keep changes aligned with the task and explain necessary expansion."
     );
   });
 
@@ -1794,7 +1956,7 @@ describe("generateImplementationBrief", () => {
     expect(brief).toContain("2. Run relevant tests if available.");
     expect(brief).toContain("3. Report files changed.");
     expect(brief).toContain("4. Report tests run.");
-    expect(brief).toContain("5. Report whether Gleip status is within scope");
+    expect(brief).toContain("5. Report whether Gleip status is clean");
   });
 });
 

@@ -1,8 +1,11 @@
 # Gleip
 
-**Local-only guardrails that AI coding agents use automatically.**
+**Local-only guidance that AI coding agents use automatically.**
 
-Coding agents can over-edit, drift from task scope, weaken tests, or produce noisy final responses. Gleip gives them a deterministic local protocol for task preflight, scope budgeting, plan validation, drift checks, session reports, and compact final status.
+Coding agents can over-edit, drift from task scope, weaken tests, or produce noisy
+final responses. Gleip gives them deterministic local guidance for task preflight,
+advisory scope budgeting, plan validation, drift checks, session reports, and
+compact final status. It is not a permission system.
 
 Gleip makes no network calls and uses no telemetry, LLM/API calls, account, dashboard, or remote metrics.
 
@@ -60,13 +63,13 @@ For each coding task, agents should:
 | `npx gleip init --agent auto`   | Create or update detected agent instructions.                                           | When agent files already exist.                                     |
 | `npx gleip doctor --agents`     | Check local prerequisites and supported agent files.                                    | Diagnose setup or instruction problems.                             |
 | `npx gleip repair-agents --all` | Repair managed instruction sections for all supported agents.                           | Restore missing or stale generated instructions.                    |
-| `npx gleip state`               | Print the repository-local enabled/disabled state.                                      | Confirm whether guardrails are active.                              |
-| `npx gleip enable`              | Enable guardrails, optionally with `--reason`.                                          | Resume normal Gleip enforcement.                                    |
-| `npx gleip disable`             | Disable guardrails, optionally with `--reason`.                                         | Temporarily pause guardrails with an explicit local record.         |
+| `npx gleip state`               | Print the repository-local enabled/disabled state.                                      | Confirm whether guidance is active.                                 |
+| `npx gleip enable`              | Enable guidance, optionally with `--reason`.                                            | Resume normal Gleip checks.                                         |
+| `npx gleip disable`             | Disable guidance, optionally with `--reason`.                                           | Temporarily pause checks with an explicit local record.             |
 | `npx gleip report`              | Generate and summarize the canonical session report.                                    | Inspect the current session outcome.                                |
 | `npx gleip report --json`       | Generate the report and print stable JSON only.                                         | Local scripts, tooling, or debugging.                               |
 | `npx gleip check`               | Check the working tree against scope without updating the active status file.           | Run a manual drift check; add `--json` for machine-readable output. |
-| `npx gleip check --ci`          | Run the conservative CI check and fail only on documented blocking codes.               | Use in local CI without network access or telemetry.                |
+| `npx gleip check --ci`          | Run the conservative CI check and fail only on documented action-required codes.        | Use in local CI without network access or telemetry.                |
 | `npx gleip brief`               | Print the active implementation brief.                                                  | Inspect or debug agent context.                                     |
 | `npx gleip stop`                | Archive the active session; `--clean` also removes its brief, budget, and status files. | End or reset a task session.                                        |
 | `npx gleip uninstall --dry-run` | Preview repository cleanup.                                                             | Review removals before uninstalling.                                |
@@ -94,30 +97,27 @@ Normal workflow commands print concise 1-5 line summaries that confirm the compl
 
 ## Stable Findings and CI
 
-Gleip 0.7.0 is conservative by design. It reports stable finding codes but only fails
-CI on high-confidence blocking findings. Scope expansion is warning-only because
-valid enterprise work often touches multiple files or modules.
+Gleip 0.7.1 emits `clean`, `advisory`, `needs_attention`, `needs_cleanup`, or
+`needs_approval`. It never emits `blocked` as a new top-level status.
 
-Severities are `info`, `warn`, `fail`, and `blocking`. Human output includes both code
-and severity, for example `[TEST_SKIPPED] blocking: Skipped test added`.
+Stable findings use `info`, `warn`, `action_required`, `approval_required`, and
+`cleanup_required`. Local `status` and `check` guide the next action and exit `0`
+when the command succeeds. `check --ci` may exit `1` for documented
+high-confidence findings such as skipped/deleted tests or tracked `.gleip/`
+artifacts, while still using guidance-oriented wording.
 
-`npx gleip check` remains advisory. `npx gleip check --ci` exits `1` only for
-`TEST_SKIPPED`, `TEST_DELETED`, or `LOCAL_ARTIFACT_INCLUDED`; otherwise it exits `0`.
-`NO_ACTIVE_SESSION` exits non-zero for commands that require a session. Dependency,
-lockfile, plan structure, and scope-expansion findings do not block CI in 0.7.0.
+Expected paths describe likely declared scope, not exclusive permission. Narrow
+`modify only` tasks remain tight, while explicitly broad multi-area work receives
+broader advisory limits. Small aligned context-document updates are accepted.
+Runtime, output, and cache paths are excluded from passive relevance but can be
+declared narrowly as artifacts.
 
-Plan validation is deterministic and structural. It checks recognizable plan
-sections or equivalent language, mentioned files, scope expansion rationale, risky
-file rationale, and explicit dependency requirements against local manifests. It
-does not judge whether a design is correct or best. Ordinary source and test
-expansion remains advisory.
-
-Budgets scale with affirmative task scope. Named files, directories, subsystems,
-and categories such as source, CLI, planner, tests, docs, config, package metadata,
-and smoke coverage are aligned only when the task declares them. Exact named test
-paths remain exact, and `modify only` tasks remain narrow. Dependency additions,
-lockfiles, CI, env, and secrets retain their existing gates unless the task
-explicitly requests the relevant category and policy allows it.
+Plan validation is deterministic and structural. Its statuses are `aligned`,
+`advisory`, `needs_clarification`, `needs_approval`, and `needs_cleanup`. Focused
+existing tests, smoke tests, typechecks, compile checks, dry runs, or appropriate
+manual verification can satisfy verification expectations. Dependency, CI,
+protected config, env, secret, and security-sensitive changes still require
+approval, attention, or cleanup.
 
 Before 1.0, Gleip favors precision over recall. False positives are worse than missed
 suspicious cases, multi-file changes are normal, and stable codes should improve
@@ -125,7 +125,7 @@ clarity without creating extra justification work.
 
 ## Reports and Metrics
 
-Gleip 0.7.0 generates:
+Gleip 0.7.1 generates:
 
 - `.gleip/report.md`: concise scores, risks, findings, actions, and the recommended final-response block.
 - `.gleip/report.json`: stable machine-readable report data, warnings, evidence, summary, and efficiency estimate.
@@ -203,6 +203,6 @@ pnpm pack:cli
 
 ## Status
 
-- Current release: `0.7.0`
+- Current release: `0.7.1`
 - License: Apache-2.0
 - Local-only developer preview

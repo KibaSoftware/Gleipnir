@@ -1,4 +1,11 @@
-export type FindingSeverity = "info" | "warn" | "fail" | "blocking";
+export type FindingSeverity =
+  | "info"
+  | "warn"
+  | "action_required"
+  | "approval_required"
+  | "cleanup_required"
+  | "fail"
+  | "blocking";
 
 export type FindingCode =
   | "TEST_SKIPPED"

@@ -27,8 +27,8 @@ The current report schema version is `1.0.0`.
 Scores start at 100 and deduct for local evidence such as:
 
 - Unplanned or out-of-scope changed files.
-- Scope-budget limit or hard-gate findings.
-- Missing, rejected, or approval-required plan validation.
+- Scope-budget limit or protected-check findings.
+- Missing, clarification-needed, or approval-required plan validation.
 - Missing tests or risks evidence.
 - Missing changed-file evidence.
 - Excessive verbosity, repeated plan narration, repeated output, or unrelated suggestions.
@@ -38,7 +38,7 @@ All scores are clamped to 0-100. Every deduction is tied to a warning with a rea
 
 ## Efficiency Estimate
 
-Gleip uses `Math.ceil(characterCount / 4)` for conservative character-to-token estimates. It only creates a non-zero basis from local evidence, such as a rejected plan, flagged out-of-scope diff content, or repeated output that guidance can remove.
+Gleip uses `Math.ceil(characterCount / 4)` for conservative character-to-token estimates. It only creates a non-zero basis from local evidence, such as a plan needing clarification, flagged unexpected diff content, or repeated output that guidance can remove.
 
 Estimated token waste avoided is a deterministic local estimate based on local artifacts and diff/context/output size. It is not exact model billing or API usage data.
 

@@ -26,7 +26,12 @@ export type {
   TestIntegrity
 } from "./report.js";
 
-export type DriftStatus = "within_scope" | "warning" | "approval_required" | "blocked";
+export type DriftStatus =
+  | "clean"
+  | "advisory"
+  | "needs_attention"
+  | "needs_cleanup"
+  | "needs_approval";
 
 export type DriftSeverity = FindingSeverity;
 
@@ -74,8 +79,12 @@ export interface ScopeBudgetLike {
     secretsAllowed: boolean;
   };
   allowedPaths: string[];
+  expectedPaths?: string[];
   approvalRequiredFor: string[];
   blockedWithoutApproval: string[];
+  approvalRequiredChanges?: string[];
+  contextDocsTouchAllowed?: boolean;
+  readOnlyContextPaths?: string[];
 }
 
 export interface GitDiffContextLike {
@@ -190,7 +199,7 @@ export function detectScopeDrift(input: DetectScopeDriftInput): DriftResult {
     linesAdded: input.gitDiffContext.totalLinesAdded,
     linesDeleted: input.gitDiffContext.totalLinesDeleted
   });
-  addOutsideScopeFindings(findings, changedFiles, input.scopeBudget);
+  addOutsideScopeFindings(findings, changedFiles, fileStats, input.scopeBudget);
   addApprovalPathFindings(findings, changedFiles, input.scopeBudget);
   addBlockedPathFindings(findings, changedFiles, input.scopeBudget);
 
@@ -222,20 +231,48 @@ export function normalizeDriftFindings(findings: DriftFinding[]): DriftFinding[]
   return Array.from(groups.values()).map(normalizeFindingGroup).sort(compareFindings);
 }
 
-export function deriveNextAction(status: DriftStatus): string {
-  if (status === "blocked") {
-    return "Fix blocked issues before continuing. Do not proceed until skipped/deleted tests or secret changes are resolved.";
+export function deriveNextAction(
+  input:
+    | DriftStatus
+    | "within_scope"
+    | "warning"
+    | "approval_required"
+    | "blocked"
+    | Array<{ code?: string }>
+): string {
+  if (Array.isArray(input)) {
+    return nextActionForFindings(input);
   }
 
-  if (status === "approval_required") {
-    return "Stop and ask for approval before continuing, or revise the implementation to stay within budget.";
+  if (input === "needs_cleanup") {
+    return "Complete the requested cleanup, then rerun status.";
   }
 
-  if (status === "warning") {
-    return "Review warnings and reduce scope if practical. Continue only if the expanded scope is justified.";
+  if (input === "needs_approval") {
+    return "Request approval for the identified changes or remove them from the change set.";
   }
 
-  return "Continue. Run relevant tests before final response.";
+  if (input === "needs_attention") {
+    return "Address the action-required findings or provide explicit user-approved rationale.";
+  }
+
+  if (input === "advisory") {
+    return "Review the advisory findings and add scope rationale where the task expands.";
+  }
+
+  if (input === "blocked") {
+    return "Address the action-required findings, then rerun status.";
+  }
+
+  if (input === "approval_required") {
+    return "Request approval for the identified changes or remove them from the change set.";
+  }
+
+  if (input === "warning") {
+    return "Review the advisory findings and add scope rationale where the task expands.";
+  }
+
+  return "Continue with focused verification before finalizing.";
 }
 
 function addSoftLimitFindings(
@@ -250,7 +287,7 @@ function addSoftLimitFindings(
       title: "File count exceeds scope budget",
       message: `${metrics.filesChanged} files changed; soft limit is ${scopeBudget.softLimits.maxFilesChanged}.`,
       recommendation:
-        "Keep changes focused or ask for approval if the task is broader than expected.",
+        "Review whether the added scope is declared by the task and add a scope rationale if needed.",
       category: "soft_limit"
     });
   }
@@ -299,12 +336,12 @@ function addDependencyFindings(
   if (dependencyFiles.length > 0) {
     findings.push({
       code: "DEPENDENCY_FILE_CHANGED",
-      severity: "fail",
+      severity: "approval_required",
       title: "Dependency files changed",
-      message: `${formatExamples(dependencyFiles)} changed, but new dependency changes are not allowed by the budget.`,
+      message: `${formatExamples(dependencyFiles)} changed and require approval under the current guidance.`,
       count: dependencyFiles.length,
       examples: dependencyFiles.slice(0, 3),
-      recommendation: "Stop and ask for approval before changing dependency files.",
+      recommendation: "Request approval for the dependency or metadata change, or remove it.",
       category: "dependencies"
     });
   }
@@ -314,9 +351,9 @@ function addDependencyFindings(
   if (lockfiles.length > 0) {
     findings.push({
       code: "LOCKFILE_CHANGED",
-      severity: "fail",
+      severity: "approval_required",
       title: "Lockfile changed",
-      message: `${formatExamples(lockfiles)} changed, but dependency changes are not allowed by the budget.`,
+      message: `${formatExamples(lockfiles)} changed and require approval under the current guidance.`,
       count: lockfiles.length,
       examples: lockfiles.slice(0, 3),
       recommendation: "Review the lockfile change and confirm it is required by the task.",
@@ -385,12 +422,12 @@ function addCiFindings(
   if (ciFiles.length > 0) {
     findings.push({
       code: "CI_FILE_CHANGED",
-      severity: "fail",
+      severity: "approval_required",
       title: "CI configuration changed",
-      message: `${formatExamples(ciFiles)} changed, but CI changes are not allowed by the budget.`,
+      message: `${formatExamples(ciFiles)} changed and require approval under the current guidance.`,
       count: ciFiles.length,
       examples: ciFiles.slice(0, 3),
-      recommendation: "Stop and ask for approval before changing CI configuration.",
+      recommendation: "Add a scope rationale or approval for the CI change, or remove it.",
       category: "ci"
     });
   }
@@ -399,14 +436,21 @@ function addCiFindings(
 function addOutsideScopeFindings(
   findings: DriftFinding[],
   changedFiles: string[],
+  fileStats: GitDiffContextLike["fileStats"],
   scopeBudget: ScopeBudgetLike
 ): void {
-  if (scopeBudget.allowedPaths.length === 0) {
+  const expectedPaths = scopeBudget.expectedPaths ?? scopeBudget.allowedPaths;
+  const statsByPath = new Map(fileStats.map((stat) => [stat.path, stat]));
+
+  if (expectedPaths.length === 0) {
     return;
   }
 
   const outsideFiles = changedFiles.filter(
-    (path) => !isAllowedPath(path, scopeBudget.allowedPaths) && !hasSpecificHardGateFinding(path)
+    (path) =>
+      !isAllowedPath(path, expectedPaths) &&
+      !hasSpecificHardGateFinding(path) &&
+      !isAcceptedContextDocsTouch(path, statsByPath.get(path), scopeBudget)
   );
 
   if (outsideFiles.length === 0) {
@@ -416,8 +460,8 @@ function addOutsideScopeFindings(
   findings.push({
     code: "SCOPE_EXPANSION_WARN",
     severity: "warn",
-    title: "Files outside allowed scope",
-    message: `${outsideFiles.length} file(s) changed outside the allowed paths: ${formatExamples(outsideFiles)}.`,
+    title: "Files outside expected scope",
+    message: `${outsideFiles.length} file(s) changed outside the expected paths: ${formatExamples(outsideFiles)}.`,
     count: outsideFiles.length,
     examples: outsideFiles.slice(0, 3),
     recommendation: "Confirm these files are necessary for the task.",
@@ -439,12 +483,12 @@ function addApprovalPathFindings(
   if (matched.length > 0) {
     findings.push({
       code: "APPROVAL_REQUIRED_PATH_CHANGED",
-      severity: "fail",
+      severity: "approval_required",
       title: "Approval-required paths changed",
       message: `${formatExamples(matched)} matched approval-required scope.`,
       count: matched.length,
       examples: matched.slice(0, 3),
-      recommendation: "Stop and ask for approval before continuing.",
+      recommendation: "Request approval for these paths or remove them from the change set.",
       category: "approval_required_path"
     });
   }
@@ -458,19 +502,22 @@ function addBlockedPathFindings(
   const matched = changedFiles.filter(
     (path) =>
       !hasSpecificHardGateFinding(path) &&
-      matchesAnyBudgetEntry(path, scopeBudget.blockedWithoutApproval)
+      matchesAnyBudgetEntry(
+        path,
+        scopeBudget.approvalRequiredChanges ?? scopeBudget.blockedWithoutApproval
+      )
   );
 
   if (matched.length > 0) {
     findings.push({
       code: "BLOCKED_PATH_CHANGED",
-      severity: "fail",
-      title: "Blocked-without-approval paths changed",
+      severity: "approval_required",
+      title: "Approval-required paths changed",
       message: `${formatExamples(matched)} matched paths or categories that require approval.`,
       count: matched.length,
       examples: matched.slice(0, 3),
-      recommendation: "Stop and ask for approval before continuing.",
-      category: "blocked_without_approval"
+      recommendation: "Request approval for these paths or remove them from the change set.",
+      category: "approval_required_change"
     });
   }
 }
@@ -497,10 +544,10 @@ function addSkippedTestFindings(
   if (hasSkippedTest) {
     findings.push({
       code: "TEST_SKIPPED",
-      severity: "blocking",
+      severity: "action_required",
       title: "Skipped test added",
       message: "The diff adds a skipped or pending test.",
-      recommendation: "Remove the skipped test or ask for explicit approval.",
+      recommendation: "Restore the skipped test or provide explicit user-approved rationale.",
       category: "tests"
     });
   }
@@ -520,12 +567,12 @@ function addDeletedTestFindings(
   if (deletedTests.length > 0) {
     findings.push({
       code: "TEST_DELETED",
-      severity: "blocking",
+      severity: "action_required",
       title: "Test file deleted",
       message: `${formatExamples(deletedTests.map((stat) => stat.path))} deleted.`,
       count: deletedTests.length,
       examples: deletedTests.map((stat) => stat.path).slice(0, 3),
-      recommendation: "Restore deleted tests or ask for explicit approval.",
+      recommendation: "Restore deleted tests or provide explicit user-approved rationale.",
       category: "tests"
     });
   }
@@ -537,7 +584,7 @@ function addDeletedTestFindings(
   if (largeTestDeletions.length > 0) {
     findings.push({
       code: "TEST_WEAKENED",
-      severity: "fail",
+      severity: "action_required",
       title: "Large test deletion",
       message: `${formatExamples(largeTestDeletions.map((stat) => stat.path))} removed many test lines.`,
       count: largeTestDeletions.length,
@@ -562,13 +609,12 @@ function addSecretFindings(
   if (secretFiles.length > 0) {
     findings.push({
       code: "SECRET_FILE_CHANGED",
-      severity: "fail",
+      severity: "cleanup_required",
       title: "Secret or env file changed",
       message: `${formatExamples(secretFiles)} changed.`,
       count: secretFiles.length,
       examples: secretFiles.slice(0, 3),
-      recommendation:
-        "Do not modify secrets through this task. Revert or ask for explicit approval.",
+      recommendation: "Remove the secret or env file from the change set and verify it is ignored.",
       category: "secrets"
     });
   }
@@ -585,8 +631,8 @@ function addLocalArtifactFindings(
   }
 
   findings.push({
-    code: "LOCAL_ARTIFACT_INCLUDED",
-    severity: "blocking",
+      code: "LOCAL_ARTIFACT_INCLUDED",
+      severity: "cleanup_required",
     title: "Local Gleip artifact included",
     message: `${formatExamples(artifacts)} are tracked by git.`,
     count: artifacts.length,
@@ -653,16 +699,16 @@ function groupedMessage(finding: DriftFinding, count: number, examples: string[]
   const exampleText = examples.length === 0 ? "" : ` Examples: ${examples.join(", ")}.`;
 
   if (finding.category === "allowed_scope") {
-    return `${count === 1 ? "1 file" : `${count} files`} changed outside the approved scope.${exampleText}`;
+    return `${count === 1 ? "1 file" : `${count} files`} changed outside the expected scope.${exampleText}`;
   }
 
   if (finding.category === "dependencies") {
     const label = finding.code === "LOCKFILE_CHANGED" ? "lockfile" : "dependency file";
-    return `${count === 1 ? `1 ${label}` : `${count} ${label}s`} changed, but dependency changes are not allowed by the budget.${exampleText}`;
+    return `${count === 1 ? `1 ${label}` : `${count} ${label}s`} changed and requires approval.${exampleText}`;
   }
 
   if (finding.category === "ci") {
-    return `${count === 1 ? "1 CI file" : `${count} CI files`} changed, but CI changes are not allowed by the budget.${exampleText}`;
+    return `${count === 1 ? "1 CI file" : `${count} CI files`} changed and requires approval.${exampleText}`;
   }
 
   if (finding.category === "tests") {
@@ -681,35 +727,50 @@ function groupedMessage(finding: DriftFinding, count: number, examples: string[]
 }
 
 function aggregateStatus(findings: DriftFinding[]): DriftStatus {
-  if (findings.some((finding) => finding.severity === "blocking")) {
-    return "blocked";
+  if (findings.some((finding) => finding.severity === "cleanup_required")) {
+    return "needs_cleanup";
   }
 
-  if (findings.some((finding) => finding.severity === "fail")) {
-    return "approval_required";
+  if (
+    findings.some(
+      (finding) =>
+        finding.severity === "approval_required" ||
+        finding.severity === "fail" ||
+        finding.severity === "blocking"
+    )
+  ) {
+    return "needs_approval";
+  }
+
+  if (findings.some((finding) => finding.severity === "action_required")) {
+    return "needs_attention";
   }
 
   if (findings.some((finding) => finding.severity === "warn")) {
-    return "warning";
+    return "advisory";
   }
 
-  return "within_scope";
+  return "clean";
 }
 
 function summaryForStatus(status: DriftStatus, filesChanged: number): string {
-  if (status === "within_scope") {
-    return `${filesChanged} changed file(s) are within the active scope budget.`;
+  if (status === "clean") {
+    return `${filesChanged} changed file(s) align with the active guidance.`;
   }
 
-  if (status === "warning") {
-    return `${filesChanged} changed file(s) need review against soft scope limits.`;
+  if (status === "advisory") {
+    return `${filesChanged} changed file(s) include advisory scope findings.`;
   }
 
-  if (status === "approval_required") {
+  if (status === "needs_approval") {
     return `${filesChanged} changed file(s) include approval-required scope.`;
   }
 
-  return `${filesChanged} changed file(s) include blocked changes.`;
+  if (status === "needs_cleanup") {
+    return `${filesChanged} changed file(s) require cleanup before finalizing.`;
+  }
+
+  return `${filesChanged} changed file(s) require attention before finalizing.`;
 }
 
 function isAllowedPath(path: string, allowedPaths: string[]): boolean {
@@ -870,11 +931,15 @@ function highestSeverity(severities: DriftSeverity[]): DriftSeverity {
 }
 
 function severityRank(severity: DriftSeverity): number {
-  if (severity === "blocking") {
+  if (severity === "cleanup_required") {
+    return 5;
+  }
+
+  if (severity === "approval_required" || severity === "fail" || severity === "blocking") {
     return 4;
   }
 
-  if (severity === "fail") {
+  if (severity === "action_required") {
     return 3;
   }
 
@@ -883,6 +948,103 @@ function severityRank(severity: DriftSeverity): number {
   }
 
   return 1;
+}
+
+function nextActionForFindings(findings: Array<{ code?: string }>): string {
+  if (findings.length === 0) {
+    return "Continue with focused verification before finalizing.";
+  }
+
+  const codes = new Set(findings.map((finding) => finding.code));
+  const actions: string[] = [];
+
+  if (codes.has("LOCAL_ARTIFACT_INCLUDED")) {
+    actions.push(
+      "Remove .gleip session artifacts from the change set or ensure .gleip/ is ignored, then rerun status."
+    );
+  }
+
+  if (codes.has("SECRET_FILE_CHANGED")) {
+    actions.push("Remove the secret/env file from the change set and verify it is ignored.");
+  }
+
+  if (
+    codes.has("TEST_SKIPPED") ||
+    codes.has("TEST_DELETED") ||
+    codes.has("TEST_WEAKENED")
+  ) {
+    actions.push(
+      "Restore the skipped, deleted, or weakened test or provide explicit user-approved rationale."
+    );
+  }
+
+  if (codes.has("DEPENDENCY_FILE_CHANGED") || codes.has("LOCKFILE_CHANGED")) {
+    actions.push(
+      "Request approval for the dependency/metadata change or remove it from the change set."
+    );
+  }
+
+  if (codes.has("CI_FILE_CHANGED")) {
+    actions.push("Add a scope rationale or approval for the CI change, or remove it.");
+  }
+
+  if (
+    codes.has("SCOPE_LIMIT_EXCEEDED") ||
+    codes.has("SCOPE_EXPANSION_WARN")
+  ) {
+    actions.push(
+      "Review whether the added scope is declared by the task. Add a scope rationale if needed."
+    );
+  }
+
+  if (
+    codes.has("APPROVAL_REQUIRED_PATH_CHANGED") ||
+    codes.has("BLOCKED_PATH_CHANGED")
+  ) {
+    actions.push("Request approval for the protected change or remove it from the change set.");
+  }
+
+  return actions.length > 0
+    ? actions.join(" ")
+    : "Review the listed findings, address the requested action, and rerun status.";
+}
+
+function isAcceptedContextDocsTouch(
+  path: string,
+  fileStat: GitDiffContextLike["fileStats"][number] | undefined,
+  scopeBudget: ScopeBudgetLike
+): boolean {
+  if (scopeBudget.contextDocsTouchAllowed !== true || !isContextDocsPath(path)) {
+    return false;
+  }
+
+  if (
+    (scopeBudget.readOnlyContextPaths ?? []).some(
+      (contextPath) => normalizePath(contextPath) === normalizePath(path)
+    )
+  ) {
+    return false;
+  }
+
+  return (fileStat?.added ?? 0) + (fileStat?.deleted ?? 0) <= 120;
+}
+
+function isContextDocsPath(path: string): boolean {
+  const normalized = normalizePath(path);
+  const fileName = normalized.split("/").at(-1)?.toLowerCase() ?? "";
+
+  return (
+    normalized.toLowerCase().startsWith("docs/") ||
+    [
+      "full_context.md",
+      "project_context.md",
+      "architecture.md",
+      "agents.md",
+      "claude.md",
+      "contributing.md",
+      "notes.md"
+    ].includes(fileName)
+  );
 }
 
 function normalizePath(path: string): string {

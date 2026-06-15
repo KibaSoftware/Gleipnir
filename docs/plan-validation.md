@@ -1,6 +1,8 @@
 # Plan Validation
 
-Gleip plan validation is a proactive guardrail for coding agents. After local preflight creates the implementation brief and scope budget, the agent validates its intended plan before editing code.
+Gleip plan validation provides proactive local guidance for coding agents. After
+preflight creates the implementation brief and scope budget, the agent checks its
+intended plan before editing code.
 
 The goal is to catch deterministic structural and scope problems early: missing plan
 sections, missing or out-of-scope files, vague expansion rationale, dependency
@@ -12,9 +14,10 @@ budget mismatches.
 1. Run `npx --no-install gleip preflight "<task>"`.
 2. Draft a short implementation plan that names likely files and tests.
 3. Run plan validation.
-4. Proceed only when the status is `approved`.
-5. Revise the plan for `needs_revision`.
-6. Ask the user before proceeding on `requires_approval`.
+4. Proceed when the plan is `aligned` or after reviewing `advisory` findings.
+5. Clarify scope or verification for `needs_clarification`.
+6. Clean accidental artifacts for `needs_cleanup`.
+7. Request approval or remove the relevant change for `needs_approval`.
 
 ## Testing the workflow manually
 
@@ -54,11 +57,12 @@ Plan validation treats files referenced as context or reference material as read
 unless the plan proposes modifying them. A file passed through `--file` is also
 read-only context by default and is not added to editable scope. Verification
 commands such as existing test runs, focused pytest/vitest runs, smoke tests,
-compile checks, and typechecks satisfy the test-plan requirement without requiring
-a new test file.
+compile checks, CLI dry runs, and typechecks satisfy verification structure without
+requiring a new test file. Manual verification may be appropriate for docs-only or
+configuration-only work.
 
-Providing both inline plan text and `--file` is rejected. Missing, empty, or
-unreadable plan input exits non-zero with an actionable message.
+Providing both inline plan text and `--file` is a CLI input error. Missing, empty,
+or unreadable plan input exits non-zero with an actionable message.
 
 ## Structural Checks
 
@@ -83,20 +87,20 @@ Gleip parses mentioned paths deterministically:
 
 ## Scope Rationale
 
-When proposed files exceed the soft budget or fall outside allowed paths, Gleip asks
+When proposed files exceed the soft budget or fall outside expected paths, Gleip asks
 for a scope rationale. A structurally specific rationale names the extra file,
 module, or category, states why it is needed, and includes or implies verification
 for that area. Gleip checks only that those elements are present; it does not decide
 whether the explanation is true.
 
-Ordinary source and test expansion is warning-based. Dependency manifests,
-lockfiles, CI, secrets, environment files, and security-sensitive paths retain
-stronger findings according to existing hard gates.
+Ordinary source and test expansion is advisory. Dependency manifests, lockfiles,
+CI, protected config, secrets, environment files, and security-sensitive paths
+retain approval-, action-, or cleanup-required findings.
 
 No extra rationale is required for paths directly named or structurally implied by
 the task contract. For example, an explicit docs request covers docs plus
 README/changelog, a package-version request covers package metadata, and a release
-task naming CLI, planner, tests, and smoke tests covers those areas. Output describes
+multi-area task naming CLI, planner, tests, and smoke tests covers those areas. Output describes
 such plans as aligned with declared task scope.
 
 ## Dependency Conflicts
@@ -105,8 +109,8 @@ Gleip recognizes explicit requirements for a bounded registry of common Python a
 Node packages. It compares those requirements with local `package.json`,
 `pyproject.toml`, `requirements.txt`, `setup.cfg`, and `setup.py` evidence.
 
-If a required package is absent and new dependencies are blocked, the plan requires
-clarification or approval. A proposed substitution also requires an explicit
+If a required package is absent and new dependencies are not approved, the plan
+requires clarification or approval. A proposed substitution also requires an explicit
 accepted-alternative or user-approval marker. Preference wording such as "prefer
 Typer if available" is not treated as a hard requirement.
 
@@ -115,9 +119,14 @@ inspect global machine package state.
 
 ## Statuses
 
-- `approved`: The plan has no findings that require revision or approval.
-- `needs_revision`: The plan should be narrowed or made more concrete before code is edited.
-- `requires_approval`: The plan includes work that needs explicit user approval, such as disallowed dependency changes, CI changes, or test weakening.
+- `aligned`: The plan aligns with declared task scope and verification expectations.
+- `advisory`: The plan has non-denying guidance worth reviewing.
+- `needs_clarification`: Scope, structure, rationale, or verification needs clarification.
+- `needs_approval`: Dependency, CI, protected config, or similar work needs approval.
+- `needs_cleanup`: Accidental artifact, secret, or generated-file scope needs cleanup.
+
+Legacy plan statuses remain readable in historical report data, but new validation
+output uses the statuses above.
 
 ## Limitations
 

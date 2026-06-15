@@ -7,7 +7,7 @@ When `enabled` is `true`, coding agents should run `npx --no-install gleip prefl
 When `enabled` is `false`, coding agents should not silently proceed. They should ask:
 
 ```text
-Gleip is currently inactive. Do you want me to proceed without Gleip guardrails? y/n
+Gleip is currently inactive. Do you want me to continue without Gleip guidance? y/n
 ```
 
 If the user confirms, the agent should mention in the final response that Gleip was inactive and no Gleip validation was performed.

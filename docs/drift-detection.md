@@ -29,90 +29,82 @@ This is useful when you intentionally want Gleip to consider pre-existing change
 
 ## Status Levels
 
-- `within_scope`: No meaningful budget issues were detected.
-- `warning`: A soft limit was exceeded, such as file count or line count.
-- `approval_required`: The diff touches a path or category that needs explicit approval, such as dependency or CI files when the budget does not allow them.
-- `blocked`: The diff contains an objective hard-gate issue, such as skipped tests, deleted tests, or tracked local Gleip artifacts.
+- `clean`: No findings were detected.
+- `advisory`: Informational or warning-level drift is present.
+- `needs_attention`: Scope, risk, or verification clarification is recommended.
+- `needs_cleanup`: Local artifacts, secrets, or accidental generated files need cleanup.
+- `needs_approval`: Dependency, CI, protected config, or similar changes need approval.
 
 Each finding also has a stable code and severity:
 
 - `info`: Context only.
-- `warn`: Advisory signal that does not block CI.
-- `fail`: Strong local finding that does not block CI in 0.7.0.
-- `blocking`: High-confidence finding eligible to block CI.
+- `warn`: Advisory signal.
+- `action_required`: Focused correction or rationale is required.
+- `approval_required`: Approval is required or the change should be removed.
+- `cleanup_required`: Accidental or sensitive content should be removed.
 
-Text output uses a concise form such as `[TEST_SKIPPED] blocking: Skipped test added`.
+Text output uses a concise form such as
+`[TEST_SKIPPED] action_required: Skipped test added`.
 
-## Finding Codes in 0.7.0
+## Finding Codes in 0.7.1
 
 | Code | Severity | Current signal |
 | --- | --- | --- |
-| `TEST_SKIPPED` | `blocking` | A skipped or pending test was added. |
-| `TEST_DELETED` | `blocking` | A test file was deleted. |
-| `TEST_WEAKENED` | `fail` | Explicit test weakening intent or a large test deletion was detected. |
-| `DEPENDENCY_FILE_CHANGED` | `fail` | A dependency manifest changed outside an allowed dependency task. |
-| `LOCKFILE_CHANGED` | `fail` | A lockfile changed outside an allowed dependency task. |
-| `LOCAL_ARTIFACT_INCLUDED` | `blocking` | A `.gleip/` session artifact is tracked by git. |
-| `NO_ACTIVE_SESSION` | `blocking` | A session-required command has no active session. |
-| `SCOPE_EXPANSION_WARN` | `warn` | Files are outside the inferred allowed paths. |
+| `TEST_SKIPPED` | `action_required` | A skipped or pending test was added. |
+| `TEST_DELETED` | `action_required` | A test file was deleted. |
+| `TEST_WEAKENED` | `action_required` | Explicit test weakening intent or a large test deletion was detected. |
+| `DEPENDENCY_FILE_CHANGED` | `approval_required` | A dependency manifest changed without declared approval. |
+| `LOCKFILE_CHANGED` | `approval_required` | A lockfile changed without declared approval. |
+| `LOCAL_ARTIFACT_INCLUDED` | `cleanup_required` | A `.gleip/` session artifact is tracked by git. |
+| `NO_ACTIVE_SESSION` | `action_required` | A session-required command has no active session. |
+| `SCOPE_EXPANSION_WARN` | `warn` | Files are outside inferred expected paths. |
 | `PLAN_TOO_VAGUE` | `warn` | Structural plan details are too vague. |
 | `MISSING_TEST_STRATEGY` | `warn` | A structurally required test strategy is absent. |
 | `SCOPE_LIMIT_EXCEEDED` | `warn` | A soft file or line limit was exceeded. |
 | `GIT_UNAVAILABLE` | `warn` | Local git evidence could not be inspected. |
-| `CI_FILE_CHANGED` | `fail` | CI configuration changed outside an allowed CI task. |
-| `SECRET_FILE_CHANGED` | `fail` | A likely secret or env file changed. |
-| `APPROVAL_REQUIRED_PATH_CHANGED` | `fail` | An explicitly protected path changed. |
-| `BLOCKED_PATH_CHANGED` | `fail` | A configured blocked-without-approval path changed. |
-| `DEPENDENCY_CHANGE_INTENT` | `fail` | A plan explicitly proposes a disallowed dependency change. |
-| `CI_CHANGE_INTENT` | `fail` | A plan explicitly proposes a disallowed CI change. |
-| `BROAD_REFACTOR_INTENT` | `warn` or `fail` | A plan explicitly proposes a broad refactor outside the task type. |
-| `PLAN_MISSING` | `fail` | Structural validation received no plan text. |
+| `CI_FILE_CHANGED` | `approval_required` | CI configuration changed without declared approval. |
+| `SECRET_FILE_CHANGED` | `cleanup_required` | A likely secret or env file changed. |
+| `APPROVAL_REQUIRED_PATH_CHANGED` | `approval_required` | An explicitly protected path changed. |
+| `BLOCKED_PATH_CHANGED` | `approval_required` | A legacy protected-path rule matched. |
+| `DEPENDENCY_CHANGE_INTENT` | `approval_required` | A plan proposes an unapproved dependency change. |
+| `CI_CHANGE_INTENT` | `approval_required` | A plan proposes an unapproved CI change. |
+| `BROAD_REFACTOR_INTENT` | `warn` or `action_required` | A plan proposes a broad refactor outside the declared task. |
+| `PLAN_MISSING` | `action_required` | Structural validation received no plan text. |
 | `PLAN_REQUIRED_SECTION_MISSING` | `warn` | Implementation/change structure is absent. |
 | `PLAN_NO_FILES_MENTIONED` | `warn` | A code-task plan has no file, module, or scope signal. |
 | `PLAN_NO_VERIFICATION` | `warn` | Required verification structure or language is absent. |
 | `PLAN_RISK_RATIONALE_MISSING` | `warn` | Risky or expanded scope lacks risk/assumption/rationale structure. |
 | `PLAN_MENTIONED_FILE_MISSING` | `warn` | An edit target does not exist and is not marked new. |
-| `PLAN_SCOPE_OUTSIDE_BUDGET` | `warn` | Proposed files fall outside active allowed paths. |
+| `PLAN_SCOPE_OUTSIDE_BUDGET` | `warn` | Proposed files fall outside active expected paths. |
 | `PLAN_RISKY_FILE_MENTIONED` | `warn` | A dependency, CI, config, secret, or security-sensitive file is named. |
 | `PLAN_VENDOR_EDIT_TARGET` | `warn` | An excluded dependency/vendor/generated path is proposed for editing. |
 | `SCOPE_EXPANSION_RATIONALE_REQUIRED` | `warn` | Expanded scope lacks a named reason and verification. |
 | `SCOPE_EXPANSION_RATIONALE_VAGUE` | `warn` | Expansion rationale uses only generic wording. |
-| `DEPENDENCY_REQUIREMENT_CONFLICT` | `warn` | A required package is absent while new dependencies are blocked. |
-| `DEPENDENCY_SUBSTITUTION_REQUIRES_APPROVAL` | `fail` | A required package is replaced without an approval marker. |
-| `RISKY_CHANGE_RATIONALE_REQUIRED` | `warn` or `fail` | A risky file category lacks a named reason. |
+| `DEPENDENCY_REQUIREMENT_CONFLICT` | `approval_required` | A required package is absent while new dependencies are unapproved. |
+| `DEPENDENCY_SUBSTITUTION_REQUIRES_APPROVAL` | `approval_required` | A required package is replaced without an approval marker. |
+| `RISKY_CHANGE_RATIONALE_REQUIRED` | `warn` or `approval_required` | A risky file category lacks a named reason. |
 | `PLAN_SCOPE_EXCEEDS_BUDGET` | `warn` | Proposed file count exceeds the soft maximum. |
-| `PLAN_HARD_GATE_VIOLATION` | `fail` | A proposed path crosses an active hard gate. |
+| `PLAN_HARD_GATE_VIOLATION` | `approval_required` | A proposed path crosses a legacy protected check. |
 
-`MISSING_IMPLEMENTATION_CHANGE` is reserved but intentionally not emitted in 0.7.0.
+`MISSING_IMPLEMENTATION_CHANGE` is reserved but intentionally not emitted in 0.7.1.
 Gleip does not yet have a high-confidence structural detector for that condition.
 
 ## How Agents Should Use It
 
 Agents run `npx --no-install gleip status` before the final response.
 
-For each status:
-
-- `within_scope`: Continue and run relevant tests before the final response.
-- `warning`: Review warnings and reduce scope if practical. Continue only when the expanded scope is justified.
-- `approval_required`: Stop and ask for approval, or revise the implementation to stay within budget.
-- `blocked`: Fix the blocked issue before continuing. Do not proceed with skipped/deleted tests or secret changes.
-
-If Gleip reports `warning`, review the finding and keep the implementation narrow.
-
-If Gleip reports `approval_required`, stop and ask for approval before continuing.
-
-If Gleip reports `blocked`, do not continue until the blocked change is fixed or explicitly approved.
+Use `nextAction` as the finding-specific instruction. Advisory scope findings ask
+for review or rationale. Cleanup findings name artifacts or sensitive files to
+remove. Approval findings ask for approval or removal of the relevant change.
+Verification findings ask for focused restoration or explicit user-approved
+rationale. Gleip does not label the task itself as denied.
 
 ## Report Shape
 
 Gleip groups related findings to reduce noise. For example, several outside-scope files are reported as one finding with a short examples list instead of one finding per file.
 
-Findings are ordered by severity:
-
-1. `blocking`
-2. `fail`
-3. `warn`
-4. `info`
+Findings are ordered by action category: cleanup, approval, action, warning, then
+information.
 
 The report ends with one next action so coding agents have a clear instruction.
 
@@ -138,19 +130,19 @@ JSON output includes:
 ## CI Mode
 
 `npx --no-install gleip check --ci` is deterministic, non-interactive, local-only, and
-non-mutating. It exits `1` only when a documented blocking code is present and exits
-`0` for OK, INFO, WARN, and non-blocking FAIL findings.
+non-mutating. It exits `1` only when a documented high-confidence action code is
+present and exits `0` for clean, advisory, and non-CI-enforced findings.
 
-The 0.7.0 CI blocking codes are:
+The 0.7.1 CI-enforced codes are:
 
 - `TEST_SKIPPED`
 - `TEST_DELETED`
 - `LOCAL_ARTIFACT_INCLUDED`
 - `NO_ACTIVE_SESSION` for commands that require an active session
 
-Dependency and lockfile changes use `DEPENDENCY_FILE_CHANGED` and `LOCKFILE_CHANGED`
-with `fail` severity, but do not block `check --ci` in 0.7.0. Scope expansion uses
-`SCOPE_EXPANSION_WARN` with `warn` severity.
+Dependency and lockfile changes use `approval_required`; scope expansion uses
+`warn`. The CI allowlist remains intentionally conservative. CI wording describes
+the required cleanup or action rather than declaring the task blocked.
 
 ## Limitations
 

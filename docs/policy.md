@@ -11,20 +11,29 @@ Initial policy areas:
 
 Policies should produce actionable feedback tied to repository facts. They should not rely on vague quality labels without evidence.
 
-## Precision-First Policy Before 1.0
+## Guidance-First Policy Before 1.0
 
-Gleip favors precision over recall before 1.0. False positives are worse than missed
-suspicious cases because noisy guardrails train agents and reviewers to ignore the signal.
+Gleip is a guidance tool, not a permission system. It favors precision over recall
+before 1.0 because noisy findings train agents and reviewers to ignore the signal.
 
 - Multi-file and cross-module changes are normal in enterprise repositories.
-- Ordinary source and test scope expansion is not automatically a failure and remains warning-based in 0.7.0.
-- Local mode remains advisory unless a finding is clearly severe.
-- `gleip check --ci` fails only for documented, high-confidence blocking finding codes.
+- Ordinary source and test scope expansion is advisory and never makes complexity itself a failure.
+- Local `status`, `check`, and valid plan validation guide the next action instead of denying the task.
+- `gleip check --ci` may fail only for documented, high-confidence action findings.
 - Gleip should reduce agent chatter, not require justification for every changed file.
 - Stable finding codes improve clarity and automation; they are not a proxy metric or a target to maximize.
 - Plan validation remains structural. It does not attempt semantic correctness judgments.
 - Scope rationale checks require named scope, a reason, and verification, but do not
   judge whether the rationale is true.
+- Expected paths describe likely declared scope; they are not an exclusive permission list.
+- Dependency, CI, protected config, and security-sensitive changes require approval,
+  attention, or cleanup rather than task denial.
+- Tracked `.gleip/` session artifacts are cleanup-required.
+- Small context-document touches are acceptable when aligned with the declared work.
+- Runtime, cache, and output paths are excluded from passive relevance but may be
+  explicitly declared as narrow artifacts.
+- Verification may be tests, smoke checks, typechecks, compilation, dry runs, or
+  appropriate manual checks.
 - Dependency requirement checks use task text, plan text, and local manifests only.
 - The goal is not to make every suspicious external benchmark case fail.
 - The goal is to preserve valid work while improving deterministic signal quality.
