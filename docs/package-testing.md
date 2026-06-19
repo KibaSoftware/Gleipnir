@@ -2,7 +2,7 @@
 
 Use these flows before publishing anything. They verify the built CLI can run outside the source TypeScript entrypoint. For the full local-only preview release pass, see [docs/release-checklist.md](release-checklist.md).
 
-Current release target: `0.7.1`.
+Current release target: `0.7.2`.
 
 ## Flow A: npm pack
 
@@ -24,7 +24,7 @@ The public preview install target is:
 
 ```sh
 npm install -D gleip
-npx gleip init --all-agents
+npx gleip init
 ```
 
 Create a temporary repository and install the generated tarball:
@@ -34,7 +34,7 @@ mkdir %TEMP%\gleip-pack-test
 cd %TEMP%\gleip-pack-test
 git init
 npm init -y
-npm install -D <path-to-repo>\dist-pack\gleip-0.7.1.tgz
+npm install -D <path-to-repo>\dist-pack\gleip-0.7.2.tgz
 ```
 
 On macOS or Linux, use a temp directory such as `/tmp/gleip-pack-test` and the matching tarball path.
@@ -44,7 +44,7 @@ Run the packaged CLI:
 ```sh
 npx gleip --help
 npx gleip --version
-npx gleip init --all-agents
+npx gleip init
 npx gleip doctor
 npx gleip doctor --agents
 npx gleip report --json
@@ -54,7 +54,7 @@ npx --no-install gleip uninstall --dry-run
 npx --no-install gleip uninstall
 ```
 
-Expected result: help prints, the version is `0.7.1`, setup diagnostics pass, reports and checks run locally, all supported agent instructions are created, dry-run changes nothing, and uninstall removes generated repository files without removing the npm dependency.
+Expected result: help prints, the version is `0.7.2`, setup diagnostics pass, reports and checks run locally, the selected agent instruction is created, dry-run changes nothing, and uninstall removes generated repository files without removing the npm dependency.
 
 Verify git behavior from the fixture:
 
@@ -110,7 +110,7 @@ From a temporary repository:
 ```sh
 pnpm link --global
 gleip --help
-gleip init --all-agents
+gleip init
 ```
 
 Use `pnpm unlink --global gleip` when finished.

@@ -1,6 +1,6 @@
 {
   "name": "gleip",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Local-only guidance that AI coding agents use automatically.",
   "license": "Apache-2.0",
   "repository": {
@@ -27,6 +27,7 @@
   "files": [
     "packages/cli/dist",
     "packages/cli/package.json",
+    "docs",
     "README.md",
     "CHANGELOG.md",
     "LICENSE",

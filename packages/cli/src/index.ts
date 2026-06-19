@@ -43,10 +43,8 @@ const LEGACY_ARGUS_SECTION_START = "<!-- ARGUS:START -->";
 const LEGACY_ARGUS_SECTION_END = "<!-- ARGUS:END -->";
 const LEGACY_ARGUS_WORKFLOW_SECTION_START = "<!-- ARGUS:AGENT-WORKFLOW:START -->";
 const LEGACY_ARGUS_WORKFLOW_SECTION_END = "<!-- ARGUS:AGENT-WORKFLOW:END -->";
-const SUPPORTED_AGENT_TARGETS = ["auto", "generic", "codex", "claude", "cursor"] as const;
-const AGENT_INSTRUCTION_TARGETS = ["generic", "claude", "cursor"] as const;
-const NO_AGENT_SETUP_MESSAGE =
-  "No specific agent setup detected. Created generic AGENTS.md. To prepare all supported agents, run `npx gleip init --all-agents`.";
+const SUPPORTED_AGENT_TARGETS = ["auto", "generic", "codex", "claude", "gemini"] as const;
+const AGENT_INSTRUCTION_TARGETS = ["generic", "claude", "gemini"] as const;
 const GLEIP_VERSION = readPackageVersion();
 const REPORT_SCHEMA_VERSION = "1.0.0";
 const CI_BLOCKING_FINDING_CODES = new Set([
@@ -148,6 +146,7 @@ interface CommandRuntime {
 
 interface InitOptions {
   agent?: string;
+  agentTarget?: string;
   allAgents?: boolean;
   force?: boolean;
 }
@@ -637,16 +636,19 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
   program
     .command("init")
     .description("Create local-only Gleip config, policy docs, and agent workflow files.")
+    .argument("[agentTarget]", "Agent target: auto, generic, codex, claude, or gemini.")
     .option(
       "--agent <name>",
-      "Create instructions for auto, generic, codex, claude, or cursor.",
-      "auto"
+      "Create instructions for auto, generic, codex, claude, or gemini."
     )
-    .option("--all-agents", "Create instructions for generic/Codex, Claude, and Cursor.")
+    .option("--all-agents", "Deprecated; init creates one target. Use repair-agents --all to repair all targets.")
     .option("--force", "Overwrite generated Gleip files.")
-    .addHelpText("after", "\nExamples:\n  $ gleip init --all-agents\n  $ gleip init --agent claude")
-    .action((commandOptions: InitOptions) => {
-      initRepository(runtime, commandOptions);
+    .addHelpText("after", "\nExamples:\n  $ gleip init\n  $ gleip init claude")
+    .action((agentTarget: string | undefined, commandOptions: InitOptions) => {
+      initRepository(
+        runtime,
+        agentTarget === undefined ? commandOptions : { ...commandOptions, agentTarget }
+      );
     });
 
   program
@@ -807,7 +809,7 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
     .option("--dry-run", "Print planned cleanup actions without changing files.")
     .option(
       "--keep-agent-files",
-      "Keep AGENTS.md, CLAUDE.md, and .cursor/rules/gleip.mdc unchanged."
+      "Keep AGENTS.md, CLAUDE.md, and GEMINI.md unchanged."
     )
     .option("--force", "Skip confirmation prompts; does not remove unrelated files.")
     .addHelpText(
@@ -815,7 +817,7 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
       [
         "",
         "Removes .gleip/, .gleip.yml, GLEIP.md, Gleip-managed sections in agent files,",
-        "and the Gleip-generated Cursor rule. Package dependencies are not changed.",
+        "and empty Gleip-generated agent instruction files. Package dependencies are not changed.",
         "",
         "Next: run `npm uninstall gleip` to remove the package dependency."
       ].join("\n")
@@ -899,7 +901,7 @@ function initRepository(runtime: CommandRuntime, options: InitOptions): void {
   const agentInstructionFiles = agentInstructions.map((file) => file.path);
 
   ensureGleipDirectory(runtime.cwd);
-  const gitignoreResult = ensureGleipGitignore(runtime.cwd);
+  ensureGleipGitignore(runtime.cwd);
   writeGleipStateIfMissing(runtime.cwd, getDefaultGleipState(runtime.now().toISOString()), force);
   writeGeneratedFile(join(runtime.cwd, ".gleip.yml"), defaultConfigContent(), force);
   writeGeneratedFile(join(runtime.cwd, "GLEIP.md"), defaultGleipReadmeContent(), force);
@@ -909,27 +911,11 @@ function initRepository(runtime: CommandRuntime, options: InitOptions): void {
 
   const output = [
     "Gleip initialized.",
+    ...(selection.detectedTarget === undefined
+      ? []
+      : [`Detected agent target: ${selection.detectedTarget}.`]),
     `Agent instructions created/updated: ${agentInstructionFiles.join(", ")}.`
   ];
-
-  if (selection.noAgentSetupDetected) {
-    output.push(NO_AGENT_SETUP_MESSAGE);
-  }
-
-  output.push(
-    "",
-    "Next:",
-    '  npx gleip preflight "<task>"',
-    "  npx gleip status",
-    "",
-    "For agent-assisted work:",
-    "  Ask your coding agent to read the Gleip instructions before editing.",
-    "  Run npx gleip check before claiming completion.",
-    "",
-    gitignoreResult === "unchanged"
-      ? "Local Gleip artifacts are protected by .gitignore."
-      : "Local Gleip artifacts were added to and protected by .gitignore."
-  );
 
   runtime.stdout(output.join("\n"));
 }
@@ -1602,14 +1588,14 @@ function doctorAgents(runtime: CommandRuntime): void {
     ),
     "",
     "Suggestions:",
-    "- Run `npx gleip init --all-agents` to prepare all supported agent files.",
-    "- Run `npx gleip init --agent <name>` for one target."
+    "- Run `npx gleip init` to prepare generic AGENTS.md.",
+    "- Run `npx gleip init <name>` for one target."
   ];
 
   if (!hasAnyAgentFile) {
     lines.push(
       "",
-      "No supported agent files exist yet. This is valid; `npx gleip init --all-agents` can prepare the repo before any agent is installed."
+      "No supported agent files exist yet. This is valid; `npx gleip init` prepares generic AGENTS.md."
     );
   }
 
@@ -1709,11 +1695,10 @@ function createUninstallPlan(cwd: string, keepAgentFiles: boolean): UninstallPla
   planOwnedPathRemoval(cwd, ".gleip.yml", false, plan);
   planOwnedPathRemoval(cwd, "GLEIP.md", false, plan);
 
-  for (const target of ["generic", "claude"] as const) {
+  for (const target of AGENT_INSTRUCTION_TARGETS) {
     planAgentInstructionCleanup(cwd, agentInstructionFile(target), keepAgentFiles, plan);
   }
 
-  planCursorRuleCleanup(cwd, keepAgentFiles, plan);
   return plan;
 }
 
@@ -1782,36 +1767,6 @@ function planAgentInstructionCleanup(
   }
 
   plan.modifications.push({ path: file.path, content: result.content });
-}
-
-function planCursorRuleCleanup(cwd: string, keepAgentFiles: boolean, plan: UninstallPlan): void {
-  const file = agentInstructionFile("cursor");
-  const filePath = join(cwd, file.path);
-
-  if (!existsSync(filePath)) {
-    plan.skipped.push(`${file.path} (not found)`);
-    return;
-  }
-
-  if (!statSync(filePath).isFile()) {
-    plan.skipped.push(`${file.path} (preserved because it is not a file)`);
-    return;
-  }
-
-  if (keepAgentFiles) {
-    plan.skipped.push(`${file.path} (--keep-agent-files)`);
-    return;
-  }
-
-  const content = readFileSync(filePath, "utf8");
-  const result = removeGleipManagedSections(content);
-
-  if (!result.found || !isEmptyOrGeneratedAgentScaffold(result.content, file.defaultContent)) {
-    plan.skipped.push(`${file.path} (preserved because it contains unrelated content)`);
-    return;
-  }
-
-  plan.removals.push({ path: file.path, recursive: false });
 }
 
 function removeGleipManagedSections(content: string): { content: string; found: boolean } {
@@ -2005,40 +1960,32 @@ interface AgentInstructionFile {
 }
 
 interface InitAgentInstructionSelection {
+  detectedTarget?: AgentInstructionTarget;
   files: AgentInstructionFile[];
-  noAgentSetupDetected: boolean;
 }
 
 function initAgentInstructionFiles(
   cwd: string,
   options: InitOptions
 ): InitAgentInstructionSelection {
-  if (options.allAgents === true) {
-    return {
-      files: allAgentInstructionFiles(),
-      noAgentSetupDetected: false
-    };
-  }
-
-  const target = parseAgentTarget(options.agent);
+  const target = parseAgentTarget(options.agentTarget ?? options.agent);
 
   if (target === "auto") {
-    const detectedFiles = detectedAgentInstructionFiles(cwd);
+    const detectedTarget = detectAgentInstructionTarget(cwd);
 
     return {
-      files: detectedFiles.length > 0 ? detectedFiles : [agentInstructionFile("generic")],
-      noAgentSetupDetected: detectedFiles.length === 0
+      detectedTarget,
+      files: [agentInstructionFile(detectedTarget)]
     };
   }
 
   return {
-    files: [agentInstructionFile(target === "codex" ? "generic" : target)],
-    noAgentSetupDetected: false
+    files: [agentInstructionFile(target === "codex" ? "generic" : target)]
   };
 }
 
 function parseAgentTarget(value: string | undefined): AgentTarget {
-  const target = value ?? "auto";
+  const target = value ?? "generic";
 
   if (SUPPORTED_AGENT_TARGETS.includes(target as AgentTarget)) {
     return target as AgentTarget;
@@ -2053,22 +2000,22 @@ function allAgentInstructionFiles(): AgentInstructionFile[] {
   return AGENT_INSTRUCTION_TARGETS.map((target) => agentInstructionFile(target));
 }
 
-function detectedAgentInstructionFiles(cwd: string): AgentInstructionFile[] {
-  const files: AgentInstructionFile[] = [];
+function detectAgentInstructionTarget(cwd: string): AgentInstructionTarget {
+  const targets: AgentInstructionTarget[] = [];
 
   if (existsSync(join(cwd, "AGENTS.md"))) {
-    files.push(agentInstructionFile("generic"));
+    targets.push("generic");
   }
 
   if (existsSync(join(cwd, "CLAUDE.md"))) {
-    files.push(agentInstructionFile("claude"));
+    targets.push("claude");
   }
 
-  if (existsSync(join(cwd, ".cursor")) || existsSync(join(cwd, ".cursor", "rules"))) {
-    files.push(agentInstructionFile("cursor"));
+  if (existsSync(join(cwd, "GEMINI.md"))) {
+    targets.push("gemini");
   }
 
-  return files;
+  return targets.length === 1 ? (targets[0] ?? "generic") : "generic";
 }
 
 function existingAgentInstructionFiles(cwd: string): AgentInstructionFile[] {
@@ -2084,10 +2031,10 @@ function agentInstructionFile(target: AgentInstructionTarget): AgentInstructionF
     };
   }
 
-  if (target === "cursor") {
+  if (target === "gemini") {
     return {
-      path: ".cursor/rules/gleip.mdc",
-      defaultContent: "---\ndescription: Gleip workflow\nalwaysApply: true\n---\n",
+      path: "GEMINI.md",
+      defaultContent: "# Gemini Instructions\n",
       target
     };
   }
@@ -2125,9 +2072,9 @@ function upsertGleipSection(content: string, target: AgentInstructionTarget): st
 function gleipSectionContent(target: AgentInstructionTarget): string {
   const targetLine =
     target === "claude"
-      ? "Claude Code must run Gleip commands itself before editing code; ask the developer only if the local package command cannot be run."
-      : target === "cursor"
-        ? "This Cursor rule is always on for coding tasks in this repository."
+      ? "Claude Code must run Gleip before editing code."
+      : target === "gemini"
+        ? "Gemini CLI must run Gleip before editing code."
         : "Codex-style and generic coding agents must run Gleip before editing code.";
 
   return `${GLEIP_SECTION_START}
@@ -2152,6 +2099,59 @@ function gleipSectionContent(target: AgentInstructionTarget): string {
 - Include only the generated compact block under \`Recommended final response\`; do not paste the full report.
 - The generated block contains scope adherence, drift risk, output discipline, estimated token waste avoided, and unresolved warnings.
 - Final response must also include files changed, tests run, and risks.
+
+## Gleip working standard
+
+### 1. Think before coding
+
+Do not assume, hide confusion, or silently choose between ambiguous interpretations.
+
+Before implementing:
+- State assumptions explicitly.
+- If uncertain, ask before editing.
+- If multiple interpretations exist, present them instead of choosing silently.
+- If a simpler approach exists, say so.
+- Push back when the requested approach appears overcomplicated, risky, or broader than needed.
+- If something is unclear, stop, name what is confusing, and ask.
+
+### 2. Simplicity first
+
+Implement the minimum code that solves the requested problem.
+
+Rules:
+- Do not add features beyond what was asked.
+- Do not add abstractions for single-use code.
+- Do not add flexibility, configurability, or extension points that were not requested.
+- Do not add error handling for impossible scenarios.
+- If the solution is much larger than necessary, simplify it before finalizing.
+- Prefer the implementation a senior engineer would consider direct and boring.
+
+### 3. Surgical changes
+
+Touch only what the task requires.
+
+When editing existing code:
+- Do not improve adjacent code, comments, naming, or formatting unless required.
+- Do not refactor unrelated code.
+- Match the existing style, even if a different style would be preferable.
+- If unrelated dead code is found, mention it instead of deleting it.
+- Remove only imports, variables, functions, files, or tests made obsolete by your own changes.
+- Every changed line should trace directly to the user’s request.
+
+### 4. Goal-driven execution
+
+Turn the task into verifiable goals before implementing.
+
+Examples:
+- “Add validation” means define invalid-input cases, test them, then make them pass.
+- “Fix the bug” means reproduce the bug with a focused test, then make it pass.
+- “Refactor X” means verify behavior before and after the refactor.
+
+For multi-step tasks, state a brief plan in this format:
+
+1. [Step] → verify: [check]
+2. [Step] → verify: [check]
+3. [Step] → verify: [check]
 
 ### Gleip checklist for every coding task
 

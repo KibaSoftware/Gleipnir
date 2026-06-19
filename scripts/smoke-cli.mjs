@@ -33,7 +33,9 @@ writeRepoFile(
 
 run("node", [cliEntry, "--help"], repo);
 const version = run("node", [cliEntry, "--version"], repo).trim();
-run("node", [cliEntry, "--cwd", repo, "init", "--all-agents"], repo);
+run("node", [cliEntry, "--cwd", repo, "init"], repo);
+run("node", [cliEntry, "--cwd", repo, "init", "claude"], repo);
+run("node", [cliEntry, "--cwd", repo, "init", "gemini"], repo);
 const doctorOutput = run("node", [cliEntry, "--cwd", repo, "doctor"], repo);
 run(
   "node",
@@ -58,7 +60,7 @@ for (const path of [
   ".gitignore",
   "AGENTS.md",
   "CLAUDE.md",
-  ".cursor/rules/gleip.mdc",
+  "GEMINI.md",
   "GLEIP.md",
   ".gleip.yml",
   ".gleip/session.json",
@@ -86,12 +88,12 @@ if (!validation.includes("Gleip plan check aligned with declared task scope")) {
 
 const report = JSON.parse(reportJson);
 
-if (version !== "0.7.1") {
-  throw new Error(`Expected Gleip 0.7.1, received: ${version}`);
+if (version !== "0.7.2") {
+  throw new Error(`Expected Gleip 0.7.2, received: ${version}`);
 }
 
-if (report.schemaVersion !== "1.0.0" || report.version !== "0.7.1") {
-  throw new Error(`Expected Gleip 0.7.1 report schema 1.0.0, received:\n${reportJson}`);
+if (report.schemaVersion !== "1.0.0" || report.version !== "0.7.2") {
+  throw new Error(`Expected Gleip 0.7.2 report schema 1.0.0, received:\n${reportJson}`);
 }
 
 if (!report.finalResponse?.markdown?.includes("### Gleip")) {

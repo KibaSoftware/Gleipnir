@@ -75,7 +75,7 @@ describe("createGleipCommand", () => {
   it("--version prints the package version", async () => {
     const output = (await runHelpCommand(["--version"])).join("\n");
 
-    expect(output).toBe("0.7.1");
+    expect(output).toBe("0.7.2");
   });
 
   it("command help shows important flags and stdin support", async () => {
@@ -132,7 +132,7 @@ describe("createGleipCommand", () => {
     expect(packageJson.exports["."].import).toBe("./dist/index.js");
     expect(packageJson.exports["."].types).toBe("./dist/index.d.ts");
     expect(packageJson.name).toBe("gleip");
-    expect(packageJson.version).toBe("0.7.1");
+    expect(packageJson.version).toBe("0.7.2");
     expect(packageJson.dependencies).toEqual({
       commander: "^12.0.0",
       yaml: "^2.0.0",
@@ -169,6 +169,7 @@ describe("createGleipCommand", () => {
     expect(packageJson.types).toBe("./packages/cli/dist/index.d.ts");
     expect(packageJson.files).toContain("packages/cli/dist");
     expect(packageJson.files).toContain("packages/cli/package.json");
+    expect(packageJson.files).toContain("docs");
     expect(packageJson.dependencies).toEqual({
       commander: "^12.0.0",
       yaml: "^2.0.0",
@@ -176,7 +177,7 @@ describe("createGleipCommand", () => {
     });
   });
 
-  it("release metadata uses version 0.7.1 across packages", () => {
+  it("release metadata uses version 0.7.2 across packages", () => {
     const packagePaths = [
       "package.json",
       "packages/cli/package.json",
@@ -192,7 +193,7 @@ describe("createGleipCommand", () => {
       const packageJson = JSON.parse(readFileSync(join(repoRoot, packagePath), "utf8")) as {
         version: string;
       };
-      expect(packageJson.version).toBe("0.7.1");
+      expect(packageJson.version).toBe("0.7.2");
     }
 
     const cliPackageJson = readFileSync(join(repoRoot, "packages", "cli", "package.json"), "utf8");
@@ -208,7 +209,7 @@ describe("createGleipCommand", () => {
       expect(readme).toContain("AI coding agents use automatically");
       expect(readme).toContain("Codex / generic agents");
       expect(readme).toContain("Claude Code");
-      expect(readme).toContain("Cursor");
+      expect(readme).toContain("Gemini CLI");
       expect(readme).toContain("npx --no-install gleip");
       expect(readme).toContain("## Quick Start");
       expect(readme).toContain("npm i -D gleip");
@@ -273,17 +274,17 @@ describe("createGleipCommand", () => {
     const processCwd = createTempRepo();
     const targetCwd = createTempRepo();
 
-    await runCommand(processCwd, ["--cwd", targetCwd, "init", "--all-agents"]);
+    await runCommand(processCwd, ["--cwd", targetCwd, "init", "claude"]);
     await runCommand(processCwd, ["--cwd", targetCwd, "repair-agents", "--all"]);
     const doctorOutput = await runCommand(processCwd, ["--cwd", targetCwd, "doctor", "--agents"]);
 
     expect(existsSync(join(targetCwd, "AGENTS.md"))).toBe(true);
     expect(existsSync(join(targetCwd, "CLAUDE.md"))).toBe(true);
-    expect(existsSync(join(targetCwd, ".cursor", "rules", "gleip.mdc"))).toBe(true);
+    expect(existsSync(join(targetCwd, "GEMINI.md"))).toBe(true);
     expect(doctorOutput.join("\n")).toContain("AGENTS.md: present; Gleip workflow: yes");
     expect(existsSync(join(processCwd, "AGENTS.md"))).toBe(false);
     expect(existsSync(join(processCwd, "CLAUDE.md"))).toBe(false);
-    expect(existsSync(join(processCwd, ".cursor", "rules", "gleip.mdc"))).toBe(false);
+    expect(existsSync(join(processCwd, "GEMINI.md"))).toBe(false);
   });
 
   it("init creates the repo Gleip files", async () => {
@@ -350,7 +351,7 @@ describe("createGleipCommand", () => {
   it("init ignores local artifacts without ignoring versioned Gleip files", async () => {
     const repo = createTempRepo();
 
-    await runCommand(repo, ["init", "--all-agents"]);
+    await runCommand(repo, ["init"]);
 
     const gitignore = readFileSync(join(repo, ".gitignore"), "utf8");
     for (const localArtifact of [
@@ -373,7 +374,7 @@ describe("createGleipCommand", () => {
       "GLEIP.md",
       "AGENTS.md",
       "CLAUDE.md",
-      ".cursor/rules/gleip.mdc"
+      "GEMINI.md"
     ]) {
       expect(gitignore).not.toContain(versionedFile);
     }
@@ -385,17 +386,8 @@ describe("createGleipCommand", () => {
     const output = await runCommand(repo, ["init"]);
     const initOutput = output.join("\n");
 
-    expect(initOutput).toContain("Gleip initialized.");
-    expect(initOutput).toContain("Agent instructions created/updated: AGENTS.md.");
-    expect(initOutput).toContain("No specific agent setup detected. Created generic AGENTS.md.");
-    expect(initOutput).toContain('Next:\n  npx gleip preflight "<task>"\n  npx gleip status');
-    expect(initOutput).toContain("For agent-assisted work:");
-    expect(initOutput).toContain(
-      "Ask your coding agent to read the Gleip instructions before editing."
-    );
-    expect(initOutput).toContain("Run npx gleip check before claiming completion.");
-    expect(initOutput).toContain(
-      "Local Gleip artifacts were added to and protected by .gitignore."
+    expect(initOutput).toBe(
+      ["Gleip initialized.", "Agent instructions created/updated: AGENTS.md."].join("\n")
     );
   });
 
@@ -511,62 +503,142 @@ describe("createGleipCommand", () => {
     expect(agents).toContain("<!-- GLEIP:END -->");
   });
 
-  it("init --agent auto detects AGENTS.md", async () => {
+  it("init creates AGENTS.md only", async () => {
+    const repo = createTempRepo();
+
+    const output = await runCommand(repo, ["init"]);
+
+    expect(output.join("\n")).toBe(
+      ["Gleip initialized.", "Agent instructions created/updated: AGENTS.md."].join("\n")
+    );
+    assertOnlyInstructionFile(repo, "AGENTS.md");
+    assertGleipWorkflowInstructions(readFileSync(join(repo, "AGENTS.md"), "utf8"));
+  });
+
+  it("init codex creates AGENTS.md only", async () => {
+    const repo = createTempRepo();
+
+    const output = await runCommand(repo, ["init", "codex"]);
+
+    expect(output.join("\n")).toBe(
+      ["Gleip initialized.", "Agent instructions created/updated: AGENTS.md."].join("\n")
+    );
+    assertOnlyInstructionFile(repo, "AGENTS.md");
+    expect(readFileSync(join(repo, "AGENTS.md"), "utf8")).toContain(
+      "Codex-style and generic coding agents must run Gleip before editing code."
+    );
+  });
+
+  it("init claude creates CLAUDE.md only", async () => {
+    const repo = createTempRepo();
+
+    const output = await runCommand(repo, ["init", "claude"]);
+
+    expect(output.join("\n")).toBe(
+      ["Gleip initialized.", "Agent instructions created/updated: CLAUDE.md."].join("\n")
+    );
+    assertOnlyInstructionFile(repo, "CLAUDE.md");
+    expect(readFileSync(join(repo, "CLAUDE.md"), "utf8")).toContain(
+      "Claude Code must run Gleip before editing code."
+    );
+  });
+
+  it("init gemini creates GEMINI.md only", async () => {
+    const repo = createTempRepo();
+
+    const output = await runCommand(repo, ["init", "gemini"]);
+
+    expect(output.join("\n")).toBe(
+      ["Gleip initialized.", "Agent instructions created/updated: GEMINI.md."].join("\n")
+    );
+    assertOnlyInstructionFile(repo, "GEMINI.md");
+    expect(readFileSync(join(repo, "GEMINI.md"), "utf8")).toContain(
+      "Gemini CLI must run Gleip before editing code."
+    );
+  });
+
+  it("init auto detects AGENTS.md", async () => {
     const repo = createTempRepo();
     writeRepoFile(repo, "AGENTS.md", "# Existing agent file\n");
 
-    const output = await runCommand(repo, ["init", "--agent", "auto"]);
+    const output = await runCommand(repo, ["init", "auto"]);
 
-    expect(output.join("\n")).toContain("Agent instructions created/updated: AGENTS.md.");
+    expect(output.join("\n")).toBe(
+      [
+        "Gleip initialized.",
+        "Detected agent target: generic.",
+        "Agent instructions created/updated: AGENTS.md."
+      ].join("\n")
+    );
     assertGleipWorkflowInstructions(readFileSync(join(repo, "AGENTS.md"), "utf8"));
     expect(existsSync(join(repo, "CLAUDE.md"))).toBe(false);
-    expect(output.join("\n")).not.toContain("No specific agent setup detected");
+    expect(existsSync(join(repo, "GEMINI.md"))).toBe(false);
   });
 
-  it("init --agent auto detects CLAUDE.md", async () => {
+  it("init auto detects CLAUDE.md", async () => {
     const repo = createTempRepo();
     writeRepoFile(repo, "CLAUDE.md", "# Existing Claude file\n");
 
-    const output = await runCommand(repo, ["init", "--agent", "auto"]);
+    const output = await runCommand(repo, ["init", "auto"]);
 
-    expect(output.join("\n")).toContain("Agent instructions created/updated: CLAUDE.md.");
+    expect(output.join("\n")).toBe(
+      [
+        "Gleip initialized.",
+        "Detected agent target: claude.",
+        "Agent instructions created/updated: CLAUDE.md."
+      ].join("\n")
+    );
     assertGleipWorkflowInstructions(readFileSync(join(repo, "CLAUDE.md"), "utf8"));
     expect(existsSync(join(repo, "AGENTS.md"))).toBe(false);
+    expect(existsSync(join(repo, "GEMINI.md"))).toBe(false);
   });
 
-  it("init --agent auto detects .cursor/rules", async () => {
+  it("init auto detects GEMINI.md", async () => {
     const repo = createTempRepo();
-    mkdirSync(join(repo, ".cursor", "rules"), { recursive: true });
+    writeRepoFile(repo, "GEMINI.md", "# Existing Gemini file\n");
 
-    const output = await runCommand(repo, ["init", "--agent", "auto"]);
+    const output = await runCommand(repo, ["init", "auto"]);
 
-    expect(output.join("\n")).toContain(
-      "Agent instructions created/updated: .cursor/rules/gleip.mdc."
+    expect(output.join("\n")).toBe(
+      [
+        "Gleip initialized.",
+        "Detected agent target: gemini.",
+        "Agent instructions created/updated: GEMINI.md."
+      ].join("\n")
     );
-    assertGleipWorkflowInstructions(
-      readFileSync(join(repo, ".cursor", "rules", "gleip.mdc"), "utf8")
-    );
+    assertGleipWorkflowInstructions(readFileSync(join(repo, "GEMINI.md"), "utf8"));
     expect(existsSync(join(repo, "AGENTS.md"))).toBe(false);
+    expect(existsSync(join(repo, "CLAUDE.md"))).toBe(false);
   });
 
-  it("init --agent auto defaults to generic when no agent files exist", async () => {
+  it("init auto defaults to generic when no agent files exist", async () => {
     const repo = createTempRepo();
 
-    await runCommand(repo, ["init", "--agent", "auto"]);
+    const output = await runCommand(repo, ["init", "auto"]);
 
+    expect(output.join("\n")).toContain("Detected agent target: generic.");
     assertGleipWorkflowInstructions(readFileSync(join(repo, "AGENTS.md"), "utf8"));
     expect(existsSync(join(repo, "CLAUDE.md"))).toBe(false);
-    expect(existsSync(join(repo, ".cursor", "rules", "gleip.mdc"))).toBe(false);
+    expect(existsSync(join(repo, "GEMINI.md"))).toBe(false);
   });
 
-  it("init --agent auto prints the no-agent-detected message when no agent files exist", async () => {
+  it("init auto falls back to AGENTS.md when detection is ambiguous", async () => {
     const repo = createTempRepo();
+    writeRepoFile(repo, "CLAUDE.md", "# Existing Claude file\n");
+    writeRepoFile(repo, "GEMINI.md", "# Existing Gemini file\n");
 
-    const output = await runCommand(repo, ["init", "--agent", "auto"]);
+    const output = await runCommand(repo, ["init", "auto"]);
 
-    expect(output.join("\n")).toContain(
-      "No specific agent setup detected. Created generic AGENTS.md. To prepare all supported agents, run `npx gleip init --all-agents`."
+    expect(output.join("\n")).toBe(
+      [
+        "Gleip initialized.",
+        "Detected agent target: generic.",
+        "Agent instructions created/updated: AGENTS.md."
+      ].join("\n")
     );
+    expect(existsSync(join(repo, "AGENTS.md"))).toBe(true);
+    expect(readFileSync(join(repo, "CLAUDE.md"), "utf8")).toBe("# Existing Claude file\n");
+    expect(readFileSync(join(repo, "GEMINI.md"), "utf8")).toBe("# Existing Gemini file\n");
   });
 
   it("init --agent generic updates AGENTS.md", async () => {
@@ -577,7 +649,7 @@ describe("createGleipCommand", () => {
     const agents = readFileSync(join(repo, "AGENTS.md"), "utf8");
     assertGleipWorkflowInstructions(agents);
     expect(existsSync(join(repo, "CLAUDE.md"))).toBe(false);
-    expect(existsSync(join(repo, ".cursor", "rules", "gleip.mdc"))).toBe(false);
+    expect(existsSync(join(repo, "GEMINI.md"))).toBe(false);
   });
 
   it("init --agent codex updates AGENTS.md", async () => {
@@ -588,7 +660,7 @@ describe("createGleipCommand", () => {
     const agents = readFileSync(join(repo, "AGENTS.md"), "utf8");
     assertGleipWorkflowInstructions(agents);
     expect(existsSync(join(repo, "CLAUDE.md"))).toBe(false);
-    expect(existsSync(join(repo, ".cursor", "rules", "gleip.mdc"))).toBe(false);
+    expect(existsSync(join(repo, "GEMINI.md"))).toBe(false);
   });
 
   it("init --agent claude creates CLAUDE.md", async () => {
@@ -599,34 +671,30 @@ describe("createGleipCommand", () => {
     const claude = readFileSync(join(repo, "CLAUDE.md"), "utf8");
     assertGleipWorkflowInstructions(claude);
     expect(existsSync(join(repo, "AGENTS.md"))).toBe(false);
-    expect(existsSync(join(repo, ".cursor", "rules", "gleip.mdc"))).toBe(false);
+    expect(existsSync(join(repo, "GEMINI.md"))).toBe(false);
   });
 
-  it("init --agent cursor creates the Cursor rule", async () => {
+  it("init --agent gemini creates GEMINI.md", async () => {
     const repo = createTempRepo();
 
-    await runCommand(repo, ["init", "--agent", "cursor"]);
+    await runCommand(repo, ["init", "--agent", "gemini"]);
 
-    const cursorRule = readFileSync(join(repo, ".cursor", "rules", "gleip.mdc"), "utf8");
-    expect(cursorRule).toContain("alwaysApply: true");
-    assertGleipWorkflowInstructions(cursorRule);
+    const gemini = readFileSync(join(repo, "GEMINI.md"), "utf8");
+    assertGleipWorkflowInstructions(gemini);
     expect(existsSync(join(repo, "AGENTS.md"))).toBe(false);
     expect(existsSync(join(repo, "CLAUDE.md"))).toBe(false);
   });
 
-  it("init --all-agents creates all supported instruction files", async () => {
+  it("init --all-agents preserves the one-file init rule", async () => {
     const repo = createTempRepo();
 
     const output = await runCommand(repo, ["init", "--all-agents"]);
 
-    expect(output.join("\n")).toContain(
-      "Agent instructions created/updated: AGENTS.md, CLAUDE.md, .cursor/rules/gleip.mdc."
+    expect(output.join("\n")).toBe(
+      ["Gleip initialized.", "Agent instructions created/updated: AGENTS.md."].join("\n")
     );
+    assertOnlyInstructionFile(repo, "AGENTS.md");
     assertGleipWorkflowInstructions(readFileSync(join(repo, "AGENTS.md"), "utf8"));
-    assertGleipWorkflowInstructions(readFileSync(join(repo, "CLAUDE.md"), "utf8"));
-    assertGleipWorkflowInstructions(
-      readFileSync(join(repo, ".cursor", "rules", "gleip.mdc"), "utf8")
-    );
     expect(existsSync(join(repo, ".gleip.yml"))).toBe(true);
     expect(existsSync(join(repo, "GLEIP.md"))).toBe(true);
     expect(readFileSync(join(repo, "GLEIP.md"), "utf8")).toContain(
@@ -635,14 +703,16 @@ describe("createGleipCommand", () => {
     expect(existsSync(join(repo, ".gleip", "state.json"))).toBe(true);
   });
 
-  it("init --all-agents creates all supported instruction files when none previously exist", async () => {
+  it("separate init targets create all supported instruction files when needed", async () => {
     const repo = createTempRepo();
 
-    await runCommand(repo, ["init", "--all-agents"]);
+    await runCommand(repo, ["init"]);
+    await runCommand(repo, ["init", "claude"]);
+    await runCommand(repo, ["init", "gemini"]);
 
     expect(existsSync(join(repo, "AGENTS.md"))).toBe(true);
     expect(existsSync(join(repo, "CLAUDE.md"))).toBe(true);
-    expect(existsSync(join(repo, ".cursor", "rules", "gleip.mdc"))).toBe(true);
+    expect(existsSync(join(repo, "GEMINI.md"))).toBe(true);
   });
 
   it("running init twice does not duplicate the Gleip-managed AGENTS section", async () => {
@@ -656,13 +726,15 @@ describe("createGleipCommand", () => {
     expect(countOccurrences(agents, "<!-- GLEIP:END -->")).toBe(1);
   });
 
-  it("running init --all-agents twice does not duplicate managed sections", async () => {
+  it("running each init target twice does not duplicate managed sections", async () => {
     const repo = createTempRepo();
 
-    await runCommand(repo, ["init", "--all-agents"]);
-    await runCommand(repo, ["init", "--all-agents"]);
+    for (const target of ["codex", "claude", "gemini"]) {
+      await runCommand(repo, ["init", target]);
+      await runCommand(repo, ["init", target]);
+    }
 
-    for (const path of ["AGENTS.md", "CLAUDE.md", ".cursor/rules/gleip.mdc"]) {
+    for (const path of ["AGENTS.md", "CLAUDE.md", "GEMINI.md"]) {
       const content = readFileSync(join(repo, path), "utf8");
       expect(countOccurrences(content, "<!-- GLEIP:START -->")).toBe(1);
       expect(countOccurrences(content, "<!-- GLEIP:END -->")).toBe(1);
@@ -678,6 +750,62 @@ describe("createGleipCommand", () => {
     const agents = readFileSync(join(repo, "AGENTS.md"), "utf8");
     expect(agents).toContain("Keep local rules.");
     expect(agents).toContain("<!-- GLEIP:START -->");
+  });
+
+  it("existing managed AGENTS.md block is replaced without changing user content", async () => {
+    const repo = createTempRepo();
+    writeFileSync(
+      join(repo, "AGENTS.md"),
+      [
+        "# Agent Instructions",
+        "",
+        "Keep local rules.",
+        "",
+        "<!-- GLEIP:START -->",
+        "old managed block",
+        "<!-- GLEIP:END -->",
+        "",
+        "Keep trailing rules.",
+        ""
+      ].join("\n")
+    );
+
+    await runCommand(repo, ["init"]);
+
+    const agents = readFileSync(join(repo, "AGENTS.md"), "utf8");
+    expect(agents).toContain("Keep local rules.");
+    expect(agents).toContain("Keep trailing rules.");
+    expect(agents).not.toContain("old managed block");
+    expect(countOccurrences(agents, "<!-- GLEIP:START -->")).toBe(1);
+    expect(agents).toContain("## Gleip working standard");
+  });
+
+  it("generated target files include the working principles but not long examples", async () => {
+    const repo = createTempRepo();
+
+    await runCommand(repo, ["init"]);
+    await runCommand(repo, ["init", "claude"]);
+    await runCommand(repo, ["init", "gemini"]);
+
+    for (const path of ["AGENTS.md", "CLAUDE.md", "GEMINI.md"]) {
+      const content = readFileSync(join(repo, path), "utf8");
+      for (const principle of [
+        "Think before coding",
+        "Simplicity first",
+        "Surgical changes",
+        "Goal-driven execution"
+      ]) {
+        expect(content).toContain(principle);
+      }
+      expect(content).not.toContain("Anti-pattern:");
+      expect(content).not.toContain("over-abstraction");
+      expect(content).not.toContain("speculative caching");
+    }
+  });
+
+  it("agent standard docs exist", () => {
+    expect(existsSync(join(repoRoot, "docs", "agent-standard.md"))).toBe(true);
+    expect(existsSync(join(repoRoot, "docs", "agent-standard-examples.md"))).toBe(true);
   });
 
   it("doctor warns when legacy Argus files are present", async () => {
@@ -703,7 +831,7 @@ describe("createGleipCommand", () => {
     expect(report).toContain("WARN Missing .gleip.yml or GLEIP.md");
     expect(report).toContain("WARN Missing Gleip-managed agent instructions");
     expect(report).toContain("WARN Missing or incomplete Gleip .gitignore block");
-    expect(report).toContain("OK   CLI version resolved (0.7.1)");
+    expect(report).toContain("OK   CLI version resolved (0.7.2)");
     expect(report).toContain("OK   Built-in init assets available");
     expect(report).toContain("Run: npx gleip init");
   });
@@ -757,9 +885,9 @@ describe("createGleipCommand", () => {
 
     expect(report).toContain("AGENTS.md: missing; Gleip workflow: no");
     expect(report).toContain("CLAUDE.md: missing; Gleip workflow: no");
-    expect(report).toContain(".cursor/rules/gleip.mdc: missing; Gleip workflow: no");
-    expect(report).toContain("npx gleip init --all-agents");
-    expect(report).toContain("npx gleip init --agent <name>");
+    expect(report).toContain("GEMINI.md: missing; Gleip workflow: no");
+    expect(report).toContain("npx gleip init");
+    expect(report).toContain("npx gleip init <name>");
   });
 
   it("doctor --agents explains no agent files is valid", async () => {
@@ -768,20 +896,20 @@ describe("createGleipCommand", () => {
     const output = await runCommand(repo, ["doctor", "--agents"]);
 
     expect(output.join("\n")).toContain(
-      "No supported agent files exist yet. This is valid; `npx gleip init --all-agents` can prepare the repo before any agent is installed."
+      "No supported agent files exist yet. This is valid; `npx gleip init` prepares generic AGENTS.md."
     );
   });
 
   it("doctor --agents reports present Gleip workflow files", async () => {
     const repo = createTempRepo();
-    await runCommand(repo, ["init", "--all-agents"]);
+    await initAllTargets(repo);
 
     const output = await runCommand(repo, ["doctor", "--agents"]);
     const report = output.join("\n");
 
     expect(report).toContain("AGENTS.md: present; Gleip workflow: yes");
     expect(report).toContain("CLAUDE.md: present; Gleip workflow: yes");
-    expect(report).toContain(".cursor/rules/gleip.mdc: present; Gleip workflow: yes");
+    expect(report).toContain("GEMINI.md: present; Gleip workflow: yes");
   });
 
   it("repair-agents repairs existing files", async () => {
@@ -796,7 +924,7 @@ describe("createGleipCommand", () => {
     expect(agents).toContain("Keep this.");
     assertGleipWorkflowInstructions(agents);
     assertGleipWorkflowInstructions(readFileSync(join(repo, "CLAUDE.md"), "utf8"));
-    expect(existsSync(join(repo, ".cursor", "rules", "gleip.mdc"))).toBe(false);
+    expect(existsSync(join(repo, "GEMINI.md"))).toBe(false);
   });
 
   it("repair-agents --all creates all supported files", async () => {
@@ -805,13 +933,11 @@ describe("createGleipCommand", () => {
     const output = await runCommand(repo, ["repair-agents", "--all"]);
 
     expect(output.join("\n")).toContain(
-      "Agent instructions repaired: AGENTS.md, CLAUDE.md, .cursor/rules/gleip.mdc."
+      "Agent instructions repaired: AGENTS.md, CLAUDE.md, GEMINI.md."
     );
     assertGleipWorkflowInstructions(readFileSync(join(repo, "AGENTS.md"), "utf8"));
     assertGleipWorkflowInstructions(readFileSync(join(repo, "CLAUDE.md"), "utf8"));
-    assertGleipWorkflowInstructions(
-      readFileSync(join(repo, ".cursor", "rules", "gleip.mdc"), "utf8")
-    );
+    assertGleipWorkflowInstructions(readFileSync(join(repo, "GEMINI.md"), "utf8"));
   });
 
   it("enable sets enabled true and stores reason", async () => {
@@ -2094,7 +2220,7 @@ describe("createGleipCommand", () => {
     expect(output).toHaveLength(1);
     expect(output[0]?.trimStart().startsWith("{")).toBe(true);
     expect(output.join("\n")).not.toContain("Gleip report ready");
-    expect(report.version).toBe("0.7.1");
+    expect(report.version).toBe("0.7.2");
     expect(report.generatedAt).toBe("2026-05-30T00:00:00.000Z");
     expect(report.summary.filesChanged).toBe(0);
     expect(existsSync(join(repo, ".gleip", "report.json"))).toBe(true);
@@ -2226,7 +2352,7 @@ describe("createGleipCommand", () => {
 
   it("uninstall removes Gleip-owned repository files and generated agent files", async () => {
     const repo = createTempRepo();
-    await runCommand(repo, ["init", "--all-agents"]);
+    await initAllTargets(repo);
 
     const output = await runCommand(repo, ["uninstall"]);
 
@@ -2235,7 +2361,7 @@ describe("createGleipCommand", () => {
     expect(existsSync(join(repo, "GLEIP.md"))).toBe(false);
     expect(existsSync(join(repo, "AGENTS.md"))).toBe(false);
     expect(existsSync(join(repo, "CLAUDE.md"))).toBe(false);
-    expect(existsSync(join(repo, ".cursor", "rules", "gleip.mdc"))).toBe(false);
+    expect(existsSync(join(repo, "GEMINI.md"))).toBe(false);
     expect(output.join("\n")).toContain(
       "Next: run `npm uninstall gleip` to remove the package dependency."
     );
@@ -2245,43 +2371,40 @@ describe("createGleipCommand", () => {
     const repo = createTempRepo();
     writeRepoFile(repo, "AGENTS.md", "# Existing Agent Rules\n\nKeep agent content.\n");
     writeRepoFile(repo, "CLAUDE.md", "# Existing Claude Rules\n\nKeep Claude content.\n");
-    await runCommand(repo, ["init", "--all-agents"]);
+    writeRepoFile(repo, "GEMINI.md", "# Existing Gemini Rules\n\nKeep Gemini content.\n");
+    await initAllTargets(repo);
 
     await runCommand(repo, ["uninstall"]);
 
     const agents = readFileSync(join(repo, "AGENTS.md"), "utf8");
     const claude = readFileSync(join(repo, "CLAUDE.md"), "utf8");
+    const gemini = readFileSync(join(repo, "GEMINI.md"), "utf8");
     expect(agents).toContain("Keep agent content.");
     expect(agents).not.toContain("<!-- GLEIP:START -->");
     expect(claude).toContain("Keep Claude content.");
     expect(claude).not.toContain("<!-- GLEIP:START -->");
+    expect(gemini).toContain("Keep Gemini content.");
+    expect(gemini).not.toContain("<!-- GLEIP:START -->");
   });
 
-  it("uninstall preserves a Cursor rule that contains unrelated content", async () => {
+  it("uninstall removes the managed block from a Gemini file with unrelated content", async () => {
     const repo = createTempRepo();
-    writeRepoFile(
-      repo,
-      ".cursor/rules/gleip.mdc",
-      "---\ndescription: Custom rule\nalwaysApply: true\n---\n\nKeep this rule.\n"
-    );
-    await runCommand(repo, ["init", "--agent", "cursor"]);
+    writeRepoFile(repo, "GEMINI.md", "# Existing Gemini Rules\n\nKeep this rule.\n");
+    await runCommand(repo, ["init", "gemini"]);
 
     const output = await runCommand(repo, ["uninstall"]);
 
-    expect(readFileSync(join(repo, ".cursor", "rules", "gleip.mdc"), "utf8")).toContain(
-      "Keep this rule."
-    );
-    expect(output.join("\n")).toContain(
-      ".cursor/rules/gleip.mdc (preserved because it contains unrelated content)"
-    );
+    expect(readFileSync(join(repo, "GEMINI.md"), "utf8")).toContain("Keep this rule.");
+    expect(output.join("\n")).toContain("Files whose Gleip section would be removed:");
+    expect(output.join("\n")).toContain("- GEMINI.md");
   });
 
   it("uninstall --keep-agent-files preserves all agent files", async () => {
     const repo = createTempRepo();
-    await runCommand(repo, ["init", "--all-agents"]);
+    await initAllTargets(repo);
     const agentsBefore = readFileSync(join(repo, "AGENTS.md"), "utf8");
     const claudeBefore = readFileSync(join(repo, "CLAUDE.md"), "utf8");
-    const cursorBefore = readFileSync(join(repo, ".cursor", "rules", "gleip.mdc"), "utf8");
+    const geminiBefore = readFileSync(join(repo, "GEMINI.md"), "utf8");
 
     await runCommand(repo, ["uninstall", "--keep-agent-files"]);
 
@@ -2290,13 +2413,13 @@ describe("createGleipCommand", () => {
     expect(existsSync(join(repo, "GLEIP.md"))).toBe(false);
     expect(readFileSync(join(repo, "AGENTS.md"), "utf8")).toBe(agentsBefore);
     expect(readFileSync(join(repo, "CLAUDE.md"), "utf8")).toBe(claudeBefore);
-    expect(readFileSync(join(repo, ".cursor", "rules", "gleip.mdc"), "utf8")).toBe(cursorBefore);
+    expect(readFileSync(join(repo, "GEMINI.md"), "utf8")).toBe(geminiBefore);
   });
 
   it("uninstall --dry-run reports actions without changing files", async () => {
     const repo = createTempRepo();
     writeRepoFile(repo, "AGENTS.md", "# Existing Rules\n\nKeep this.\n");
-    await runCommand(repo, ["init", "--all-agents"]);
+    await initAllTargets(repo);
     const agentsBefore = readFileSync(join(repo, "AGENTS.md"), "utf8");
 
     const output = await runCommand(repo, ["uninstall", "--dry-run"]);
@@ -2312,13 +2435,15 @@ describe("createGleipCommand", () => {
     expect(existsSync(join(repo, ".gleip.yml"))).toBe(true);
     expect(existsSync(join(repo, "GLEIP.md"))).toBe(true);
     expect(readFileSync(join(repo, "AGENTS.md"), "utf8")).toBe(agentsBefore);
-    expect(existsSync(join(repo, ".cursor", "rules", "gleip.mdc"))).toBe(true);
+    expect(existsSync(join(repo, "GEMINI.md"))).toBe(true);
   });
 
   it("uninstall respects --cwd", async () => {
     const processCwd = createTempRepo();
     const targetCwd = createTempRepo();
-    await runCommand(processCwd, ["--cwd", targetCwd, "init", "--all-agents"]);
+    await runCommand(processCwd, ["--cwd", targetCwd, "init"]);
+    await runCommand(processCwd, ["--cwd", targetCwd, "init", "claude"]);
+    await runCommand(processCwd, ["--cwd", targetCwd, "init", "gemini"]);
 
     await runCommand(processCwd, ["--cwd", targetCwd, "uninstall"]);
 
@@ -2399,6 +2524,12 @@ function diffContext(overrides: Partial<TestDiffContext> = {}): TestDiffContext 
     hasChanges: false,
     ...overrides
   };
+}
+
+async function initAllTargets(repo: string): Promise<void> {
+  await runCommand(repo, ["init"]);
+  await runCommand(repo, ["init", "claude"]);
+  await runCommand(repo, ["init", "gemini"]);
 }
 
 async function runCommand(
@@ -2489,6 +2620,12 @@ function countOccurrences(value: string, pattern: string): number {
   return value.split(pattern).length - 1;
 }
 
+function assertOnlyInstructionFile(repo: string, expectedPath: "AGENTS.md" | "CLAUDE.md" | "GEMINI.md"): void {
+  for (const path of ["AGENTS.md", "CLAUDE.md", "GEMINI.md", "CODEX.md"]) {
+    expect(existsSync(join(repo, path))).toBe(path === expectedPath);
+  }
+}
+
 function assertGleipWorkflowInstructions(content: string): void {
   expect(content).toContain("<!-- GLEIP:START -->");
   expect(content).toContain('npx --no-install gleip preflight "<task>"');
@@ -2513,5 +2650,11 @@ function assertGleipWorkflowInstructions(content: string): void {
   expect(content).toContain("Keep changes minimal and scoped to the requested task");
   expect(content).toContain("scope adherence, drift risk, output discipline");
   expect(content).toContain("estimated token waste avoided");
+  expect(content).toContain("## Gleip working standard");
+  expect(content).toContain("Think before coding");
+  expect(content).toContain("Simplicity first");
+  expect(content).toContain("Surgical changes");
+  expect(content).toContain("Goal-driven execution");
+  expect(content).toContain("Do not assume, hide confusion, or silently choose between ambiguous interpretations.");
   expect(content).toContain("<!-- GLEIP:END -->");
 }

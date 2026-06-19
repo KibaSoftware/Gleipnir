@@ -19,7 +19,9 @@ Run agent setup from this repository against the temporary target:
 
 ```sh
 cd /path/to/Gleip
-pnpm gleip --cwd /tmp/gleip-test init --all-agents
+pnpm gleip --cwd /tmp/gleip-test init
+pnpm gleip --cwd /tmp/gleip-test init claude
+pnpm gleip --cwd /tmp/gleip-test init gemini
 pnpm gleip --cwd /tmp/gleip-test doctor --agents
 ```
 
@@ -29,7 +31,7 @@ Inspect the generated files:
 ls -la /tmp/gleip-test
 cat /tmp/gleip-test/AGENTS.md
 cat /tmp/gleip-test/CLAUDE.md
-cat /tmp/gleip-test/.cursor/rules/gleip.mdc
+cat /tmp/gleip-test/GEMINI.md
 ```
 
 Expected results:
@@ -39,7 +41,7 @@ Expected results:
 - `.gleip/` exists.
 - `AGENTS.md` contains exactly one Gleip-managed section.
 - `CLAUDE.md` contains exactly one Gleip-managed section.
-- `.cursor/rules/gleip.mdc` contains exactly one Gleip-managed section.
+- `GEMINI.md` contains exactly one Gleip-managed section.
 - Generated workflow commands use `npx --no-install gleip`.
 - Re-running init does not duplicate managed sections.
 
@@ -83,4 +85,4 @@ pnpm gleip --cwd /tmp/gleip-test uninstall --dry-run
 pnpm gleip --cwd /tmp/gleip-test uninstall
 ```
 
-Verify `.gleip/`, `.gleip.yml`, `GLEIP.md`, and the generated Cursor rule are removed. Gleip-managed sections should be removed from `AGENTS.md` and `CLAUDE.md` without deleting unrelated instructions. Package removal remains a separate `npm uninstall gleip` step.
+Verify `.gleip/`, `.gleip.yml`, `GLEIP.md`, and empty generated agent instruction files are removed. Gleip-managed sections should be removed from `AGENTS.md`, `CLAUDE.md`, and `GEMINI.md` without deleting unrelated instructions. Package removal remains a separate `npm uninstall gleip` step.

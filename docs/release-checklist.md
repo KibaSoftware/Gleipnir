@@ -2,7 +2,7 @@
 
 Use this checklist for the local-only developer preview.
 
-Current release target: `0.7.1`.
+Current release target: `0.7.2`.
 
 Release focus: guidance-first statuses, deterministic structural plan validation,
 stable findings, conservative CI behavior, and precision-first policy.
@@ -33,7 +33,7 @@ stable findings, conservative CI behavior, and precision-first policy.
 
 ## Packed Install
 
-- Install `dist-pack/gleip-0.7.1.tgz` into a clean external temp repo.
+- Install `dist-pack/gleip-0.7.2.tgz` into a clean external temp repo.
 - Verify:
   - `npx gleip --help`
   - `npx gleip --version`
@@ -74,5 +74,5 @@ Task workflow commands are for agents and direct release testing, not the normal
 - Confirm `.gleip.yml` is not ignored.
 - Confirm generated agent instructions use `npx --no-install gleip` for preflight, plan validation, check, status, and report.
 - Confirm `doctor` reports complete setup and identifies missing `.gitignore` or agent instructions.
-- Confirm the root and npm READMEs lead with agent auto-usage and list Codex/generic agents, Claude Code, and Cursor.
+- Confirm the root and npm READMEs lead with agent auto-usage and list Codex/generic agents, Claude Code, and Gemini CLI.
 - Confirm the root and npm READMEs document the uninstall lifecycle.

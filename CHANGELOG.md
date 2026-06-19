@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.7.2
+
+### Fixed
+
+- Added target-specific agent initialization:
+  - `gleip init codex` writes `AGENTS.md`.
+  - `gleip init claude` writes `CLAUDE.md`.
+  - `gleip init gemini` writes `GEMINI.md`.
+  - `gleip init auto` detects and writes exactly one instruction file.
+- Preserved the existing default `gleip init` behavior using `AGENTS.md`.
+- Prevented generation of unsupported `CODEX.md` files.
+- Added Gleip's standard agent working principles:
+  - Think before coding.
+  - Simplicity first.
+  - Surgical changes.
+  - Goal-driven execution.
+- Added agent-standard documentation and practical anti-pattern examples.
+- Preserved user-authored content outside Gleip-managed instruction blocks.
+
 ## 0.7.1
 
 ### Added

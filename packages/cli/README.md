@@ -41,9 +41,9 @@ Supported instruction files:
 
 - Codex / generic agents: `AGENTS.md`
 - Claude Code: `CLAUDE.md`
-- Cursor: `.cursor/rules/gleip.mdc`
+- Gemini CLI: `GEMINI.md`
 
-Use `npx gleip init --agent auto` to update detected agent files, or select `generic`, `codex`, `claude`, or `cursor` explicitly.
+Use `npx gleip init auto` to update one detected agent file, or select `codex`, `claude`, or `gemini` explicitly.
 
 ## How Agents Should Use Gleip
 
@@ -59,8 +59,8 @@ For each coding task, agents should:
 
 | Command                         | Purpose                                                                                 | When to use                                                         |
 | ------------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| `npx gleip init --all-agents`   | Create Gleip config, policy docs, and every supported agent instruction file.           | Recommended first-time setup.                                       |
-| `npx gleip init --agent auto`   | Create or update detected agent instructions.                                           | When agent files already exist.                                     |
+| `npx gleip init`                | Create Gleip config, policy docs, and generic/Codex-compatible `AGENTS.md`.             | Recommended first-time setup.                                       |
+| `npx gleip init auto`           | Create or update one detected agent instruction file.                                   | When agent files already exist.                                     |
 | `npx gleip doctor --agents`     | Check local prerequisites and supported agent files.                                    | Diagnose setup or instruction problems.                             |
 | `npx gleip repair-agents --all` | Repair managed instruction sections for all supported agents.                           | Restore missing or stale generated instructions.                    |
 | `npx gleip state`               | Print the repository-local enabled/disabled state.                                      | Confirm whether guidance is active.                                 |
@@ -97,7 +97,7 @@ Normal workflow commands print concise 1-5 line summaries that confirm the compl
 
 ## Stable Findings and CI
 
-Gleip 0.7.1 emits `clean`, `advisory`, `needs_attention`, `needs_cleanup`, or
+Gleip 0.7.2 emits `clean`, `advisory`, `needs_attention`, `needs_cleanup`, or
 `needs_approval`. It never emits `blocked` as a new top-level status.
 
 Stable findings use `info`, `warn`, `action_required`, `approval_required`, and
@@ -125,7 +125,7 @@ clarity without creating extra justification work.
 
 ## Reports and Metrics
 
-Gleip 0.7.1 generates:
+Gleip 0.7.2 generates:
 
 - `.gleip/report.md`: concise scores, risks, findings, actions, and the recommended final-response block.
 - `.gleip/report.json`: stable machine-readable report data, warnings, evidence, summary, and efficiency estimate.
@@ -146,7 +146,7 @@ The following generated setup files are durable repository configuration or agen
 - `GLEIP.md`
 - `AGENTS.md` when generic/Codex instructions are generated
 - `CLAUDE.md` when Claude instructions are generated
-- `.cursor/rules/gleip.mdc` when Cursor instructions are generated
+- `GEMINI.md` when Gemini instructions are generated
 
 The `.gitignore` block added by `gleip init` ignores `.gleip/`. This local-only directory contains:
 
@@ -203,6 +203,6 @@ pnpm pack:cli
 
 ## Status
 
-- Current release: `0.7.1`
+- Current release: `0.7.2`
 - License: Apache-2.0
 - Local-only developer preview

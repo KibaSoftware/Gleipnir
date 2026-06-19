@@ -8,7 +8,7 @@ Agents use `npx --no-install gleip` for task workflow commands so Gleip can rema
 
 - Codex and generic agents: `AGENTS.md`
 - Claude Code: `CLAUDE.md`
-- Cursor: `.cursor/rules/gleip.mdc`
+- Gemini CLI: `GEMINI.md`
 
 ## Recommended Setup
 
@@ -16,22 +16,22 @@ Use this when installing Gleip before choosing or opening a coding agent in VS C
 
 ```sh
 npm install -D gleip
-npx gleip init --all-agents
+npx gleip init
 ```
 
-`init --all-agents` creates every supported instruction file even when no agent is installed or configured yet.
+`init` creates generic/Codex-compatible `AGENTS.md`. Use `npx gleip init claude`, `npx gleip init gemini`, or `npx gleip init auto` when a specific target is needed.
 
 ## If No Agent Is Installed Yet
 
-`npx gleip init` and `npx gleip init --agent auto` detect existing agent files. If none exist, Gleip creates generic `AGENTS.md` and prints a note explaining that `npx gleip init --all-agents` can prepare all supported future agent files.
+`npx gleip init auto` detects one likely existing agent file. If detection is uncertain or ambiguous, Gleip creates generic `AGENTS.md`.
 
 ## Commands
 
-- `npx gleip init --all-agents`
-- `npx gleip init --agent auto`
-- `npx gleip init --agent codex`
-- `npx gleip init --agent claude`
-- `npx gleip init --agent cursor`
+- `npx gleip init`
+- `npx gleip init auto`
+- `npx gleip init codex`
+- `npx gleip init claude`
+- `npx gleip init gemini`
 - `npx gleip doctor --agents`
 - `npx gleip repair-agents --all`
 
@@ -55,7 +55,7 @@ npx --no-install gleip uninstall
 npm uninstall gleip
 ```
 
-The first command removes `.gleip/`, `.gleip.yml`, `GLEIP.md`, Gleip-managed sections in `AGENTS.md` and `CLAUDE.md`, and the Gleip-generated Cursor rule. The second command removes the package dependency. Use `--dry-run` to preview cleanup or `--keep-agent-files` to leave all supported agent files unchanged.
+The first command removes `.gleip/`, `.gleip.yml`, `GLEIP.md`, and Gleip-managed sections in `AGENTS.md`, `CLAUDE.md`, and `GEMINI.md`. The second command removes the package dependency. Use `--dry-run` to preview cleanup or `--keep-agent-files` to leave all supported agent files unchanged.
 
 ## Limitations
 
