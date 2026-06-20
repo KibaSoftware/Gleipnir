@@ -97,7 +97,7 @@ Normal workflow commands print concise 1-5 line summaries that confirm the compl
 
 ## Stable Findings and CI
 
-Gleip 0.7.3 emits `clean`, `advisory`, `needs_attention`, `needs_cleanup`, or
+Gleip 0.7.4 emits `clean`, `advisory`, `needs_attention`, `needs_cleanup`, or
 `needs_approval`. It never emits `blocked` as a new top-level status.
 
 Stable findings use `info`, `warn`, `action_required`, `approval_required`, and
@@ -132,7 +132,7 @@ clarity without creating extra justification work.
 
 ## Reports and Metrics
 
-Gleip 0.7.3 generates:
+Gleip 0.7.4 generates:
 
 - `.gleip/report.md`: concise scores, risks, findings, actions, and the recommended final-response block.
 - `.gleip/report.json`: stable machine-readable report data, warnings, evidence, summary, and efficiency estimate.
@@ -210,6 +210,6 @@ pnpm pack:cli
 
 ## Status
 
-- Current release: `0.7.3`
+- Current release: `0.7.4`
 - License: Apache-2.0
 - Local-only developer preview

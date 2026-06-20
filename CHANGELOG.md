@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.7.4]
+
+### Fixed
+
+- Recompute reports from current repository and session state instead of treating `.gleip/status.md` as authoritative evidence.
+- Preserve the latest successful accepted plan scope when a later validation attempt fails.
+- Separate the latest validation attempt from the latest successful validation in status and report behavior.
+- Surface file-level attribution ambiguity when a preflight-dirty file changes again during the task.
+- Improve handling of explicitly accepted documentation, context files, and read-only “for context” references.
+- Keep durable tracked `.gleip` documentation and configuration visible while excluding ephemeral runtime artifacts.
+- Prevent terse plans, failed validations, and path normalization edge cases from causing scope over-acceptance or false positives.
+
+### Documentation
+
+- Document report source-of-truth boundaries, validation history behavior, dirty-baseline attribution, and documentation/context scope handling.
+
 ## 0.7.3
 
 ### Added

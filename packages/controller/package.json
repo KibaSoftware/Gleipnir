@@ -1,6 +1,6 @@
 {
   "name": "@gleip/controller",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "description": "Workflow control and policy application for Gleip.",
   "license": "Apache-2.0",
   "type": "module",

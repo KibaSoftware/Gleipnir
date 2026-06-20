@@ -739,7 +739,7 @@ describe("session reports", () => {
 
   it("uses accepted plan validation for unplanned-file analysis", () => {
     const report = generateSessionReport({
-      version: "0.7.3",
+      version: "0.7.4",
       schemaVersion: "1.0.0",
       sessionId: "session-1",
       generatedAt: "2026-06-09T00:00:00.000Z",
@@ -795,7 +795,7 @@ describe("session reports", () => {
 
   it("reports dirty baseline attribution without changing drift risk", () => {
     const report = generateSessionReport({
-      version: "0.7.3",
+      version: "0.7.4",
       schemaVersion: "1.0.0",
       sessionId: "session-1",
       generatedAt: "2026-06-09T00:00:00.000Z",
