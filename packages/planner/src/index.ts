@@ -1057,8 +1057,12 @@ ${formatStringListForBrief(scopeBudget.stopConditions, 8)}
 `;
 }
 
-export function parseAgentPlan(planText: string, contextFiles: string[] = []): AgentPlan {
-  const fileAnalysis = extractPlanFileMentions(planText, contextFiles);
+export function parseAgentPlan(
+  planText: string,
+  contextFiles: string[] = [],
+  options: { cwd?: string } = {}
+): AgentPlan {
+  const fileAnalysis = extractPlanFileMentions(planText, contextFiles, options.cwd);
   const proposedFiles = fileAnalysis.proposedFiles;
   const planContextFiles = fileAnalysis.contextFiles;
   const proposedDependencies = extractPlanDependencies(planText, proposedFiles);
@@ -1091,7 +1095,9 @@ export function parseAgentPlan(planText: string, contextFiles: string[] = []): A
 }
 
 export function validateAgentPlan(input: ValidateAgentPlanInput): PlanValidationResult {
-  const parsedPlan = parseAgentPlan(input.planText, input.contextFiles);
+  const parsedPlan = parseAgentPlan(input.planText, input.contextFiles, {
+    ...(input.cwd === undefined ? {} : { cwd: input.cwd })
+  });
   const findings: PlanValidationFinding[] = [];
   const planStructure = analyzePlanStructure(parsedPlan);
   const targetClassifications = classifyPlanTargets({
@@ -1909,7 +1915,7 @@ function extractPhraseContextPaths(text: string): string[] {
     }
 
     if (
-      /\b(?:as context|for reference|use this file as context)\b/iu.test(clause) ||
+      /\b(?:as context|for context|for reference|use this file as context)\b/iu.test(clause) ||
       /^\s*(?:context|spec|requirements?|task|prompt|brief|design|notes?|reference)\s*:/iu.test(
         clause
       )
@@ -2039,7 +2045,11 @@ function applyConfigLimits(
   };
 }
 
-function extractPlanFileMentions(planText: string, additionalContextFiles: string[] = []): {
+function extractPlanFileMentions(
+  planText: string,
+  additionalContextFiles: string[] = [],
+  cwd?: string
+): {
   proposedFiles: string[];
   contextFiles: string[];
   outputFiles: string[];
@@ -2080,7 +2090,9 @@ function extractPlanFileMentions(planText: string, additionalContextFiles: strin
       }
 
       if (isNewFileMention(clause, path)) {
-        markedNewFiles.add(path);
+        if (cwd === undefined || !isExistingRepoFile(cwd, path)) {
+          markedNewFiles.add(path);
+        }
       }
     }
   }
@@ -3506,8 +3518,14 @@ function isPlanVague(parsedPlan: AgentPlan): boolean {
     parsedPlan.proposedTests.length > 0 ||
     parsedPlan.mentionedRiskyAreas.length > 0 ||
     /\b(?:modify|update|create|add|fix|implement|inspect|reuse|run)\b/iu.test(parsedPlan.rawText);
+  const hasConcreteTargetAndAction =
+    parsedPlan.proposedFiles.length > 0 &&
+    (parsedPlan.proposedTests.length > 0 ||
+      /\b(?:modify|update|create|add|fix|implement|inspect|reuse|run)\b/iu.test(
+        parsedPlan.rawText
+      ));
 
-  return wordCount < 5 || !hasConcreteSignal;
+  return (wordCount < 5 && !hasConcreteTargetAndAction) || !hasConcreteSignal;
 }
 
 function planValidationStatus(findings: PlanValidationFinding[]): PlanValidationStatus {

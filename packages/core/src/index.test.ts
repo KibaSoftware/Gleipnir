@@ -58,7 +58,7 @@ describe("collectWorkingTreeDiff", () => {
     expect(diff.rawDiff).toContain("+export const next = 3;");
   });
 
-  it("ignores Gleip sidecar files", () => {
+  it("ignores ephemeral Gleip runtime files in task metrics", () => {
     const repo = createCommittedRepo();
     writeRepoFile(repo, ".gleip/status.md", "# Gleip Status\n");
 
@@ -66,6 +66,26 @@ describe("collectWorkingTreeDiff", () => {
 
     expect(diff.changedFiles).toEqual([]);
     expect(diff.hasChanges).toBe(false);
+  });
+
+  it("does not ignore durable tracked files under .gleip", () => {
+    const repo = createCommittedRepo();
+    writeRepoFile(repo, ".gleip/policy.md", "# Durable policy\n");
+    git(repo, ["add", "-f", ".gleip/policy.md"]);
+    git(repo, ["commit", "-m", "add durable gleip policy"]);
+    writeRepoFile(repo, ".gleip/policy.md", "# Durable policy\n\nUpdate.\n");
+
+    const diff = collectWorkingTreeDiff({ cwd: repo });
+
+    expect(diff.changedFiles).toEqual([".gleip/policy.md"]);
+    expect(diff.fileStats).toEqual([
+      {
+        path: ".gleip/policy.md",
+        added: 2,
+        deleted: 0,
+        diffFingerprint: expect.any(String) as string
+      }
+    ]);
   });
 
   it("reports tracked Gleip sidecar artifacts separately", () => {
@@ -77,6 +97,18 @@ describe("collectWorkingTreeDiff", () => {
 
     expect(diff.changedFiles).toEqual([]);
     expect(diff.trackedLocalArtifacts).toEqual([".gleip/session.json"]);
+  });
+
+  it("drops the tracked artifact report after the artifact is removed", () => {
+    const repo = createCommittedRepo();
+    writeRepoFile(repo, ".gleip/session.json", "{}\n");
+    git(repo, ["add", "-f", ".gleip/session.json"]);
+    rmSync(join(repo, ".gleip", "session.json"));
+
+    const diff = collectWorkingTreeDiff({ cwd: repo });
+
+    expect(diff.changedFiles).toEqual([]);
+    expect(diff.trackedLocalArtifacts).toEqual([]);
   });
 
   it("filters unchanged pre-existing files from a baseline", () => {
@@ -129,6 +161,29 @@ describe("collectWorkingTreeDiff", () => {
     expect(filtered.diff.changedFiles).toEqual(["src/index.ts"]);
     expect(filtered.baseline.preExistingFilesIgnored).toBe(1);
     expect(filtered.baseline.sessionFilesChanged).toBe(1);
+    expect(filtered.baseline.possiblyPreExistingFiles).toEqual([]);
+  });
+
+  it("keeps an unchanged one-file baseline ignored after another file changes", () => {
+    const repo = createCommittedRepo();
+    writeRepoFile(repo, "README.md", "base\n");
+    git(repo, ["add", "README.md"]);
+    git(repo, ["commit", "-m", "add readme"]);
+    writeRepoFile(repo, "README.md", "base\npre-existing\n");
+
+    const baseline = createSessionBaseline(
+      collectWorkingTreeDiff({ cwd: repo }),
+      "2026-05-30T00:00:00.000Z"
+    );
+
+    writeRepoFile(repo, "src/index.ts", "export const value = 2;\n");
+
+    const filtered = filterDiffSinceBaseline(collectWorkingTreeDiff({ cwd: repo }), baseline);
+
+    expect(filtered.diff.changedFiles).toEqual(["src/index.ts"]);
+    expect(filtered.baseline.preExistingFilesIgnored).toBe(1);
+    expect(filtered.baseline.sessionFilesChanged).toBe(1);
+    expect(filtered.baseline.possiblyPreExistingFiles).toEqual([]);
   });
 
   it("includes pre-existing files whose stats changed after baseline", () => {
@@ -174,6 +229,7 @@ describe("collectWorkingTreeDiff", () => {
 
     expect(filtered.diff.changedFiles).toEqual(["README.md"]);
     expect(filtered.baseline.preExistingFilesIgnored).toBe(0);
+    expect(filtered.baseline.possiblyPreExistingFiles).toEqual(["README.md"]);
   });
 
   it("returns a helpful result outside a git repository", () => {

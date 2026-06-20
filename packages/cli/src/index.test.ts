@@ -1442,6 +1442,50 @@ describe("createGleipCommand", () => {
     });
 
     expect(output.join("\n")).toContain("Changes: 1 files, +2/-0");
+    expect(output.join("\n")).toContain(
+      "Baseline: 1 pre-existing file(s) changed after preflight; attribution is file-level"
+    );
+  });
+
+  it("status --json includes ambiguous baseline files changed after preflight", async () => {
+    const repo = createTempRepo();
+    await runCommand(repo, ["preflight", "Add CSV export to users table"], {
+      collectWorkingTreeDiff: () =>
+        diffContext({
+          changedFiles: ["README.md"],
+          fileStats: [
+            { path: "README.md", added: 1, deleted: 0, diffFingerprint: "readme-before" }
+          ],
+          totalLinesAdded: 1
+        })
+    });
+
+    const output = await runCommand(repo, ["status", "--json"], {
+      collectWorkingTreeDiff: () =>
+        diffContext({
+          changedFiles: ["README.md"],
+          fileStats: [{ path: "README.md", added: 2, deleted: 0, diffFingerprint: "readme-after" }],
+          totalLinesAdded: 2
+        }),
+      detectScopeDrift: ({ gitDiffContext }) => ({
+        status: "warning",
+        findings: [],
+        metrics: {
+          filesChanged: gitDiffContext.changedFiles.length,
+          linesAdded: gitDiffContext.totalLinesAdded,
+          linesDeleted: gitDiffContext.totalLinesDeleted
+        },
+        summary: "Pre-existing file changed after baseline."
+      })
+    });
+    const json = JSON.parse(output.join("\n")) as {
+      baseline: { possiblyPreExistingFiles: string[]; sessionFilesChanged: number };
+      metrics: { filesChanged: number };
+    };
+
+    expect(json.metrics.filesChanged).toBe(1);
+    expect(json.baseline.sessionFilesChanged).toBe(1);
+    expect(json.baseline.possiblyPreExistingFiles).toEqual(["README.md"]);
   });
 
   it("status prints concise summary when changes have no findings", async () => {
@@ -2195,6 +2239,636 @@ describe("createGleipCommand", () => {
       title: "Files outside expected scope"
     });
     expect(json.nextAction).toContain("Review the listed findings");
+  });
+
+  it("status overwrites stale artifact cleanup after the artifact finding is resolved", async () => {
+    const repo = createTempRepo();
+    await runCommand(repo, ["preflight", "Add CSV export to users table"]);
+
+    await runCommand(repo, ["status"], {
+      detectScopeDrift: () => ({
+        status: "needs_cleanup",
+        findings: [
+          {
+            code: "LOCAL_ARTIFACT_INCLUDED",
+            severity: "cleanup_required",
+            title: "Local Gleip artifact included",
+            message: ".gleip/session.json is tracked by git.",
+            category: "local_artifacts"
+          }
+        ],
+        metrics: {
+          filesChanged: 0,
+          linesAdded: 0,
+          linesDeleted: 0
+        },
+        summary: "Cleanup required."
+      })
+    });
+    expect(readFileSync(join(repo, ".gleip", "status.md"), "utf8")).toContain(
+      "Remove .gleip session artifacts"
+    );
+
+    const output = await runCommand(repo, ["status"], {
+      detectScopeDrift: () => ({
+        status: "clean",
+        findings: [],
+        metrics: {
+          filesChanged: 0,
+          linesAdded: 0,
+          linesDeleted: 0
+        },
+        summary: "No working tree changes detected."
+      })
+    });
+    const statusFile = readFileSync(join(repo, ".gleip", "status.md"), "utf8");
+
+    expect(output.join("\n")).not.toContain("Remove .gleip session artifacts");
+    expect(statusFile).not.toContain("Remove .gleip session artifacts");
+    expect(statusFile).toContain(
+      "Begin implementation or run npx --no-install gleip preflight if this is not the intended session."
+    );
+  });
+
+  it("status passes accepted validate-plan targets into drift detection scope", async () => {
+    const repo = createTempRepo();
+    let observedScope:
+      | { expectedPaths?: string[]; derivedScope?: string[]; explicitScope?: string[] }
+      | undefined;
+    await runCommand(repo, ["preflight", "Update the user table and shared formatter"]);
+    await runCommand(repo, ["validate-plan", "Update src/users/table.ts and src/shared/format.ts"], {
+      validateAgentPlan: (input) => ({
+        status: "aligned",
+        findings: [],
+        summary: "Plan is aligned.",
+        nextAction: "Implement the plan.",
+        parsedPlan: {
+          rawText: input.planText,
+          proposedFiles: ["src/users/table.ts", "src/shared/format.ts"],
+          contextFiles: [],
+          outputFiles: [],
+          proposedDependencies: [],
+          proposedTests: [],
+          mentionedRiskyAreas: [],
+          mentionsCiChanges: false,
+          mentionsNewDependencies: false,
+          mentionsTestWeakening: false,
+          mentionsBroadRefactor: false
+        },
+        targetClassifications: [
+          {
+            target: "src/users/table.ts",
+            classification: "direct",
+            reason: "Target matches explicit task scope.",
+            evidence: "src/users/table.ts"
+          },
+          {
+            target: "src/shared/format.ts",
+            classification: "derived",
+            reason: "Target is shared by the direct target.",
+            evidence: "src/users/table.ts"
+          }
+        ]
+      })
+    });
+
+    await runCommand(repo, ["status"], {
+      collectWorkingTreeDiff: () =>
+        diffContext({
+          changedFiles: ["src/shared/format.ts"],
+          fileStats: [
+            { path: "src/shared/format.ts", added: 2, deleted: 0, diffFingerprint: "shared" }
+          ],
+          totalLinesAdded: 2
+        }),
+      detectScopeDrift: ({ scopeBudget }) => {
+        observedScope = scopeBudget;
+
+        return {
+          status: "clean",
+          findings: [],
+          metrics: {
+            filesChanged: 1,
+            linesAdded: 2,
+            linesDeleted: 0
+          },
+          summary: "Accepted plan target remains in scope."
+        };
+      }
+    });
+
+    expect(observedScope?.expectedPaths).toContain("src/shared/format.ts");
+    expect(observedScope?.derivedScope).toContain("src/shared/format.ts");
+    expect(observedScope?.explicitScope).toContain("src/users/table.ts");
+  });
+
+  it.each(["README.md", "docs/usage.md", "FULL_CONTEXT.md", "PROJECT_CONTEXT.md"])(
+    "status passes accepted documentation/context target %s into drift detection scope",
+    async (path) => {
+      const repo = createTempRepo();
+      let observedScope: { expectedPaths?: string[]; explicitScope?: string[] } | undefined;
+      await runCommand(repo, ["preflight", `Update ${path} for the task`]);
+      await runCommand(repo, ["validate-plan", `Update ${path}. Run documentation review.`], {
+        validateAgentPlan: (input) => ({
+          status: "aligned",
+          findings: [],
+          summary: "Plan is aligned.",
+          nextAction: "Implement the plan.",
+          parsedPlan: {
+            rawText: input.planText,
+            proposedFiles: [path],
+            contextFiles: [],
+            outputFiles: [],
+            proposedDependencies: [],
+            proposedTests: [],
+            mentionedRiskyAreas: [],
+            mentionsCiChanges: false,
+            mentionsNewDependencies: false,
+            mentionsTestWeakening: false,
+            mentionsBroadRefactor: false
+          },
+          targetClassifications: [
+            {
+              target: path,
+              classification: "direct",
+              reason: "Target matches explicit task scope.",
+              evidence: path
+            }
+          ]
+        })
+      });
+
+      await runCommand(repo, ["status"], {
+        collectWorkingTreeDiff: () =>
+          diffContext({
+            changedFiles: [path],
+            fileStats: [{ path, added: 2, deleted: 0, diffFingerprint: "docs" }],
+            totalLinesAdded: 2
+          }),
+        detectScopeDrift: ({ scopeBudget }) => {
+          observedScope = scopeBudget;
+
+          return {
+            status: "clean",
+            findings: [],
+            metrics: {
+              filesChanged: 1,
+              linesAdded: 2,
+              linesDeleted: 0
+            },
+            summary: "Accepted documentation target remains in scope."
+          };
+        }
+      });
+
+      expect(observedScope?.expectedPaths).toContain(path);
+      expect(observedScope?.explicitScope).toContain(path);
+    }
+  );
+
+  it("status removes documentation scope guidance after the documentation change is reverted", async () => {
+    const repo = createTempRepo();
+    await runCommand(repo, ["preflight", "Update src/foo.ts"]);
+
+    await runCommand(repo, ["status"], {
+      collectWorkingTreeDiff: () =>
+        diffContext({
+          changedFiles: ["docs/unrelated.md"],
+          fileStats: [{ path: "docs/unrelated.md", added: 2, deleted: 0, diffFingerprint: "docs" }],
+          totalLinesAdded: 2
+        }),
+      detectScopeDrift: () => ({
+        status: "advisory",
+        findings: [
+          {
+            code: "SCOPE_EXPANSION_WARN",
+            severity: "warn",
+            title: "Files outside expected scope",
+            message: "docs/unrelated.md changed outside expected scope.",
+            examples: ["docs/unrelated.md"],
+            category: "allowed_scope",
+            recommendation: "Add rationale for adjacent targets and remove or justify unexplained targets."
+          }
+        ],
+        metrics: {
+          filesChanged: 1,
+          linesAdded: 2,
+          linesDeleted: 0
+        },
+        summary: "Documentation scope needs review."
+      })
+    });
+    expect(readFileSync(join(repo, ".gleip", "status.md"), "utf8")).toContain(
+      "docs/unrelated.md changed outside expected scope"
+    );
+
+    const output = await runCommand(repo, ["status", "--json"], {
+      collectWorkingTreeDiff: () => diffContext(),
+      detectScopeDrift: () => ({
+        status: "clean",
+        findings: [],
+        metrics: {
+          filesChanged: 0,
+          linesAdded: 0,
+          linesDeleted: 0
+        },
+        summary: "No working tree changes detected."
+      })
+    });
+    const json = JSON.parse(output.join("\n")) as {
+      findings: unknown[];
+      nextAction: string;
+      status: string;
+    };
+    const statusFile = readFileSync(join(repo, ".gleip", "status.md"), "utf8");
+
+    expect(json.status).toBe("clean");
+    expect(json.findings).toEqual([]);
+    expect(json.nextAction).not.toContain("scope rationale");
+    expect(statusFile).not.toContain("docs/unrelated.md changed outside expected scope");
+  });
+
+  it("status keeps the latest successful validate-plan scope after a failed plan attempt", async () => {
+    const repo = createTempRepo();
+    let observedScope:
+      | { expectedPaths?: string[]; derivedScope?: string[]; explicitScope?: string[] }
+      | undefined;
+    await runCommand(repo, ["preflight", "Update the user table and shared formatter"]);
+    await runCommand(repo, ["validate-plan", "Update src/users/table.ts and src/shared/format.ts"], {
+      validateAgentPlan: (input) => ({
+        status: "aligned",
+        findings: [],
+        summary: "Plan is aligned.",
+        nextAction: "Implement the plan.",
+        parsedPlan: {
+          rawText: input.planText,
+          proposedFiles: ["src/users/table.ts", "src/shared/format.ts"],
+          contextFiles: [],
+          outputFiles: [],
+          proposedDependencies: [],
+          proposedTests: [],
+          mentionedRiskyAreas: [],
+          mentionsCiChanges: false,
+          mentionsNewDependencies: false,
+          mentionsTestWeakening: false,
+          mentionsBroadRefactor: false
+        },
+        targetClassifications: [
+          {
+            target: "src/users/table.ts",
+            classification: "direct",
+            reason: "Target matches explicit task scope.",
+            evidence: "src/users/table.ts"
+          },
+          {
+            target: "src/shared/format.ts",
+            classification: "derived",
+            reason: "Target is shared by the direct target.",
+            evidence: "src/users/table.ts"
+          }
+        ]
+      })
+    });
+    await runCommand(repo, ["validate-plan", "Update package.json and scripts/release.ts"], {
+      validateAgentPlan: (input) => ({
+        status: "needs_approval",
+        findings: [
+          {
+            severity: "approval_required",
+            title: "Approval required",
+            message: "Dependency and release changes need explicit approval."
+          }
+        ],
+        summary: "Plan needs approval.",
+        nextAction: "Request approval.",
+        parsedPlan: {
+          rawText: input.planText,
+          proposedFiles: ["package.json", "scripts/release.ts"],
+          contextFiles: [],
+          outputFiles: [],
+          proposedDependencies: [],
+          proposedTests: [],
+          mentionedRiskyAreas: [],
+          mentionsCiChanges: false,
+          mentionsNewDependencies: true,
+          mentionsTestWeakening: false,
+          mentionsBroadRefactor: false
+        },
+        targetClassifications: [
+          {
+            target: "scripts/release.ts",
+            classification: "unexplained",
+            reason: "No relationship to the active scope budget.",
+            evidence: "scripts/release.ts"
+          }
+        ]
+      })
+    });
+
+    await runCommand(repo, ["status"], {
+      collectWorkingTreeDiff: () =>
+        diffContext({
+          changedFiles: ["src/shared/format.ts"],
+          fileStats: [
+            { path: "src/shared/format.ts", added: 2, deleted: 0, diffFingerprint: "shared" }
+          ],
+          totalLinesAdded: 2
+        }),
+      detectScopeDrift: ({ scopeBudget }) => {
+        observedScope = scopeBudget;
+
+        return {
+          status: "clean",
+          findings: [],
+          metrics: {
+            filesChanged: 1,
+            linesAdded: 2,
+            linesDeleted: 0
+          },
+          summary: "Accepted plan target remains in scope."
+        };
+      }
+    });
+
+    const session = JSON.parse(readFileSync(join(repo, ".gleip", "session.json"), "utf8")) as {
+      latestValidationAttempt: { status: string };
+      latestSuccessfulValidation: { status: string };
+      latestPlanValidation: { status: string };
+      latestSuccessfulPlanValidation: { status: string };
+    };
+    expect(session.latestValidationAttempt.status).toBe("needs_approval");
+    expect(session.latestSuccessfulValidation.status).toBe("aligned");
+    expect(session.latestPlanValidation.status).toBe("needs_approval");
+    expect(session.latestSuccessfulPlanValidation.status).toBe("aligned");
+    expect(observedScope?.expectedPaths).toContain("src/shared/format.ts");
+    expect(observedScope?.derivedScope).toContain("src/shared/format.ts");
+    expect(observedScope?.explicitScope).toContain("src/users/table.ts");
+  });
+
+  it("report ignores stale status.md cleanup guidance after current drift is clean", async () => {
+    const repo = createTempRepo();
+    await runCommand(repo, ["preflight", "Add CSV export to users table"]);
+    writeFileSync(
+      join(repo, ".gleip", "status.md"),
+      [
+        "# Gleip Status",
+        "",
+        "Remove .gleip session artifacts from the change set, then rerun status.",
+        "[LOCAL_ARTIFACT_INCLUDED] cleanup_required: Local Gleip artifact included"
+      ].join("\n")
+    );
+
+    const output = await runCommand(repo, ["report", "--json"], {
+      detectScopeDrift: () => ({
+        status: "clean",
+        findings: [],
+        metrics: {
+          filesChanged: 0,
+          linesAdded: 0,
+          linesDeleted: 0
+        },
+        summary: "No working tree changes detected."
+      })
+    });
+    const report = JSON.parse(output.join("\n")) as {
+      risk: { drift: string };
+      warnings: Array<{ id: string; message: string; suggestedAction: string | null }>;
+    };
+
+    expect(report.risk.drift).toBe("none");
+    expect(report.warnings.map((warning) => warning.id)).not.toContain(
+      "LOCAL_ARTIFACT_INCLUDED"
+    );
+    expect(report.warnings.map((warning) => warning.id)).not.toContain("output.tests-missing");
+    expect(report.warnings.map((warning) => warning.id)).not.toContain("output.risks-missing");
+    expect(JSON.stringify(report.warnings)).not.toContain("Remove .gleip session artifacts");
+  });
+
+  it("report uses accepted scope while latest failed validation remains workflow guidance", async () => {
+    const repo = createTempRepo();
+    let observedScope:
+      | { expectedPaths?: string[]; derivedScope?: string[]; explicitScope?: string[] }
+      | undefined;
+    await runCommand(repo, ["preflight", "Update the user table and shared formatter"]);
+    await runCommand(repo, ["validate-plan", "Update src/users/table.ts and src/shared/format.ts"], {
+      validateAgentPlan: (input) => ({
+        status: "aligned",
+        findings: [],
+        summary: "Plan is aligned.",
+        nextAction: "Implement the plan.",
+        parsedPlan: {
+          rawText: input.planText,
+          proposedFiles: ["src/users/table.ts", "src/shared/format.ts"],
+          contextFiles: [],
+          outputFiles: [],
+          proposedDependencies: [],
+          proposedTests: [],
+          mentionedRiskyAreas: [],
+          mentionsCiChanges: false,
+          mentionsNewDependencies: false,
+          mentionsTestWeakening: false,
+          mentionsBroadRefactor: false
+        },
+        targetClassifications: [
+          {
+            target: "src/users/table.ts",
+            classification: "direct",
+            reason: "Target matches explicit task scope.",
+            evidence: "src/users/table.ts"
+          },
+          {
+            target: "src/shared/format.ts",
+            classification: "derived",
+            reason: "Target is shared by the direct target.",
+            evidence: "src/users/table.ts"
+          }
+        ]
+      })
+    });
+    await runCommand(repo, ["validate-plan", "Update package.json and scripts/release.ts"], {
+      validateAgentPlan: (input) => ({
+        status: "needs_approval",
+        findings: [
+          {
+            severity: "approval_required",
+            title: "Approval required",
+            message: "Dependency and release changes need explicit approval."
+          }
+        ],
+        summary: "Plan needs approval.",
+        nextAction: "Request approval.",
+        parsedPlan: {
+          rawText: input.planText,
+          proposedFiles: ["package.json", "scripts/release.ts"],
+          contextFiles: [],
+          outputFiles: [],
+          proposedDependencies: [],
+          proposedTests: [],
+          mentionedRiskyAreas: [],
+          mentionsCiChanges: false,
+          mentionsNewDependencies: true,
+          mentionsTestWeakening: false,
+          mentionsBroadRefactor: false
+        }
+      })
+    });
+
+    const output = await runCommand(repo, ["report", "--json"], {
+      collectWorkingTreeDiff: () =>
+        diffContext({
+          changedFiles: ["src/shared/format.ts"],
+          fileStats: [
+            { path: "src/shared/format.ts", added: 2, deleted: 0, diffFingerprint: "shared" }
+          ],
+          totalLinesAdded: 2
+        }),
+      detectScopeDrift: ({ scopeBudget }) => {
+        observedScope = scopeBudget;
+
+        return {
+          status: "clean",
+          findings: [],
+          metrics: {
+            filesChanged: 1,
+            linesAdded: 2,
+            linesDeleted: 0
+          },
+          summary: "Accepted plan target remains in scope."
+        };
+      }
+    });
+    const report = JSON.parse(output.join("\n")) as {
+      summary: { unplannedFiles: number };
+      warnings: Array<{ id: string; message: string; reason: string }>;
+    };
+
+    expect(observedScope?.expectedPaths).toContain("src/shared/format.ts");
+    expect(observedScope?.derivedScope).toContain("src/shared/format.ts");
+    expect(report.summary.unplannedFiles).toBe(0);
+    expect(report.warnings.map((warning) => warning.id)).toContain("plan.guidance");
+    expect(report.warnings.find((warning) => warning.id === "plan.guidance")?.message).toContain(
+      "Latest validation attempt is needs_approval"
+    );
+    expect(report.warnings.find((warning) => warning.id === "plan.guidance")?.reason).toContain(
+      "accepted implementation scope"
+    );
+    expect(report.warnings.map((warning) => warning.id)).not.toContain("plan.unplanned-files");
+  });
+
+  it("report drops stale failed-validation guidance after a later successful plan", async () => {
+    const repo = createTempRepo();
+    let observedScope: { expectedPaths?: string[]; explicitScope?: string[] } | undefined;
+    await runCommand(repo, ["preflight", "Update the user table and shared formatter"]);
+    await runCommand(repo, ["validate-plan", "Update src/users/table.ts and src/shared/format.ts"], {
+      validateAgentPlan: (input) => ({
+        status: "aligned",
+        findings: [],
+        summary: "Plan is aligned.",
+        nextAction: "Implement the plan.",
+        parsedPlan: {
+          rawText: input.planText,
+          proposedFiles: ["src/users/table.ts", "src/shared/format.ts"],
+          contextFiles: [],
+          outputFiles: [],
+          proposedDependencies: [],
+          proposedTests: [],
+          mentionedRiskyAreas: [],
+          mentionsCiChanges: false,
+          mentionsNewDependencies: false,
+          mentionsTestWeakening: false,
+          mentionsBroadRefactor: false
+        }
+      })
+    });
+    await runCommand(repo, ["validate-plan", "Update package.json"], {
+      validateAgentPlan: (input) => ({
+        status: "needs_approval",
+        findings: [
+          {
+            severity: "approval_required",
+            title: "Approval required",
+            message: "Dependency metadata needs explicit approval."
+          }
+        ],
+        summary: "Plan needs approval.",
+        nextAction: "Request approval.",
+        parsedPlan: {
+          rawText: input.planText,
+          proposedFiles: ["package.json"],
+          contextFiles: [],
+          outputFiles: [],
+          proposedDependencies: [],
+          proposedTests: [],
+          mentionedRiskyAreas: [],
+          mentionsCiChanges: false,
+          mentionsNewDependencies: true,
+          mentionsTestWeakening: false,
+          mentionsBroadRefactor: false
+        }
+      })
+    });
+    await runCommand(repo, ["validate-plan", "Update docs/release-notes.md"], {
+      validateAgentPlan: (input) => ({
+        status: "aligned",
+        findings: [],
+        summary: "Replacement plan is aligned.",
+        nextAction: "Implement the replacement plan.",
+        parsedPlan: {
+          rawText: input.planText,
+          proposedFiles: ["docs/release-notes.md"],
+          contextFiles: [],
+          outputFiles: [],
+          proposedDependencies: [],
+          proposedTests: [],
+          mentionedRiskyAreas: [],
+          mentionsCiChanges: false,
+          mentionsNewDependencies: false,
+          mentionsTestWeakening: false,
+          mentionsBroadRefactor: false
+        },
+        targetClassifications: [
+          {
+            target: "docs/release-notes.md",
+            classification: "direct",
+            reason: "Target matches explicit replacement scope.",
+            evidence: "docs/release-notes.md"
+          }
+        ]
+      })
+    });
+
+    const output = await runCommand(repo, ["report", "--json"], {
+      collectWorkingTreeDiff: () =>
+        diffContext({
+          changedFiles: ["docs/release-notes.md"],
+          fileStats: [
+            { path: "docs/release-notes.md", added: 2, deleted: 0, diffFingerprint: "docs" }
+          ],
+          totalLinesAdded: 2
+        }),
+      detectScopeDrift: ({ scopeBudget }) => {
+        observedScope = scopeBudget;
+
+        return {
+          status: "clean",
+          findings: [],
+          metrics: {
+            filesChanged: 1,
+            linesAdded: 2,
+            linesDeleted: 0
+          },
+          summary: "Replacement plan target remains in scope."
+        };
+      }
+    });
+    const report = JSON.parse(output.join("\n")) as {
+      warnings: Array<{ id: string; message: string }>;
+    };
+
+    expect(report.warnings.map((warning) => warning.id)).not.toContain("plan.guidance");
+    expect(JSON.stringify(report.warnings)).not.toContain("needs_approval");
+    expect(observedScope?.expectedPaths).toContain("docs/release-notes.md");
+    expect(observedScope?.expectedPaths).not.toContain("src/shared/format.ts");
   });
 
   it("report generates report.json and report.md", async () => {

@@ -57,6 +57,8 @@ describe("detectScopeDrift", () => {
   it("warns when added lines exceed the soft limit", () => {
     const result = detectScopeDrift({
       scopeBudget: budget({
+        allowedPaths: ["src/a.ts"],
+        expectedPaths: ["src/a.ts"],
         softLimits: { maxFilesChanged: 5, maxLinesAdded: 1, maxLinesDeleted: 100 }
       }),
       gitDiffContext: diff({
@@ -67,6 +69,7 @@ describe("detectScopeDrift", () => {
     });
 
     expect(result.status).toBe("advisory");
+    expect(result.status).not.toBe("needs_cleanup");
     expect(result.findings.map((finding) => finding.title)).toContain(
       "Added lines exceed scope budget"
     );
@@ -322,6 +325,84 @@ describe("detectScopeDrift", () => {
     );
   });
 
+  it("does not count ephemeral Gleip runtime artifacts as task changes", () => {
+    const result = detectScopeDrift({
+      scopeBudget: budget({
+        allowedPaths: ["src/a.ts"],
+        expectedPaths: ["src/a.ts"],
+        softLimits: { maxFilesChanged: 1, maxLinesAdded: 5, maxLinesDeleted: 5 }
+      }),
+      gitDiffContext: diff({
+        changedFiles: ["src/a.ts", ".gleip/status.md", ".gleip/report.json"],
+        fileStats: [
+          { path: "src/a.ts", added: 2, deleted: 0 },
+          { path: ".gleip/status.md", added: 40, deleted: 0 },
+          { path: ".gleip/report.json", added: 100, deleted: 0 }
+        ],
+        totalLinesAdded: 142
+      })
+    });
+
+    expect(result.status).toBe("clean");
+    expect(result.metrics).toEqual({
+      filesChanged: 1,
+      linesAdded: 2,
+      linesDeleted: 0
+    });
+    expect(result.findings).toEqual([]);
+  });
+
+  it("does not ignore durable .gleip files", () => {
+    const result = detectScopeDrift({
+      scopeBudget: budget({
+        allowedPaths: ["src"],
+        expectedPaths: ["src"]
+      }),
+      gitDiffContext: diff({
+        changedFiles: [".gleip/policy.md"],
+        fileStats: [{ path: ".gleip/policy.md", added: 1, deleted: 0 }],
+        totalLinesAdded: 1
+      })
+    });
+
+    expect(result.status).toBe("advisory");
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({
+        code: "SCOPE_EXPANSION_WARN",
+        severity: "warn",
+        examples: [".gleip/policy.md"]
+      })
+    );
+  });
+
+  it("keeps real unexplained scope visible", () => {
+    const result = detectScopeDrift({
+      scopeBudget: budget({
+        allowedPaths: ["src/users"],
+        expectedPaths: ["src/users"],
+        explicitScope: ["src/users"]
+      }),
+      gitDiffContext: diff({
+        changedFiles: ["scripts/release.ts"],
+        fileStats: [{ path: "scripts/release.ts", added: 1, deleted: 0 }],
+        totalLinesAdded: 1
+      })
+    });
+
+    expect(result.status).toBe("advisory");
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({
+        code: "SCOPE_EXPANSION_WARN",
+        targetClassifications: [
+          expect.objectContaining({
+            target: "scripts/release.ts",
+            classification: "unexplained"
+          })
+        ]
+      })
+    );
+  });
+
   it("groups repeated outside-scope findings", () => {
     const findings = normalizeDriftFindings([
       outsideFinding("src/a.ts"),
@@ -434,6 +515,70 @@ describe("detectScopeDrift", () => {
     });
 
     expect(result.status).toBe("clean");
+  });
+
+  it.each(["README.md", "docs/usage.md", "FULL_CONTEXT.md", "PROJECT_CONTEXT.md"])(
+    "accepts explicitly expected documentation/context target %s",
+    (path) => {
+      const result = detectScopeDrift({
+        scopeBudget: budget({
+          allowedPaths: [path],
+          expectedPaths: [path],
+          explicitScope: [path],
+          softLimits: { maxFilesChanged: 5, maxLinesAdded: 1, maxLinesDeleted: 100 }
+        }),
+        gitDiffContext: diff({
+          changedFiles: [path],
+          fileStats: [{ path, added: 2, deleted: 0 }],
+          totalLinesAdded: 2
+        })
+      });
+
+      expect(result.status).toBe("advisory");
+      expect(result.findings.map((finding) => finding.code)).toEqual(["SCOPE_LIMIT_EXCEEDED"]);
+      expect(result.findings).not.toContainEqual(
+        expect.objectContaining({ code: "SCOPE_EXPANSION_WARN" })
+      );
+      expect(result.status).not.toBe("needs_cleanup");
+    }
+  );
+
+  it("warns for unrelated documentation without treating it as cleanup", () => {
+    const result = detectScopeDrift({
+      scopeBudget: budget({
+        allowedPaths: ["src/foo.ts"],
+        expectedPaths: ["src/foo.ts"]
+      }),
+      gitDiffContext: diff({
+        changedFiles: ["docs/unrelated.md"],
+        fileStats: [{ path: "docs/unrelated.md", added: 2, deleted: 0 }],
+        totalLinesAdded: 2
+      })
+    });
+
+    expect(result.status).toBe("advisory");
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({ code: "SCOPE_EXPANSION_WARN", severity: "warn" })
+    );
+    expect(result.status).not.toBe("needs_cleanup");
+  });
+
+  it("keeps durable .gleip documentation visible but not suspicious when declared", () => {
+    const result = detectScopeDrift({
+      scopeBudget: budget({
+        allowedPaths: [".gleip/policy.md"],
+        expectedPaths: [".gleip/policy.md"],
+        explicitScope: [".gleip/policy.md"]
+      }),
+      gitDiffContext: diff({
+        changedFiles: [".gleip/policy.md"],
+        fileStats: [{ path: ".gleip/policy.md", added: 2, deleted: 0 }],
+        totalLinesAdded: 2
+      })
+    });
+
+    expect(result.status).toBe("clean");
+    expect(result.findings).toEqual([]);
   });
 
   it("advises on a large unrelated context-doc rewrite", () => {
@@ -590,6 +735,102 @@ describe("session reports", () => {
     expect(report.scores.planAlignment).toBeLessThan(100);
     expect(report.risk.overEdit).toBe("low");
     expect(report.efficiency.breakdown.scopeWasteAvoided).toBeGreaterThan(0);
+  });
+
+  it("uses accepted plan validation for unplanned-file analysis", () => {
+    const report = generateSessionReport({
+      version: "0.7.3",
+      schemaVersion: "1.0.0",
+      sessionId: "session-1",
+      generatedAt: "2026-06-09T00:00:00.000Z",
+      scopeBudget: {
+        softLimits: {
+          maxFilesChanged: 5,
+          maxLinesAdded: 100,
+          maxLinesDeleted: 100
+        },
+        allowedPaths: ["src/accepted.ts"],
+        expectedPaths: ["src/accepted.ts"],
+        requiredTests: true
+      },
+      acceptedPlanValidation: {
+        status: "aligned",
+        findings: [],
+        parsedPlan: {
+          rawText: "Update src/accepted.ts and run tests.",
+          proposedFiles: ["src/accepted.ts"]
+        }
+      },
+      planValidation: {
+        status: "needs_approval",
+        findings: [
+          {
+            title: "Approval required",
+            message: "Dependency metadata needs approval."
+          }
+        ],
+        parsedPlan: {
+          rawText: "Update package.json.",
+          proposedFiles: ["package.json"]
+        }
+      },
+      diff: reportDiff({
+        changedFiles: ["src/accepted.ts"],
+        fileStats: [{ path: "src/accepted.ts", added: 2, deleted: 0 }],
+        totalLinesAdded: 2
+      }),
+      driftResult: {
+        status: "clean",
+        findings: []
+      }
+    });
+
+    expect(report.summary.unplannedFiles).toBe(0);
+    expect(report.warnings.map((warning) => warning.id)).toContain("plan.guidance");
+    expect(report.warnings.map((warning) => warning.id)).not.toContain("plan.unplanned-files");
+    expect(report.warnings.find((warning) => warning.id === "plan.guidance")?.reason).toContain(
+      "accepted implementation scope"
+    );
+  });
+
+  it("reports dirty baseline attribution without changing drift risk", () => {
+    const report = generateSessionReport({
+      version: "0.7.3",
+      schemaVersion: "1.0.0",
+      sessionId: "session-1",
+      generatedAt: "2026-06-09T00:00:00.000Z",
+      scopeBudget: {
+        softLimits: {
+          maxFilesChanged: 5,
+          maxLinesAdded: 100,
+          maxLinesDeleted: 100
+        },
+        allowedPaths: ["README.md"],
+        expectedPaths: ["README.md"],
+        requiredTests: false
+      },
+      baseline: {
+        possiblyPreExistingFiles: ["README.md"]
+      },
+      diff: reportDiff({
+        changedFiles: ["README.md"],
+        fileStats: [{ path: "README.md", added: 2, deleted: 0 }],
+        totalLinesAdded: 2
+      }),
+      driftResult: {
+        status: "clean",
+        findings: []
+      }
+    });
+
+    expect(report.risk.drift).toBe("none");
+    expect(report.warnings).toContainEqual(
+      expect.objectContaining({
+        id: "baseline.ambiguous-attribution",
+        severity: "info",
+        files: ["README.md"]
+      })
+    );
   });
 
   it("detects missing output evidence and repeated narration", () => {

@@ -57,6 +57,17 @@ export interface BaselineFilteredDiff {
   baseline: BaselineContext;
 }
 
+export const EPHEMERAL_GLEIP_ARTIFACTS = [
+  ".gleip/state.json",
+  ".gleip/session.json",
+  ".gleip/baseline.json",
+  ".gleip/brief.md",
+  ".gleip/scope-budget.json",
+  ".gleip/status.md",
+  ".gleip/report.md",
+  ".gleip/report.json"
+] as const;
+
 interface GitResult {
   ok: boolean;
   stdout: string;
@@ -76,7 +87,7 @@ export function collectWorkingTreeDiff(options: CollectWorkingTreeDiffOptions): 
       ? [collectDiffForBase(options.cwd, options.base)]
       : hasHead
         ? [collectDiffForBase(options.cwd, "HEAD")]
-        : [collectDiff(options.cwd, ["--cached", "--", ".", ":(exclude).gleip/**"]), collectDiff(options.cwd, ["--", ".", ":(exclude).gleip/**"])];
+        : [collectDiff(options.cwd, ["--cached", "--", "."]), collectDiff(options.cwd, ["--", "."])];
 
   const changedFiles = new Set<string>();
   const deletedFiles = new Set<string>();
@@ -117,7 +128,9 @@ export function collectWorkingTreeDiff(options: CollectWorkingTreeDiffOptions): 
     }
   }
 
-  const sortedChangedFiles = Array.from(changedFiles).sort();
+  const sortedChangedFiles = Array.from(changedFiles)
+    .filter((path) => !isEphemeralGleipArtifactPath(path))
+    .sort();
   const rawDiff = rawDiffParts.join("\n");
   const fingerprintByPath = fingerprintRawDiffSections(rawDiff);
   const untrackedFiles = new Set(listUntrackedFiles(options.cwd));
@@ -142,12 +155,13 @@ export function collectWorkingTreeDiff(options: CollectWorkingTreeDiffOptions): 
   });
   const totalLinesAdded = fileStats.reduce((total, stat) => total + stat.added, 0);
   const totalLinesDeleted = fileStats.reduce((total, stat) => total + stat.deleted, 0);
+  const filteredRawDiff = filterRawDiffSections(rawDiff, sortedChangedFiles);
   const trackedLocalArtifacts = listTrackedLocalArtifacts(options.cwd);
 
   return {
     changedFiles: sortedChangedFiles,
     fileStats,
-    rawDiff,
+    rawDiff: filteredRawDiff,
     totalLinesAdded,
     totalLinesDeleted,
     isGitRepo: true,
@@ -211,10 +225,7 @@ export function filterDiffSinceBaseline(
 
     if (hasFileChangedSinceBaseline(stat, baselineStat)) {
       sessionStats.push(stat);
-
-      if (stat.added === baselineStat.added && stat.deleted === baselineStat.deleted) {
-        possiblyPreExistingFiles.push(stat.path);
-      }
+      possiblyPreExistingFiles.push(stat.path);
     } else {
       ignoredFiles.push(stat.path);
     }
@@ -270,7 +281,7 @@ function fingerprintDiff(diff: GitDiffContext): string {
 }
 
 function collectDiffForBase(cwd: string, base: string): InternalDiffContext {
-  return collectDiff(cwd, ["--no-ext-diff", base, "--", ".", ":(exclude).gleip/**"]);
+  return collectDiff(cwd, ["--no-ext-diff", base, "--", "."]);
 }
 
 interface InternalDiffContext {
@@ -392,13 +403,17 @@ function listUntrackedFiles(cwd: string): string[] {
     return [];
   }
 
-  return parseLines(result.stdout).filter((path) => !isGleipSidecarPath(path));
+  return parseLines(result.stdout).filter((path) => !isEphemeralGleipArtifactPath(path));
 }
 
 function listTrackedLocalArtifacts(cwd: string): string[] {
   const result = runGit(cwd, ["ls-files", "--", ".gleip"]);
 
-  return result.ok ? parseLines(result.stdout).filter(isGleipSidecarPath) : [];
+  return result.ok
+    ? parseLines(result.stdout).filter(
+        (path) => isEphemeralGleipArtifactPath(path) && existsSync(join(cwd, path))
+      )
+    : [];
 }
 
 function countTextFileLines(cwd: string, relativePath: string): number {
@@ -420,10 +435,14 @@ function fingerprintRawDiffSections(rawDiff: string): Map<string, string> {
   const fingerprints = new Map<string, string>();
 
   for (const section of sections) {
-    fingerprints.set(section.path, hashText(section.content));
+    fingerprints.set(section.path, hashText(canonicalRawDiffSection(section.content)));
   }
 
   return fingerprints;
+}
+
+function canonicalRawDiffSection(content: string): string {
+  return content.replace(/\n+$/u, "");
 }
 
 function filterRawDiffSections(rawDiff: string, includedPaths: string[]): string {
@@ -496,8 +515,14 @@ function normalizePath(path: string): string {
   return path.replace(/\\/g, "/");
 }
 
-function isGleipSidecarPath(path: string): boolean {
-  return normalizePath(path) === ".gleip" || normalizePath(path).startsWith(".gleip/");
+export function isEphemeralGleipArtifactPath(path: string): boolean {
+  const normalized = normalizePath(path);
+
+  return (
+    EPHEMERAL_GLEIP_ARTIFACTS.includes(
+      normalized as (typeof EPHEMERAL_GLEIP_ARTIFACTS)[number]
+    ) || /^\.gleip\/session-[^/]+\.json$/u.test(normalized)
+  );
 }
 
 function emptyDiff(isGitRepo: boolean, error?: string): GitDiffContext {

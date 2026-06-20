@@ -477,6 +477,8 @@ interface PlanValidationResult {
   targetClassifications?: ScopeTargetClassification[];
 }
 
+type PlanValidationRecord = PlanValidationResult & { validatedAt?: string };
+
 interface GenerateSessionReportInput {
   version: string;
   schemaVersion: string;
@@ -485,8 +487,11 @@ interface GenerateSessionReportInput {
   scopeBudget?: ScopeBudget;
   diff: GitDiffContext;
   driftResult: DriftResult;
+  baseline?: {
+    possiblyPreExistingFiles: string[];
+  };
   planValidation?: PlanValidationResult;
-  statusContent?: string;
+  acceptedPlanValidation?: PlanValidationResult;
   missingArtifacts?: string[];
 }
 
@@ -559,7 +564,10 @@ interface SessionReport {
 interface GleipSession {
   sessionId?: string;
   classification?: TaskClassification;
-  latestPlanValidation?: PlanValidationResult & { validatedAt?: string };
+  latestValidationAttempt?: PlanValidationRecord;
+  latestSuccessfulValidation?: PlanValidationRecord;
+  latestPlanValidation?: PlanValidationRecord;
+  latestSuccessfulPlanValidation?: PlanValidationRecord;
   latestStatus?: unknown;
   repoContext?: RepoContext;
   baseline?: BaselineSummary;
@@ -1134,16 +1142,25 @@ async function validatePlan(
   });
 
   if (session.value !== undefined) {
+    const updatedAt = runtime.now().toISOString();
+    const validationRecord = {
+      ...result,
+      validatedAt: updatedAt
+    };
     writeFileSync(
       sessionPath,
       `${JSON.stringify(
         {
           ...session.value,
-          latestPlanValidation: {
-            ...result,
-            validatedAt: runtime.now().toISOString()
-          },
-          updated_at: runtime.now().toISOString()
+          latestValidationAttempt: validationRecord,
+          latestPlanValidation: validationRecord,
+          ...(isSuccessfulPlanValidationStatus(result.status)
+            ? {
+                latestSuccessfulValidation: validationRecord,
+                latestSuccessfulPlanValidation: validationRecord
+              }
+            : {}),
+          updated_at: updatedAt
         },
         null,
         2
@@ -1270,9 +1287,12 @@ async function printStatus(
   const task = session.task ?? "Unknown task";
   const classification = session.classification ?? (await runtime.classifyTask(task));
   const repoContext = session.repoContext ?? emptyRepoContext();
-  const scopeBudget =
+  const scopePlanValidation = latestSuccessfulPlanValidation(session);
+  const scopeBudget = scopeBudgetWithValidatedPlanScope(
     readScopeBudget(runtime.cwd) ??
-    scopeBudgetFromSummary(session.scopeBudgetSummary, classification);
+      scopeBudgetFromSummary(session.scopeBudgetSummary, classification),
+    scopePlanValidation
+  );
   const config = (await runtime.loadConfig(runtime.cwd)) as GleipConfigLike;
   const gitDiffContext = await runtime.collectWorkingTreeDiff({ cwd: runtime.cwd });
 
@@ -1355,7 +1375,6 @@ async function printReport(runtime: CommandRuntime, options: ReportOptions): Pro
   const baselineResult = readJsonFile<SessionBaseline>(
     join(runtime.cwd, ".gleip", "baseline.json")
   );
-  const statusPath = join(runtime.cwd, ".gleip", "status.md");
 
   if (sessionResult.value === undefined) {
     missingArtifacts.push("session.json");
@@ -1369,14 +1388,16 @@ async function printReport(runtime: CommandRuntime, options: ReportOptions): Pro
     missingArtifacts.push("baseline.json");
   }
 
-  if (!existsSync(statusPath) || !statSync(statusPath).isFile()) {
-    missingArtifacts.push("status.md");
-  }
-
   const config = await loadConfigForReport(runtime);
   const scopeBudget =
-    scopeBudgetResult.value ??
-    (config === undefined ? undefined : defaultScopeBudgetForCheck(config));
+    scopeBudgetResult.value === undefined
+      ? config === undefined
+        ? undefined
+        : defaultScopeBudgetForCheck(config)
+      : scopeBudgetWithValidatedPlanScope(
+          scopeBudgetResult.value,
+          latestSuccessfulPlanValidation(sessionResult.value)
+        );
   const gitDiffContext = await runtime.collectWorkingTreeDiff({ cwd: runtime.cwd });
   const filtered =
     baselineResult.value === undefined
@@ -1401,10 +1422,8 @@ async function printReport(runtime: CommandRuntime, options: ReportOptions): Pro
             config: config ?? {}
           })
         );
-  const statusContent =
-    existsSync(statusPath) && statSync(statusPath).isFile()
-      ? readFileSync(statusPath, "utf8")
-      : undefined;
+  const latestAttempt = latestValidationAttempt(sessionResult.value);
+  const acceptedValidation = latestSuccessfulPlanValidation(sessionResult.value);
   const report = await runtime.generateSessionReport({
     version: GLEIP_VERSION,
     schemaVersion: REPORT_SCHEMA_VERSION,
@@ -1413,10 +1432,9 @@ async function printReport(runtime: CommandRuntime, options: ReportOptions): Pro
     ...(scopeBudget === undefined ? {} : { scopeBudget }),
     diff: filtered.diff,
     driftResult,
-    ...(sessionResult.value?.latestPlanValidation === undefined
-      ? {}
-      : { planValidation: sessionResult.value.latestPlanValidation }),
-    ...(statusContent === undefined ? {} : { statusContent }),
+    baseline: filtered.baseline,
+    ...(latestAttempt === undefined ? {} : { planValidation: latestAttempt }),
+    ...(acceptedValidation === undefined ? {} : { acceptedPlanValidation: acceptedValidation }),
     missingArtifacts
   });
   const markdown = await runtime.renderSessionReportMarkdown(report);
@@ -2399,6 +2417,7 @@ function statusContent(
 - Lines added: ${driftResult.metrics.linesAdded}
 - Lines deleted: ${driftResult.metrics.linesDeleted}
 - Pre-existing files ignored: ${baseline.preExistingFilesIgnored}
+- Pre-existing files changed after preflight: ${baseline.possiblyPreExistingFiles.length}
 
 ## Findings
 
@@ -2453,6 +2472,96 @@ function emptyRepoContext(): RepoContext {
 
 function normalizeRepoRelativePath(cwd: string, absolutePath: string): string {
   return relative(cwd, absolutePath).replace(/\\/gu, "/");
+}
+
+function latestSuccessfulPlanValidation(
+  session: GleipSession | undefined
+): PlanValidationRecord | undefined {
+  const latestSuccessful =
+    session?.latestSuccessfulValidation ?? session?.latestSuccessfulPlanValidation;
+
+  if (
+    latestSuccessful !== undefined &&
+    isSuccessfulPlanValidationStatus(latestSuccessful.status)
+  ) {
+    return latestSuccessful;
+  }
+
+  const latest = session?.latestPlanValidation;
+
+  if (latest !== undefined && isSuccessfulPlanValidationStatus(latest.status)) {
+    return latest;
+  }
+
+  return undefined;
+}
+
+function latestValidationAttempt(
+  session: GleipSession | undefined
+): PlanValidationRecord | undefined {
+  return session?.latestValidationAttempt ?? session?.latestPlanValidation;
+}
+
+function scopeBudgetWithValidatedPlanScope(
+  scopeBudget: ScopeBudget,
+  latestPlanValidation: PlanValidationRecord | undefined
+): ScopeBudget {
+  if (
+    latestPlanValidation === undefined ||
+    !isSuccessfulPlanValidationStatus(latestPlanValidation.status)
+  ) {
+    return scopeBudget;
+  }
+
+  const directTargets = acceptedPlanTargets(latestPlanValidation, "direct");
+  const derivedTargets = acceptedPlanTargets(latestPlanValidation, "derived");
+  const fallbackTargets =
+    latestPlanValidation.targetClassifications === undefined
+      ? (latestPlanValidation.parsedPlan.proposedFiles ?? []).map(normalizePlanPath)
+      : [];
+  const acceptedTargets = mergePathLists(directTargets, derivedTargets, fallbackTargets);
+
+  if (acceptedTargets.length === 0) {
+    return scopeBudget;
+  }
+
+  const expectedPaths = scopeBudget.expectedPaths ?? scopeBudget.allowedPaths;
+
+  return {
+    ...scopeBudget,
+    allowedPaths: mergePathLists(scopeBudget.allowedPaths, acceptedTargets),
+    expectedPaths: mergePathLists(expectedPaths, acceptedTargets),
+    explicitScope: mergePathLists(scopeBudget.explicitScope ?? [], directTargets, fallbackTargets),
+    derivedScope: mergePathLists(scopeBudget.derivedScope ?? [], derivedTargets)
+  };
+}
+
+function isSuccessfulPlanValidationStatus(status: PlanValidationStatus): boolean {
+  return status === "aligned" || status === "advisory" || status === "approved";
+}
+
+function acceptedPlanTargets(
+  validation: PlanValidationRecord,
+  classification: ScopeTargetClassification["classification"]
+): string[] {
+  return (validation.targetClassifications ?? [])
+    .filter((target) => target.classification === classification)
+    .map((target) => normalizePlanPath(target.target));
+}
+
+function mergePathLists(...pathLists: string[][]): string[] {
+  return Array.from(
+    new Set(
+      pathLists
+        .flat()
+        .map(normalizePlanPath)
+        .filter((path) => path.length > 0)
+    )
+  ).sort();
+}
+
+function normalizePlanPath(path: string): string {
+  return path.replace(/\\/gu, "/").replace(/^\.\//u, "");
 }
 
 function summarizeScopeBudget(scopeBudget: ScopeBudget): ScopeBudgetSummary {
@@ -2651,7 +2760,13 @@ function statusInteractionSummary(
     for (const line of formatScopeTargetLines(driftResult.findings)) {
       lines.push(line);
     }
-  } else if (baseline.preExistingFilesIgnored > 0) {
+  }
+
+  if (baseline.possiblyPreExistingFiles.length > 0) {
+    lines.push(
+      `Baseline: ${baseline.possiblyPreExistingFiles.length} pre-existing file(s) changed after preflight; attribution is file-level`
+    );
+  } else if (driftResult.findings.length === 0 && baseline.preExistingFilesIgnored > 0) {
     lines.push(`Baseline: ${baseline.preExistingFilesIgnored} pre-existing file(s) ignored`);
   }
 
@@ -2755,6 +2870,7 @@ function statusJson(
   baseline: {
     hasBaseline: boolean;
     preExistingFilesIgnored: number;
+    possiblyPreExistingFiles: string[];
     sessionFilesChanged: number;
     baselineCreatedAt?: string;
   };
@@ -2766,6 +2882,7 @@ function statusJson(
   const baselineJson = {
     hasBaseline: baseline.hasBaseline,
     preExistingFilesIgnored: baseline.preExistingFilesIgnored,
+    possiblyPreExistingFiles: baseline.possiblyPreExistingFiles,
     sessionFilesChanged: baseline.sessionFilesChanged,
     ...(baseline.baselineCreatedAt === undefined
       ? {}

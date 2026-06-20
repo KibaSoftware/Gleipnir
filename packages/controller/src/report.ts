@@ -163,7 +163,11 @@ export interface GenerateSessionReportInput {
   scopeBudget?: ReportScopeBudget;
   diff: ReportDiff;
   driftResult: ReportDriftResult;
+  baseline?: {
+    possiblyPreExistingFiles: string[];
+  };
   planValidation?: ReportPlanValidation;
+  acceptedPlanValidation?: ReportPlanValidation;
   statusContent?: string;
   missingArtifacts?: string[];
 }
@@ -192,7 +196,12 @@ export function generateSessionReport(input: GenerateSessionReportInput): Sessio
     reviewReadiness: 0
   };
   const changedFiles = input.diff.changedFiles.map(normalizePath).sort();
-  const plannedFiles = input.planValidation?.parsedPlan.proposedFiles.map(normalizePath) ?? [];
+  const acceptedPlanValidation =
+    input.acceptedPlanValidation ??
+    (input.planValidation !== undefined && isPlanAligned(input.planValidation.status)
+      ? input.planValidation
+      : undefined);
+  const plannedFiles = acceptedPlanValidation?.parsedPlan.proposedFiles.map(normalizePath) ?? [];
   const unplannedFiles =
     input.planValidation === undefined
       ? []
@@ -208,6 +217,7 @@ export function generateSessionReport(input: GenerateSessionReportInput): Sessio
             )
         );
   const statusContent = input.statusContent ?? "";
+  const hasStatusContent = input.statusContent !== undefined && input.statusContent.trim() !== "";
   const changedFilesMentioned = hasChangedFilesEvidence(statusContent);
   const testsMentioned = hasEvidenceSection(statusContent, "tests");
   const risksMentioned = hasEvidenceSection(statusContent, "risks?");
@@ -253,19 +263,22 @@ export function generateSessionReport(input: GenerateSessionReportInput): Sessio
     const requiresApproval =
       input.planValidation.status === "requires_approval" ||
       input.planValidation.status === "needs_approval";
+    const hasAcceptedScope = acceptedPlanValidation !== undefined;
     addWarning(warnings, {
       id: "plan.guidance",
       type: "plan",
       severity: requiresApproval ? "high" : "medium",
-      message: `Latest plan validation is ${input.planValidation.status}.`,
-      reason: "The plan includes guidance that should be addressed or explicitly accepted.",
+      message: `Latest validation attempt is ${input.planValidation.status}.`,
+      reason: hasAcceptedScope
+        ? "The latest failed attempt remains workflow guidance; accepted implementation scope still comes from the latest successful validation."
+        : "The latest plan includes guidance that should be addressed or explicitly accepted.",
       evidence: input.planValidation.findings.flatMap((finding) => [
         finding.message,
         ...(finding.evidence ?? [])
       ]),
       files: input.planValidation.parsedPlan.proposedFiles,
       suggestedAction: requiresApproval
-        ? "Request approval for the identified change or revise the plan."
+        ? "Request approval for the attempted change, revise the plan, or validate a successful replacement."
         : "Clarify the plan and validate it again."
     });
     deductions.planAlignment += requiresApproval ? 40 : 25;
@@ -307,6 +320,7 @@ export function generateSessionReport(input: GenerateSessionReportInput): Sessio
   }
 
   addDriftWarnings(input.driftResult, warnings, deductions);
+  addBaselineAttributionWarning(input.baseline, warnings);
   addOutputWarnings(
     input,
     changedFilesMentioned,
@@ -330,12 +344,13 @@ export function generateSessionReport(input: GenerateSessionReportInput): Sessio
 
   deductions.reviewReadiness += riskDeduction(driftRisk);
   if (
+    hasStatusContent &&
     (input.scopeBudget?.verificationExpected ?? input.scopeBudget?.requiredTests) === true &&
     !testsMentioned
   ) {
     deductions.reviewReadiness += 15;
   }
-  if (!risksMentioned) {
+  if (hasStatusContent && !risksMentioned) {
     deductions.reviewReadiness += 10;
   }
   deductions.reviewReadiness += Math.min(
@@ -521,6 +536,29 @@ function addDriftWarnings(
           : 15;
     }
   }
+}
+
+function addBaselineAttributionWarning(
+  baseline: GenerateSessionReportInput["baseline"],
+  warnings: ReportWarning[]
+): void {
+  const files = [...new Set(baseline?.possiblyPreExistingFiles ?? [])].map(normalizePath).sort();
+
+  if (files.length === 0) {
+    return;
+  }
+
+  addWarning(warnings, {
+    id: "baseline.ambiguous-attribution",
+    type: "review_readiness",
+    severity: "info",
+    message: `${files.length} pre-existing baseline file(s) changed again after preflight.`,
+    reason:
+      "Gleip filters baselines at file granularity; these files are included in current drift, but exact hunk attribution is ambiguous.",
+    evidence: files,
+    files,
+    suggestedAction: null
+  });
 }
 
 function addOutputWarnings(
@@ -740,9 +778,7 @@ function testIntegrityFor(input: GenerateSessionReportInput): TestIntegrity {
   }
 
   if (
-    testFindings.length > 0 ||
-    ((input.scopeBudget?.verificationExpected ?? input.scopeBudget?.requiredTests) === true &&
-      !hasEvidenceSection(input.statusContent ?? "", "tests"))
+    testFindings.length > 0
   ) {
     return "warning";
   }

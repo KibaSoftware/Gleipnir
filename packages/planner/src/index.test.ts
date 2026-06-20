@@ -1144,6 +1144,47 @@ describe("validateAgentPlan", () => {
     expect(result.status).toBe("aligned");
   });
 
+  it("does not warn that a concise concrete plan is vague", () => {
+    const result = validateAgentPlan({
+      planText: "Update src/foo.ts. Run tests.",
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["src/foo.ts"],
+        requiredTests: true
+      })
+    });
+
+    expect(result.findings).not.toContainEqual(
+      expect.objectContaining({ code: "PLAN_TOO_VAGUE" })
+    );
+  });
+
+  it("still warns when a plan only names a file without an action", () => {
+    const result = validateAgentPlan({
+      planText: "src/foo.ts",
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["src/foo.ts"],
+        requiredTests: false
+      })
+    });
+
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({ code: "PLAN_TOO_VAGUE" })
+    );
+  });
+
+  it("does not turn generic documentation context wording into edit scope", () => {
+    const result = validateAgentPlan({
+      planText: "Use README.md for context, update src/foo.ts, and run tests.",
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["src/foo.ts"],
+        requiredTests: true
+      })
+    });
+
+    expect(result.parsedPlan.contextFiles).toContain("README.md");
+    expect(result.parsedPlan.proposedFiles).not.toContain("README.md");
+  });
+
   it("keeps the existing missing-test warning and adds a structural verification code", () => {
     const result = validateAgentPlan({
       planText: "Update src/foo.ts with the requested behavior.",
@@ -1169,6 +1210,64 @@ describe("validateAgentPlan", () => {
       })
     });
 
+    expect(result.findings).not.toContainEqual(
+      expect.objectContaining({ code: "PLAN_MENTIONED_FILE_MISSING" })
+    );
+  });
+
+  it("does not mark an existing file as new when adding tests in it", () => {
+    const repo = createTempRepo({
+      "tests/example.test.ts": "describe('example', () => {});\n"
+    });
+    const result = validateAgentPlan({
+      cwd: repo,
+      planText: "Add tests in tests/example.test.ts and run tests.",
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["tests/example.test.ts"],
+        requiredTests: false
+      })
+    });
+
+    expect(result.parsedPlan.fileMentions).toContainEqual(
+      expect.objectContaining({
+        path: "tests/example.test.ts",
+        role: "edit",
+        markedNew: false
+      })
+    );
+    expect(result.findings).not.toContainEqual(
+      expect.objectContaining({ code: "PLAN_MENTIONED_FILE_MISSING" })
+    );
+  });
+
+  it("does not mark an existing documentation file as new when adding content in it", () => {
+    const repo = createTempRepo({
+      "docs/example.md": "# Existing docs\n",
+      "FULL_CONTEXT.md": "# Existing context\n"
+    });
+    const result = validateAgentPlan({
+      cwd: repo,
+      planText: "Add documentation in docs/example.md and add context in FULL_CONTEXT.md.",
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["docs/example.md", "FULL_CONTEXT.md"],
+        requiredTests: false
+      })
+    });
+
+    expect(result.parsedPlan.fileMentions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: "docs/example.md",
+          role: "edit",
+          markedNew: false
+        }),
+        expect.objectContaining({
+          path: "FULL_CONTEXT.md",
+          role: "edit",
+          markedNew: false
+        })
+      ])
+    );
     expect(result.findings).not.toContainEqual(
       expect.objectContaining({ code: "PLAN_MENTIONED_FILE_MISSING" })
     );

@@ -1,4 +1,5 @@
 import type { FindingCode, FindingSeverity } from "@gleip/core/findings";
+import { isEphemeralGleipArtifactPath } from "@gleip/core";
 
 export const packageName = "@gleip/controller";
 
@@ -157,11 +158,22 @@ const SKIPPED_TEST_PATTERNS = [
 ];
 
 export function detectScopeDrift(input: DetectScopeDriftInput): DriftResult {
-  const changedFiles = input.gitDiffContext.changedFiles.map(normalizePath).sort();
-  const fileStats = input.gitDiffContext.fileStats.map((stat) => ({
-    ...stat,
-    path: normalizePath(stat.path)
-  }));
+  const changedFiles = input.gitDiffContext.changedFiles
+    .map(normalizePath)
+    .filter((path) => !isEphemeralGleipArtifactPath(path))
+    .sort();
+  const changedFileSet = new Set(changedFiles);
+  const fileStats = input.gitDiffContext.fileStats
+    .map((stat) => ({
+      ...stat,
+      path: normalizePath(stat.path)
+    }))
+    .filter((stat) => changedFileSet.has(stat.path));
+  const metrics = {
+    filesChanged: changedFiles.length,
+    linesAdded: fileStats.reduce((total, stat) => total + stat.added, 0),
+    linesDeleted: fileStats.reduce((total, stat) => total + stat.deleted, 0)
+  };
   const findings: DriftFinding[] = [];
 
   if (input.gitDiffContext.isGitRepo === false) {
@@ -184,11 +196,7 @@ export function detectScopeDrift(input: DetectScopeDriftInput): DriftResult {
     return {
       status,
       findings: normalizedFindings,
-      metrics: {
-        filesChanged: 0,
-        linesAdded: 0,
-        linesDeleted: 0
-      },
+      metrics,
       summary:
         normalizedFindings.length === 0
           ? "No working tree changes detected."
@@ -207,9 +215,9 @@ export function detectScopeDrift(input: DetectScopeDriftInput): DriftResult {
   );
   addCiFindings(findings, changedFiles, input.scopeBudget);
   addSoftLimitFindings(findings, input.scopeBudget, {
-    filesChanged: changedFiles.length,
-    linesAdded: input.gitDiffContext.totalLinesAdded,
-    linesDeleted: input.gitDiffContext.totalLinesDeleted
+    filesChanged: metrics.filesChanged,
+    linesAdded: metrics.linesAdded,
+    linesDeleted: metrics.linesDeleted
   });
   addOutsideScopeFindings(findings, changedFiles, fileStats, input.scopeBudget);
   addApprovalPathFindings(findings, changedFiles, input.scopeBudget);
@@ -221,11 +229,7 @@ export function detectScopeDrift(input: DetectScopeDriftInput): DriftResult {
   return {
     status,
     findings: normalizedFindings,
-    metrics: {
-      filesChanged: changedFiles.length,
-      linesAdded: input.gitDiffContext.totalLinesAdded,
-      linesDeleted: input.gitDiffContext.totalLinesDeleted
-    },
+    metrics,
     summary: summaryForStatus(status, changedFiles.length)
   };
 }
@@ -1002,9 +1006,7 @@ function isLockfile(path: string): boolean {
 }
 
 function isLocalArtifact(path: string): boolean {
-  const normalized = normalizePath(path);
-
-  return normalized.startsWith(".gleip/") && normalized !== ".gleip/.gitkeep";
+  return isEphemeralGleipArtifactPath(path);
 }
 
 function hasSpecificHardGateFinding(path: string): boolean {

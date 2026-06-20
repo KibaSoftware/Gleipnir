@@ -100,6 +100,12 @@ reported with the normalized target path, classification, reason, evidence, and
 next action. An expected file can still contain an out-of-scope operation when the
 plan text crosses a protected semantic boundary.
 
+Gleip records the latest validation attempt separately from the latest successful
+validation. Status and report use the latest successful accepted targets for drift
+classification. A later failed validation attempt may remain workflow guidance,
+but it does not erase accepted scope or make accepted implementation files
+unexplained. A later successful validation replaces the accepted scope.
+
 Ordinary source and test expansion is advisory. Dependency manifests, lockfiles,
 CI, protected config, secrets, environment files, and security-sensitive paths
 retain approval-, action-, or cleanup-required findings.

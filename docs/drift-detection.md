@@ -16,6 +16,11 @@ Pre-existing changes are included again when:
 - the file's added/deleted line counts changed
 - the file's diff fingerprint changed
 
+When a baseline file changes again after preflight, Gleip includes the file in
+current drift metrics and records the attribution as file-level ambiguous. It does
+not silently ignore post-preflight modifications, and it does not claim hunk-level
+precision.
+
 Use `--include-baseline` to analyze the full current working tree:
 
 ```sh
@@ -32,6 +37,22 @@ scope, inferred task breadth, expected and derived paths, protected checks, and 
 latest validated plan when present. Planning-time tolerance does not make unrelated
 diff files acceptable: changed files outside explicit or derived scope are reported
 with target classification, reason, evidence, and the required next action.
+
+`gleip status` recomputes findings and the next action from the current Git diff on
+every run. Previous status snapshots are history only; they do not keep resolved
+cleanup or scope findings active. Accepted direct and derived targets from the
+latest successful `validate-plan` run are reused during status so files already
+validated as task-related are not reclassified as unexplained.
+
+`gleip report` uses the same current Git diff, baseline filtering, configuration,
+and latest successful accepted plan scope. It does not read `.gleip/status.md` as
+authoritative evidence; status is an output artifact that can be regenerated.
+
+Known Gleip runtime artifacts under `.gleip/`, such as session, baseline, brief,
+scope-budget, status, report, and archived session files, are excluded from task
+changed-file metrics and scope findings. Currently tracked runtime artifacts are
+still reported separately while they exist. Durable or user-authored `.gleip` files
+that are not runtime artifacts remain visible to Git diff analysis.
 
 ## Status Levels
 
@@ -52,7 +73,7 @@ Each finding also has a stable code and severity:
 Text output uses a concise form such as
 `[TEST_SKIPPED] action_required: Skipped test added`.
 
-## Finding Codes in 0.7.1
+## Finding Codes
 
 | Code | Severity | Current signal |
 | --- | --- | --- |
@@ -92,7 +113,7 @@ Text output uses a concise form such as
 | `PLAN_SCOPE_EXCEEDS_BUDGET` | `warn` | Proposed file count exceeds the soft maximum. |
 | `PLAN_HARD_GATE_VIOLATION` | `approval_required` | A proposed path crosses a legacy protected check. |
 
-`MISSING_IMPLEMENTATION_CHANGE` is reserved but intentionally not emitted in 0.7.1.
+`MISSING_IMPLEMENTATION_CHANGE` is reserved but intentionally not emitted.
 Gleip does not yet have a high-confidence structural detector for that condition.
 
 ## How Agents Should Use It
@@ -142,7 +163,7 @@ JSON output includes:
 non-mutating. It exits `1` only when a documented high-confidence action code is
 present and exits `0` for clean, advisory, and non-CI-enforced findings.
 
-The 0.7.1 CI-enforced codes are:
+The CI-enforced codes are:
 
 - `TEST_SKIPPED`
 - `TEST_DELETED`
@@ -155,6 +176,9 @@ the required cleanup or action rather than declaring the task blocked.
 
 ## Limitations
 
-Baseline filtering is intentionally simple in this first implementation. Gleip compares changed file paths, added/deleted line counts, and file-level diff fingerprints. It does not subtract individual patch hunks. If a pre-existing file changes after preflight, Gleip treats that file as a session change.
+Baseline filtering is intentionally file-level. Gleip compares changed file paths,
+added/deleted line counts, and file-level diff fingerprints. It does not subtract
+individual patch hunks. If a pre-existing file changes after preflight, Gleip
+treats that file as a session change and marks attribution as ambiguous.
 
 Gleip is intentionally quiet unless something meaningful changes. It is a sidecar drift detector, not a linter.

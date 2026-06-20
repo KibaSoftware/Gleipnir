@@ -7,7 +7,12 @@
 
 `npx --no-install gleip report --json` also prints the stable JSON report to stdout. Agents run this automatically before their final response.
 
-The generated report is the source of truth for Gleip final status. Both artifacts include a `Recommended final response` block with scope adherence, drift risk, output discipline, estimated token waste avoided, and unresolved warnings. Agents include only that compact block, not the full report.
+The generated report is the source of truth for Gleip final status. It recomputes
+drift from the current Git state, current session state, current configuration, and
+the latest successful accepted plan scope. It does not treat `.gleip/status.md` as
+authoritative input; status is a regenerated output artifact.
+
+Both report artifacts include a `Recommended final response` block with scope adherence, drift risk, output discipline, estimated token waste avoided, and unresolved warnings. Agents include only that compact block, not the full report.
 
 ## Report Model
 
@@ -19,19 +24,18 @@ The JSON report includes:
 - Estimated token waste avoided with scope, context, and output breakdowns.
 - Evidence-backed warnings with stable IDs, severity, reason, evidence, files, and suggested action.
 - Changed-file, unplanned-file, tests-mentioned, and risks-mentioned summary fields.
+- File-level ambiguous baseline attribution when a file had preflight changes and
+  then changed again after preflight.
 
 The current report schema version is `1.0.0`.
 
 ## Deterministic Scoring
 
-Scores start at 100 and deduct for local evidence such as:
+Scores start at 100 and deduct for recomputed local evidence such as:
 
 - Unplanned or out-of-scope changed files.
 - Scope-budget limit or protected-check findings.
 - Missing, clarification-needed, or approval-required plan validation.
-- Missing tests or risks evidence.
-- Missing changed-file evidence.
-- Excessive verbosity, repeated plan narration, repeated output, or unrelated suggestions.
 - Drift risk and unresolved warnings.
 
 All scores are clamped to 0-100. Every deduction is tied to a warning with a reason and evidence. Scores do not prove correctness.
