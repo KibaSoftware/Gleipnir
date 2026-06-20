@@ -43,8 +43,17 @@ export interface DriftFinding {
   file?: string;
   count?: number;
   examples?: string[];
+  targetClassifications?: ScopeTargetClassification[];
   recommendation?: string;
   category: string;
+}
+
+export interface ScopeTargetClassification {
+  target: string;
+  classification: "direct" | "derived" | "adjacent" | "unexplained";
+  reason: string;
+  evidence: string;
+  nextAction?: string;
 }
 
 export interface DriftResult {
@@ -65,6 +74,7 @@ export interface DetectScopeDriftInput {
 }
 
 export interface ScopeBudgetLike {
+  taskBreadth?: "local" | "feature" | "subsystem" | "cross_cutting" | "repository_wide";
   softLimits: {
     maxFilesChanged: number;
     maxLinesAdded: number;
@@ -80,6 +90,8 @@ export interface ScopeBudgetLike {
   };
   allowedPaths: string[];
   expectedPaths?: string[];
+  explicitScope?: string[];
+  derivedScope?: string[];
   approvalRequiredFor: string[];
   blockedWithoutApproval: string[];
   approvalRequiredChanges?: string[];
@@ -280,7 +292,10 @@ function addSoftLimitFindings(
   scopeBudget: ScopeBudgetLike,
   metrics: { filesChanged: number; linesAdded: number; linesDeleted: number }
 ): void {
-  if (metrics.filesChanged > scopeBudget.softLimits.maxFilesChanged) {
+  if (
+    metrics.filesChanged > scopeBudget.softLimits.maxFilesChanged &&
+    !isBroadTaskBreadth(scopeBudget.taskBreadth)
+  ) {
     findings.push({
       code: "SCOPE_LIMIT_EXCEEDED",
       severity: "warn",
@@ -457,14 +472,20 @@ function addOutsideScopeFindings(
     return;
   }
 
+  const targetClassifications = outsideFiles.map((path) =>
+    classifyChangedTarget(path, scopeBudget)
+  );
+
   findings.push({
     code: "SCOPE_EXPANSION_WARN",
     severity: "warn",
     title: "Files outside expected scope",
-    message: `${outsideFiles.length} file(s) changed outside the expected paths: ${formatExamples(outsideFiles)}.`,
+    message: formatScopeTargetSummary(targetClassifications),
     count: outsideFiles.length,
-    examples: outsideFiles.slice(0, 3),
-    recommendation: "Confirm these files are necessary for the task.",
+    examples: outsideFiles,
+    targetClassifications,
+    recommendation:
+      "Add rationale for adjacent targets and remove or justify unexplained targets.",
     category: "allowed_scope"
   });
 }
@@ -666,9 +687,15 @@ function normalizeFindingGroup(findings: DriftFinding[]): DriftFinding {
         return finding.file === undefined ? [] : [finding.file];
       })
     )
-  ).slice(0, 3);
+  );
+  const targetClassifications = findings.flatMap(
+    (finding) => finding.targetClassifications ?? []
+  );
   const count = findings.reduce((total, finding) => total + (finding.count ?? 1), 0);
-  const message = groupedMessage(first, count, examples);
+  const message =
+    targetClassifications.length > 0
+      ? formatScopeTargetSummary(targetClassifications)
+      : groupedMessage(first, count, examples.slice(0, 3));
   const recommendation = findings.find(
     (finding) => finding.recommendation !== undefined
   )?.recommendation;
@@ -681,7 +708,8 @@ function normalizeFindingGroup(findings: DriftFinding[]): DriftFinding {
         message,
         count,
         category: first.category,
-        examples
+        examples: examples.slice(0, 3),
+        ...(targetClassifications.length === 0 ? {} : { targetClassifications })
       }
     : {
         severity,
@@ -691,7 +719,8 @@ function normalizeFindingGroup(findings: DriftFinding[]): DriftFinding {
         count,
         recommendation,
         category: first.category,
-        examples
+        examples: examples.slice(0, 3),
+        ...(targetClassifications.length === 0 ? {} : { targetClassifications })
       };
 }
 
@@ -771,6 +800,124 @@ function summaryForStatus(status: DriftStatus, filesChanged: number): string {
   }
 
   return `${filesChanged} changed file(s) require attention before finalizing.`;
+}
+
+function classifyChangedTarget(
+  path: string,
+  scopeBudget: ScopeBudgetLike
+): ScopeTargetClassification {
+  const normalizedPath = normalizePath(path);
+  const explicitScope = scopeBudget.explicitScope ?? [];
+  const derivedScope = scopeBudget.derivedScope ?? [];
+
+  if (explicitScope.length > 0 && isAllowedPath(normalizedPath, explicitScope)) {
+    return {
+      target: normalizedPath,
+      classification: "direct",
+      reason: "Changed file matches explicit task scope.",
+      evidence: matchingScopeEvidence(normalizedPath, explicitScope) ?? "explicit scope"
+    };
+  }
+
+  if (derivedScope.length > 0 && isAllowedPath(normalizedPath, derivedScope)) {
+    return {
+      target: normalizedPath,
+      classification: "derived",
+      reason: "Changed file matches derived repository scope.",
+      evidence: matchingScopeEvidence(normalizedPath, derivedScope) ?? "derived scope"
+    };
+  }
+
+  const nearbyEvidence = nearbyScopeEvidence(normalizedPath, scopeBudget);
+
+  if (
+    isBroadTaskBreadth(scopeBudget.taskBreadth) &&
+    isOrdinaryImplementationPath(normalizedPath) &&
+    nearbyEvidence !== undefined
+  ) {
+    return {
+      target: normalizedPath,
+      classification: "adjacent",
+      reason:
+        "Changed file is plausible for the declared broad task, but final diff evidence does not prove the relationship.",
+      evidence: nearbyEvidence,
+      nextAction: "Confirm the file was covered by the validated plan or add rationale."
+    };
+  }
+
+  return {
+    target: normalizedPath,
+    classification: "unexplained",
+    reason: "No relationship to the active scope budget was found in final diff evidence.",
+    evidence: "actual changed file",
+    nextAction: "Remove the change or provide explicit user-approved rationale."
+  };
+}
+
+function formatScopeTargetSummary(targets: ScopeTargetClassification[]): string {
+  const adjacent = targets.filter((target) => target.classification === "adjacent");
+  const unexplained = targets.filter((target) => target.classification === "unexplained");
+  const groups = [
+    adjacent.length === 0 ? "" : `${adjacent.length} adjacent`,
+    unexplained.length === 0 ? "" : `${unexplained.length} unexplained`
+  ].filter((value) => value.length > 0);
+  const details = targets
+    .map(
+      (target) =>
+        `${target.target} [${target.classification}]: ${target.reason}${target.nextAction === undefined ? "" : ` Next: ${target.nextAction}`}`
+    )
+    .join(" ");
+
+  return `${targets.length} changed target(s) need clarification (${groups.join(", ")}). ${details}`;
+}
+
+function matchingScopeEvidence(path: string, entries: string[]): string | undefined {
+  return entries.find((entry) => isAllowedPath(path, [entry]));
+}
+
+function nearbyScopeEvidence(
+  path: string,
+  scopeBudget: ScopeBudgetLike
+): string | undefined {
+  const entries = [
+    ...(scopeBudget.explicitScope ?? []),
+    ...(scopeBudget.derivedScope ?? []),
+    ...(scopeBudget.expectedPaths ?? scopeBudget.allowedPaths)
+  ].map(normalizePath);
+  const pathDirectory = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+
+  return entries.find((entry) => {
+    if (entry.includes("*")) {
+      return false;
+    }
+
+    const entryDirectory = entry.includes("/") ? entry.slice(0, entry.lastIndexOf("/")) : "";
+
+    return (
+      pathDirectory.length > 0 &&
+      entryDirectory.length > 0 &&
+      (pathDirectory === entryDirectory ||
+        pathDirectory.startsWith(`${entryDirectory}/`) ||
+        entryDirectory.startsWith(`${pathDirectory}/`))
+    );
+  });
+}
+
+function isBroadTaskBreadth(breadth: ScopeBudgetLike["taskBreadth"]): boolean {
+  return (
+    breadth === "subsystem" ||
+    breadth === "cross_cutting" ||
+    breadth === "repository_wide"
+  );
+}
+
+function isOrdinaryImplementationPath(path: string): boolean {
+  return (
+    isTestFile(path) ||
+    /\.(?:ts|tsx|js|jsx|mjs|cjs|json|md|yml|yaml|toml|css|scss|html|py|go|rs|java|kt|cs|rb|php|vue|svelte)$/iu.test(
+      path
+    )
+  );
 }
 
 function isAllowedPath(path: string, allowedPaths: string[]): boolean {

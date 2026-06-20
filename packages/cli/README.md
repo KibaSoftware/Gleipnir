@@ -97,7 +97,7 @@ Normal workflow commands print concise 1-5 line summaries that confirm the compl
 
 ## Stable Findings and CI
 
-Gleip 0.7.2 emits `clean`, `advisory`, `needs_attention`, `needs_cleanup`, or
+Gleip 0.7.3 emits `clean`, `advisory`, `needs_attention`, `needs_cleanup`, or
 `needs_approval`. It never emits `blocked` as a new top-level status.
 
 Stable findings use `info`, `warn`, `action_required`, `approval_required`, and
@@ -112,6 +112,13 @@ broader advisory limits. Small aligned context-document updates are accepted.
 Runtime, output, and cache paths are excluded from passive relevance but can be
 declared narrowly as artifacts.
 
+Plan validation and final drift checks classify targets as `direct`, `derived`,
+`adjacent`, or `unexplained`. Broad direct and derived targets do not warn solely
+because many files are involved. Adjacent and unexplained targets include a reason,
+evidence, and next action in CLI output. Protected semantic boundaries still apply
+inside expected files, and slash-separated prose is ignored unless it has strong
+path evidence.
+
 Plan validation is deterministic and structural. Its statuses are `aligned`,
 `advisory`, `needs_clarification`, `needs_approval`, and `needs_cleanup`. Focused
 existing tests, smoke tests, typechecks, compile checks, dry runs, or appropriate
@@ -125,7 +132,7 @@ clarity without creating extra justification work.
 
 ## Reports and Metrics
 
-Gleip 0.7.2 generates:
+Gleip 0.7.3 generates:
 
 - `.gleip/report.md`: concise scores, risks, findings, actions, and the recommended final-response block.
 - `.gleip/report.json`: stable machine-readable report data, warnings, evidence, summary, and efficiency estimate.
@@ -203,6 +210,6 @@ pnpm pack:cli
 
 ## Status
 
-- Current release: `0.7.2`
+- Current release: `0.7.3`
 - License: Apache-2.0
 - Local-only developer preview

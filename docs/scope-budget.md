@@ -35,6 +35,12 @@ classification, local repo context, and config to propose expected file and line
 ranges, expected paths, approval-required changes, expected verification, protected
 checks, and pause-and-clarify conditions before implementation starts.
 
+Scope is evaluated semantically as well as structurally. A file count above the
+initial estimate is not scope expansion by itself. Scope expansion means proposed
+work has no credible relationship to the requested objective, or crosses a
+protected semantic boundary such as dependency additions, public contracts,
+persistence behavior, auth behavior, test integrity, generated files, or secrets.
+
 The legacy serialized keys `allowedPaths`, `blockedWithoutApproval`, `requiredTests`,
 `hardGates`, and `stopConditions` remain readable for compatibility. New output and
 documentation use `expectedPaths`, `approvalRequiredChanges`,
@@ -76,6 +82,27 @@ expansion remains advisory because the heuristic budget can be narrow. Protected
 checks identify changes needing cleanup, focused action, or approval, such as new
 dependencies, CI changes, skipped or deleted tests, and secrets. They guide the
 next action without declaring the task invalid.
+
+Gleip also records generic breadth as `local`, `feature`, `subsystem`,
+`cross_cutting`, or `repository_wide`. Breadth adjusts advisory thresholds, but it
+does not permit unrelated changes. Explicit declarations such as files,
+directories, globs, all current surfaces, shared primitives, docs, tests, or all
+consumers outrank narrower inferred path guesses.
+
+Plan targets are classified as:
+
+- `direct`: explicitly named or matched by a declared path, directory, or glob.
+- `derived`: structurally related to direct scope, such as a test, import
+  relationship, shared dependency, containing scope, or target with a specific
+  operation rationale tied to the objective.
+- `adjacent`: plausible for the task, but lacking enough evidence; add rationale.
+- `unexplained`: no credible relationship was found; remove or justify it.
+
+Slash-containing prose is not automatically a path. Strong path candidates need
+evidence such as a file extension, manifest/config name, glob syntax, backticks or
+quotes, a structured files/targets section, or another clear path context. Path
+separators are normalized, so `path/to/file.ts` and `path\to\file.ts` are treated
+as the same target.
 
 Plan validation compares proposed files with the budget and requests clarification,
 cleanup, or approval for excess file count, outside paths, risky categories,

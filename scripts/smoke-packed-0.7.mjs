@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const tarball = join(root, "dist-pack", "gleip-0.7.2.tgz");
+const tarball = join(root, "dist-pack", "gleip-0.7.3.tgz");
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 const npxCommand = process.platform === "win32" ? "npx.cmd" : "npx";
 
@@ -69,6 +69,13 @@ writeRepoFile("docs/release.md", "# Release\n");
 writeRepoFile("README.md", "# Fixture\n");
 writeRepoFile("CHANGELOG.md", "# Changelog\n");
 writeRepoFile("scripts/smoke-cli.mjs", "console.log('smoke');\n");
+writeRepoFile("src/routes/home.tsx", "export function Home() { return null; }\n");
+writeRepoFile("src/routes/accounts.tsx", "export function Accounts() { return null; }\n");
+writeRepoFile("src/layout/shell.tsx", "export function Shell() { return null; }\n");
+writeRepoFile("src/table/data-grid.tsx", "export function DataGrid() { return null; }\n");
+writeRepoFile("tests/responsive-surfaces.test.tsx", "describe('responsive surfaces', () => {});\n");
+writeRepoFile("docs/responsive-surfaces.md", "# Responsive surfaces\n");
+writeRepoFile("scripts/release.ts", "export const release = true;\n");
 writeRepoFile(
   "broad-task.md",
   [
@@ -91,8 +98,49 @@ writeRepoFile(
     "- Run lint, typecheck, tests, build, pack, and smoke coverage."
   ].join("\n")
 );
+writeRepoFile(
+  "semantic-task.md",
+  [
+    "Make all routed surfaces responsive across shared layout primitives, reusable data presentation, relevant tests, and documentation.",
+    "Do not alter authentication, persistence, public contracts, calculations, dependencies, CI, or generated files."
+  ].join("\n")
+);
+writeRepoFile(
+  "semantic-plan.md",
+  [
+    "## Files",
+    "- src/routes/home.tsx for responsive routed surface behavior.",
+    "- src/routes/accounts.tsx for responsive routed surface behavior.",
+    "- src/layout/shell.tsx for shared layout primitives.",
+    "- src/table/data-grid.tsx for reusable data presentation.",
+    "- tests/responsive-surfaces.test.tsx for responsive tests.",
+    "- docs/responsive-surfaces.md for documentation.",
+    "## Implementation",
+    "- Apply the responsive layout behavior across the declared surfaces.",
+    "## Verification",
+    "- Run responsive surface tests and typecheck."
+  ].join("\n")
+);
+writeRepoFile(
+  "semantic-bad-plan.md",
+  [
+    "Update src/routes/home.tsx for responsive routed surface behavior.",
+    "Update scripts/release.ts.",
+    "Run responsive tests."
+  ].join("\n")
+);
+writeRepoFile(
+  "slash-prose-plan.md",
+  [
+    "Improve cards/tables/headers behavior.",
+    "Review breakpoint/nav behavior.",
+    "Handle loading/empty/error states.",
+    "Update src/routes/home.tsx for responsive routed surface behavior.",
+    "Run responsive tests."
+  ].join("\n")
+);
 
-assertEqual(runGleip(["--version"], repo).trim(), "0.7.2", "packed version");
+assertEqual(runGleip(["--version"], repo).trim(), "0.7.3", "packed version");
 runGleip(["init"], repo);
 runGleip(["preflight", "--file", "task.md"], repo);
 
@@ -162,11 +210,42 @@ for (const code of [
   assertNotIncludes(broadCodes, code, "declared broad task alignment");
 }
 
+runGleip(["preflight", "--file", "semantic-task.md"], repo);
+const semanticResult = JSON.parse(
+  runGleip(["validate-plan", "--json", "--file", "semantic-plan.md"], repo)
+);
+const semanticCodes = semanticResult.findings.map((finding) => finding.code);
+assertNotIncludes(semanticCodes, "SCOPE_EXPANSION_WARN", "semantic broad task alignment");
+assertNotIncludes(
+  semanticCodes,
+  "PLAN_SCOPE_EXCEEDS_BUDGET",
+  "semantic broad task file count"
+);
+
+const semanticBadResult = JSON.parse(
+  runGleip(["validate-plan", "--json", "--file", "semantic-bad-plan.md"], repo)
+);
+const semanticBadFindingText = JSON.stringify(semanticBadResult.findings);
+if (!semanticBadFindingText.includes("scripts/release.ts [unexplained]")) {
+  throw new Error("semantic bad plan did not report the unrelated target classification");
+}
+
+const slashProseResult = JSON.parse(
+  runGleip(["validate-plan", "--json", "--file", "slash-prose-plan.md"], repo)
+);
+for (const fakePath of ["cards/tables/headers", "breakpoint/nav", "loading/empty/error"]) {
+  assertNotIncludes(
+    slashProseResult.parsedPlan.proposedFiles,
+    fakePath,
+    "slash-separated prose path extraction"
+  );
+}
+
 runGleip(["check"], repo);
 runGleip(["check", "--ci"], repo);
 runGleip(["doctor"], repo);
 
-console.log(`Packed Gleip 0.7.2 smoke test passed in ${repo}`);
+console.log(`Packed Gleip 0.7.3 smoke test passed in ${repo}`);
 
 function runGleip(args, cwd) {
   return run(npxCommand, ["--no-install", "gleip", ...args], cwd);

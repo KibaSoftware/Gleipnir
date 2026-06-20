@@ -27,6 +27,12 @@ This is useful when you intentionally want Gleip to consider pre-existing change
 
 `npx --no-install gleip check` is non-mutating. If an active session and baseline exist, it uses the same baseline-filtered diff as status. If no active session exists, it checks the whole working tree with a conservative default budget.
 
+Final checks reconcile the actual diff against the active objective, explicit
+scope, inferred task breadth, expected and derived paths, protected checks, and the
+latest validated plan when present. Planning-time tolerance does not make unrelated
+diff files acceptable: changed files outside explicit or derived scope are reported
+with target classification, reason, evidence, and the required next action.
+
 ## Status Levels
 
 - `clean`: No findings were detected.
@@ -57,7 +63,7 @@ Text output uses a concise form such as
 | `LOCKFILE_CHANGED` | `approval_required` | A lockfile changed without declared approval. |
 | `LOCAL_ARTIFACT_INCLUDED` | `cleanup_required` | A `.gleip/` session artifact is tracked by git. |
 | `NO_ACTIVE_SESSION` | `action_required` | A session-required command has no active session. |
-| `SCOPE_EXPANSION_WARN` | `warn` | Files are outside inferred expected paths. |
+| `SCOPE_EXPANSION_WARN` | `warn` | Adjacent or unexplained files need scope clarification. |
 | `PLAN_TOO_VAGUE` | `warn` | Structural plan details are too vague. |
 | `MISSING_TEST_STRATEGY` | `warn` | A structurally required test strategy is absent. |
 | `SCOPE_LIMIT_EXCEEDED` | `warn` | A soft file or line limit was exceeded. |
@@ -107,6 +113,9 @@ Findings are ordered by action category: cleanup, approval, action, warning, the
 information.
 
 The report ends with one next action so coding agents have a clear instruction.
+Scope findings include the relevant normalized targets in normal console output;
+agents should not need to inspect `.gleip/session.json` or `.gleip/status.md` to
+identify the files.
 
 ## JSON Output
 

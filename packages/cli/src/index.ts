@@ -343,6 +343,7 @@ interface DriftFinding {
   file?: string;
   count?: number;
   examples?: string[];
+  targetClassifications?: ScopeTargetClassification[];
   recommendation?: string;
   category: string;
 }
@@ -377,6 +378,7 @@ interface ScopeBudget {
   taskType: string;
   confidence: string;
   riskLevel: string;
+  taskBreadth?: "local" | "feature" | "subsystem" | "cross_cutting" | "repository_wide";
   expectedFilesChanged: NumberRange;
   expectedLinesAdded: NumberRange;
   expectedLinesDeleted: NumberRange;
@@ -396,6 +398,8 @@ interface ScopeBudget {
   protectedChecks?: ScopeBudget["hardGates"];
   allowedPaths: string[];
   expectedPaths?: string[];
+  explicitScope?: string[];
+  derivedScope?: string[];
   suspiciousPaths: string[];
   approvalRequiredFor: string[];
   blockedWithoutApproval: string[];
@@ -437,6 +441,14 @@ interface PlanValidationFinding {
   evidence?: string[];
 }
 
+interface ScopeTargetClassification {
+  target: string;
+  classification: "direct" | "derived" | "adjacent" | "unexplained";
+  reason: string;
+  evidence: string;
+  nextAction?: string;
+}
+
 interface AgentPlan {
   rawText: string;
   proposedFiles: string[];
@@ -462,6 +474,7 @@ interface PlanValidationResult {
   summary: string;
   nextAction: string;
   parsedPlan: AgentPlan;
+  targetClassifications?: ScopeTargetClassification[];
 }
 
 interface GenerateSessionReportInput {
@@ -2508,6 +2521,7 @@ function defaultScopeBudgetForCheck(config: GleipConfigLike): ScopeBudget {
     taskType: "unknown",
     confidence: "low",
     riskLevel: "medium",
+    taskBreadth: "local",
     expectedFilesChanged: { min: 0, max: 0 },
     expectedLinesAdded: { min: 0, max: 0 },
     expectedLinesDeleted: { min: 0, max: 0 },
@@ -2520,6 +2534,8 @@ function defaultScopeBudgetForCheck(config: GleipConfigLike): ScopeBudget {
     protectedChecks: hardGates,
     allowedPaths: [],
     expectedPaths: [],
+    explicitScope: [],
+    derivedScope: [],
     suspiciousPaths: [],
     approvalRequiredFor: [
       ...(config.approval_required_for ?? []),
@@ -2570,6 +2586,7 @@ function scopeBudgetFromSummary(
     taskType: classification.taskType,
     confidence: classification.confidence,
     riskLevel: classification.riskLevel,
+    taskBreadth: "local",
     expectedFilesChanged,
     expectedLinesAdded: { min: 0, max: 0 },
     expectedLinesDeleted: { min: 0, max: 0 },
@@ -2578,6 +2595,8 @@ function scopeBudgetFromSummary(
     protectedChecks: hardGates,
     allowedPaths: [],
     expectedPaths: [],
+    explicitScope: [],
+    derivedScope: [],
     suspiciousPaths: [],
     approvalRequiredFor: Array.from({ length: summary?.approvalRequiredCount ?? 0 }, (_, index) =>
       String(index + 1)
@@ -2593,6 +2612,22 @@ function scopeBudgetFromSummary(
     readOnlyContextPaths: [],
     reasons: []
   };
+}
+
+function formatScopeTargetLines(findings: DriftFinding[]): string[] {
+  const targets = findings.flatMap((finding) => finding.targetClassifications ?? []);
+
+  if (targets.length === 0) {
+    return [];
+  }
+
+  return [
+    "Scope targets needing clarification:",
+    ...targets.map(
+      (target) =>
+        `- ${target.target} [${target.classification}]: ${target.reason} Evidence: ${target.evidence}${target.nextAction === undefined ? "" : ` Next: ${target.nextAction}`}`
+    )
+  ];
 }
 
 function statusInteractionSummary(
@@ -2613,6 +2648,9 @@ function statusInteractionSummary(
         highestFinding === undefined ? "review required" : formatFindingLabel(highestFinding)
       }`
     );
+    for (const line of formatScopeTargetLines(driftResult.findings)) {
+      lines.push(line);
+    }
   } else if (baseline.preExistingFilesIgnored > 0) {
     lines.push(`Baseline: ${baseline.preExistingFilesIgnored} pre-existing file(s) ignored`);
   }
@@ -2639,6 +2677,20 @@ function planValidationInteractionSummary(result: PlanValidationResult): string 
     lines.push(`Finding: ${formatFindingLabel(firstFinding)} · ${firstFinding.message}`);
   }
 
+  const scopeTargets = (result.targetClassifications ?? []).filter(
+    (target) =>
+      target.classification === "adjacent" || target.classification === "unexplained"
+  );
+
+  if (scopeTargets.length > 0) {
+    lines.push("Scope targets needing clarification:");
+    for (const target of scopeTargets) {
+      lines.push(
+        `- ${target.target} [${target.classification}]: ${target.reason} Evidence: ${target.evidence}${target.nextAction === undefined ? "" : ` Next: ${target.nextAction}`}`
+      );
+    }
+  }
+
   lines.push(
     `Next: ${result.status === "aligned" ? "implement the plan, run verification, then run status" : result.nextAction}`
   );
@@ -2650,12 +2702,16 @@ function planValidationJson(result: PlanValidationResult): {
   findings: PlanValidationFinding[];
   nextAction: string;
   parsedPlan: AgentPlan;
+  targetClassifications?: ScopeTargetClassification[];
 } {
   return {
     status: result.status,
     findings: orderPlanFindings(result.findings),
     nextAction: result.nextAction,
-    parsedPlan: result.parsedPlan
+    parsedPlan: result.parsedPlan,
+    ...(result.targetClassifications === undefined
+      ? {}
+      : { targetClassifications: result.targetClassifications })
   };
 }
 
@@ -2751,8 +2807,17 @@ function formatMarkdownFindingGroup(
 function formatMarkdownFinding(finding: DriftFinding): string {
   const recommendation =
     finding.recommendation === undefined ? "" : ` Recommendation: ${finding.recommendation}`;
+  const targets =
+    finding.targetClassifications === undefined || finding.targetClassifications.length === 0
+      ? ""
+      : `\n${finding.targetClassifications
+          .map(
+            (target) =>
+              `  - ${target.target} [${target.classification}]: ${target.reason}${target.nextAction === undefined ? "" : ` Next: ${target.nextAction}`}`
+          )
+          .join("\n")}`;
 
-  return `- ${formatFindingLabel(finding)}: ${finding.message}${recommendation}`;
+  return `- ${formatFindingLabel(finding)}: ${finding.message}${recommendation}${targets}`;
 }
 
 function orderFindings(findings: DriftFinding[]): DriftFinding[] {

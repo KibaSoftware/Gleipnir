@@ -93,6 +93,13 @@ module, or category, states why it is needed, and includes or implies verificati
 for that area. Gleip checks only that those elements are present; it does not decide
 whether the explanation is true.
 
+Plan validation now classifies proposed targets before deciding whether a scope
+finding is needed. Direct and derived targets do not warn solely because there are
+many of them. Adjacent targets ask for rationale, and unexplained targets are
+reported with the normalized target path, classification, reason, evidence, and
+next action. An expected file can still contain an out-of-scope operation when the
+plan text crosses a protected semantic boundary.
+
 Ordinary source and test expansion is advisory. Dependency manifests, lockfiles,
 CI, protected config, secrets, environment files, and security-sensitive paths
 retain approval-, action-, or cleanup-required findings.
@@ -102,6 +109,12 @@ the task contract. For example, an explicit docs request covers docs plus
 README/changelog, a package-version request covers package metadata, and a release
 multi-area task naming CLI, planner, tests, and smoke tests covers those areas. Output describes
 such plans as aligned with declared task scope.
+
+Path extraction is intentionally conservative. Slash-separated prose like
+`cards/tables/headers` or `loading/empty/error states` is ignored unless it has
+strong path evidence, such as an extension, recognized manifest/config name, glob
+syntax, quotes/backticks, or a structured files/targets section. Windows and POSIX
+separators are normalized before matching and reporting.
 
 ## Dependency Conflicts
 

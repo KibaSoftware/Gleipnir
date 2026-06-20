@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.7.3
+
+### Added
+
+- Added semantic scope target classification for plan validation and final drift
+  checks, with `direct`, `derived`, `adjacent`, and `unexplained` target reasons.
+- Added task breadth tracking so broad, cross-cutting, and repository-wide tasks
+  can avoid file-count-only warnings when planned targets are directly or
+  structurally related to the requested objective.
+- Added CLI text and JSON output for scope target classifications, evidence, and
+  next actions in `validate-plan`, `check`, status reports, and markdown findings.
+- Added smoke coverage for broad semantic scope, unrelated target reporting, and
+  conservative path extraction.
+
+### Changed
+
+- Classified proposed plan targets before producing scope findings, so direct and
+  derived targets do not require expansion rationale solely because many files are
+  involved.
+- Made path extraction more conservative so slash-separated prose is not treated
+  as a repository path without stronger path evidence.
+- Normalized Windows and POSIX path separators before matching and reporting plan
+  targets.
+- Improved drift findings so changed files outside expected scope identify the
+  relevant normalized targets and recommended action directly in console output.
+
+### Fixed
+
+- Preserved protected semantic boundaries, such as calculation, public contract,
+  persistence, and authentication constraints, even when a plan edits an expected
+  file.
+- Reduced false-positive scope warnings for broad valid-work plans that touch
+  related source, test, documentation, and shared implementation targets.
+
+### Security / Privacy
+
+- Preserved local-only operation with no telemetry, analytics, network calls,
+  cloud behavior, external API/LLM calls, source upload, repository metadata
+  upload, dashboards, or account systems.
+
 ## 0.7.2
 
 ### Fixed

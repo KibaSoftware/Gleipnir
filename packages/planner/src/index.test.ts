@@ -20,6 +20,12 @@ import {
 
 const tempRepos: string[] = [];
 
+afterEach(() => {
+  for (const tempRepo of tempRepos.splice(0)) {
+    rmSync(tempRepo, { recursive: true, force: true });
+  }
+});
+
 describe("packageName", () => {
   it("identifies the planner package", () => {
     expect(packageName).toBe("@gleip/planner");
@@ -974,7 +980,9 @@ describe("validateAgentPlan", () => {
         code: "SCOPE_EXPANSION_WARN",
         severity: "warn",
         title: "Files outside expected scope",
-        evidence: ["src/admin/AdminTable.tsx"]
+        evidence: expect.arrayContaining([
+          expect.stringContaining("src/admin/AdminTable.tsx [unexplained]")
+        ])
       })
     );
   });
@@ -1023,7 +1031,9 @@ describe("validateAgentPlan", () => {
     expect(result.findings).toContainEqual(
       expect.objectContaining({
         code: "SCOPE_EXPANSION_WARN",
-        evidence: ["FULL_CONTEXT.md"]
+        evidence: expect.arrayContaining([
+          expect.stringContaining("FULL_CONTEXT.md [unexplained]")
+        ])
       })
     );
   });
@@ -1068,7 +1078,9 @@ describe("validateAgentPlan", () => {
     expect(result.findings).toContainEqual(
       expect.objectContaining({
         code: "SCOPE_EXPANSION_WARN",
-        evidence: expect.arrayContaining(["FULL_CONTEXT.md"])
+        evidence: expect.arrayContaining([
+          expect.stringContaining("FULL_CONTEXT.md [unexplained]")
+        ])
       })
     );
   });
@@ -1825,6 +1837,174 @@ describe("validateAgentPlan", () => {
         "RISKY_CHANGE_RATIONALE_REQUIRED",
         "PLAN_HARD_GATE_VIOLATION"
       ])
+    );
+  });
+
+  it("accepts broad semantic scope without warning solely on file count", () => {
+    const task =
+      "Make all routed surfaces responsive across shared layout primitives, reusable data presentation, relevant tests, and documentation.";
+    const scopeBudget = createScopeBudget({
+      task,
+      classification: classifyTask(task),
+      repoContext: emptyRepoContext()
+    });
+    const result = validateAgentPlan({
+      taskText: task,
+      planText: [
+        "## Files",
+        "- Update src/routes/home.tsx for responsive routed surface behavior.",
+        "- Update src/routes/accounts.tsx for responsive routed surface behavior.",
+        "- Update src/layout/shell.tsx for shared layout primitives.",
+        "- Update src/table/data-grid.tsx for reusable data presentation.",
+        "- Update tests/responsive-surfaces.test.tsx.",
+        "- Update docs/responsive-surfaces.md.",
+        "## Implementation",
+        "- Apply the responsive layout behavior across the declared surfaces.",
+        "## Verification",
+        "- Run responsive surface tests and typecheck."
+      ].join("\n"),
+      scopeBudget
+    });
+
+    expect(result.findings).not.toContainEqual(
+      expect.objectContaining({ code: "PLAN_SCOPE_EXCEEDS_BUDGET" })
+    );
+    expect(result.findings).not.toContainEqual(
+      expect.objectContaining({ code: "SCOPE_EXPANSION_WARN" })
+    );
+    expect(result.targetClassifications?.map((target) => target.classification)).toEqual(
+      expect.arrayContaining(["derived"])
+    );
+  });
+
+  it("reports unrelated targets in broad semantic scope with classifications and reasons", () => {
+    const task =
+      "Make all routed surfaces responsive across shared layout primitives, reusable data presentation, relevant tests, and documentation.";
+    const scopeBudget = createScopeBudget({
+      task,
+      classification: classifyTask(task),
+      repoContext: emptyRepoContext()
+    });
+    const result = validateAgentPlan({
+      taskText: task,
+      planText: [
+        "Update src/routes/home.tsx for responsive routed surface behavior.",
+        "Update scripts/release.ts.",
+        "Run responsive tests."
+      ].join("\n"),
+      scopeBudget
+    });
+
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({
+        code: "SCOPE_EXPANSION_WARN",
+        evidence: expect.arrayContaining([
+          expect.stringContaining("scripts/release.ts [unexplained]")
+        ])
+      })
+    );
+    expect(result.targetClassifications).toContainEqual(
+      expect.objectContaining({
+        target: "scripts/release.ts",
+        classification: "unexplained",
+        reason: expect.stringContaining("No credible")
+      })
+    );
+  });
+
+  it("does not treat slash-separated prose as repository paths", () => {
+    const result = parseAgentPlan(
+      [
+        "Improve cards/tables/headers behavior.",
+        "Review breakpoint/nav behavior.",
+        "Handle loading/empty/error states.",
+        "Update src/surfaces/home.tsx."
+      ].join("\n")
+    );
+
+    expect(result.proposedFiles).toEqual(["src/surfaces/home.tsx"]);
+  });
+
+  it("normalizes Windows and POSIX path separators for identical classification", () => {
+    const scopeBudget = sampleScopeBudget({
+      allowedPaths: ["src/surfaces/home.tsx"],
+      expectedPaths: ["src/surfaces/home.tsx"],
+      explicitScope: ["src/surfaces/home.tsx"],
+      softLimits: { maxFilesChanged: 5, maxLinesAdded: 200, maxLinesDeleted: 120 }
+    });
+    const posix = validateAgentPlan({
+      taskText: "Update src/surfaces/home.tsx.",
+      planText: "Update src/surfaces/home.tsx and run tests.",
+      scopeBudget
+    });
+    const windows = validateAgentPlan({
+      taskText: "Update src/surfaces/home.tsx.",
+      planText: "Update src\\surfaces\\home.tsx and run tests.",
+      scopeBudget
+    });
+
+    expect(posix.parsedPlan.proposedFiles).toEqual(["src/surfaces/home.tsx"]);
+    expect(windows.parsedPlan.proposedFiles).toEqual(["src/surfaces/home.tsx"]);
+    expect(windows.targetClassifications).toEqual(posix.targetClassifications);
+    expect(windows.findings.map((finding) => finding.code)).toEqual(
+      posix.findings.map((finding) => finding.code)
+    );
+  });
+
+  it("classifies a shared dependency imported by explicit consumers as derived", () => {
+    const repo = createTempRepo({
+      "src/one.ts": "import { table } from './shared/table';\nexport const one = table;",
+      "src/two.ts": "import { table } from './shared/table';\nexport const two = table;",
+      "src/shared/table.ts": "export const table = 1;"
+    });
+    const task = "Update src/one.ts and src/two.ts for the presentation fix.";
+    const scopeBudget = createScopeBudget({
+      task,
+      classification: classifyTask(task),
+      repoContext: emptyRepoContext()
+    });
+    const result = validateAgentPlan({
+      cwd: repo,
+      taskText: task,
+      planText:
+        "Update src/one.ts, src/two.ts, and src/shared/table.ts. Run focused tests.",
+      scopeBudget
+    });
+
+    expect(result.targetClassifications).toContainEqual(
+      expect.objectContaining({
+        target: "src/shared/table.ts",
+        classification: "derived",
+        reason: "Target is imported by an explicitly scoped target."
+      })
+    );
+    expect(result.findings).not.toContainEqual(
+      expect.objectContaining({ code: "SCOPE_EXPANSION_WARN" })
+    );
+  });
+
+  it("keeps protected semantic boundaries enforceable even for direct files", () => {
+    const scopeBudget = sampleScopeBudget({
+      allowedPaths: ["src/card.tsx"],
+      expectedPaths: ["src/card.tsx"],
+      explicitScope: ["src/card.tsx"]
+    });
+    const result = validateAgentPlan({
+      taskText:
+        "Make a presentation-only responsive layout update in src/card.tsx. Do not change calculation behavior.",
+      planText:
+        "Update src/card.tsx and alter discount calculation behavior. Run focused tests.",
+      scopeBudget
+    });
+
+    expect(result.targetClassifications).toContainEqual(
+      expect.objectContaining({ target: "src/card.tsx", classification: "direct" })
+    );
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({
+        code: "PLAN_HARD_GATE_VIOLATION",
+        title: "Protected semantic boundary crossed"
+      })
     );
   });
 });

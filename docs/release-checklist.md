@@ -2,10 +2,11 @@
 
 Use this checklist for the local-only developer preview.
 
-Current release target: `0.7.2`.
+Current release target: `0.7.3`.
 
-Release focus: guidance-first statuses, deterministic structural plan validation,
-stable findings, conservative CI behavior, and precision-first policy.
+Release focus: semantic scope target classification, broad-task precision,
+conservative path extraction, deterministic structural plan validation, stable
+findings, conservative CI behavior, and precision-first policy.
 
 ## Signal Quality Gates
 
@@ -33,7 +34,7 @@ stable findings, conservative CI behavior, and precision-first policy.
 
 ## Packed Install
 
-- Install `dist-pack/gleip-0.7.2.tgz` into a clean external temp repo.
+- Install `dist-pack/gleip-0.7.3.tgz` into a clean external temp repo.
 - Verify:
   - `npx gleip --help`
   - `npx gleip --version`

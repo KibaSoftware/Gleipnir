@@ -100,7 +100,7 @@ Normal workflow commands print concise 1-5 line summaries that confirm the compl
 
 ## Stable Findings and CI
 
-Gleip 0.7.2 uses guidance-oriented top-level statuses:
+Gleip 0.7.3 uses guidance-oriented top-level statuses:
 
 - `clean`: no findings
 - `advisory`: informational or warning-level drift
@@ -132,11 +132,22 @@ describe likely declared scope, not exclusive permission. Work outside that scop
 calls for clarification or a rationale explaining the expansion; the rationale is
 not proof that Gleip is right.
 
+Plan validation and final drift checks classify targets as `direct`, `derived`,
+`adjacent`, or `unexplained`. Direct and derived targets do not warn solely because
+a broad task touches many files. Adjacent targets need rationale, and unexplained
+targets are reported with normalized path, reason, evidence, and next action.
+Protected semantic boundaries still apply inside expected files.
+
 Small updates to project context and architecture documents are accepted as
 low-risk touches when they align with broad patch, documentation, or context
 maintenance work. A task contract passed with `preflight --file` remains read-only
 unless explicitly targeted for editing. Large unrelated documentation rewrites
 still receive advisory attention.
+
+Slash-separated prose such as `cards/tables/headers` is not treated as a path
+unless there is stronger path evidence, such as an extension, config/manifest name,
+glob syntax, quotes, backticks, or a structured files/targets section. Windows and
+POSIX path separators are normalized before matching and reporting.
 
 Common runtime, output, cache, coverage, and build paths are excluded from passive
 relevance discovery. They are not globally forbidden: a specifically declared
@@ -157,7 +168,7 @@ they are not a proxy metric and should not create extra justification work.
 
 ## Reports and Metrics
 
-Gleip 0.7.2 generates two local report artifacts:
+Gleip 0.7.3 generates two local report artifacts:
 
 - `.gleip/report.md`: concise scores, risks, findings, actions, and the recommended final-response block.
 - `.gleip/report.json`: stable machine-readable report data, warnings, evidence, summary, and efficiency estimate.
@@ -247,6 +258,6 @@ See [Local Package Testing](docs/package-testing.md) and the [Release Checklist]
 
 ## Status
 
-- Current release: `0.7.2`
+- Current release: `0.7.3`
 - License: Apache-2.0
 - Local-only developer preview

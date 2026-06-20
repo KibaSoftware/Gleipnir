@@ -78,6 +78,7 @@ export interface ScopeBudget {
   taskType: TaskType;
   confidence: Confidence;
   riskLevel: RiskLevel;
+  taskBreadth?: TaskBreadth;
   expectedFilesChanged: NumberRange;
   expectedLinesAdded: NumberRange;
   expectedLinesDeleted: NumberRange;
@@ -97,6 +98,8 @@ export interface ScopeBudget {
   protectedChecks?: ScopeBudget["hardGates"];
   allowedPaths: string[];
   expectedPaths?: string[];
+  explicitScope?: string[];
+  derivedScope?: string[];
   suspiciousPaths: string[];
   approvalRequiredFor: string[];
   blockedWithoutApproval: string[];
@@ -154,6 +157,23 @@ export interface AgentPlan {
   mentionsBroadRefactor: boolean;
 }
 
+export type TaskBreadth =
+  | "local"
+  | "feature"
+  | "subsystem"
+  | "cross_cutting"
+  | "repository_wide";
+
+export type ScopeTargetTier = "direct" | "derived" | "adjacent" | "unexplained";
+
+export interface ScopeTargetClassification {
+  target: string;
+  classification: ScopeTargetTier;
+  reason: string;
+  evidence: string;
+  nextAction?: string;
+}
+
 export interface PlanFileMention {
   path: string;
   role: "edit" | "context" | "output";
@@ -182,6 +202,7 @@ export interface PlanValidationResult {
   summary: string;
   nextAction: string;
   parsedPlan: AgentPlan;
+  targetClassifications?: ScopeTargetClassification[];
 }
 
 export interface ValidateAgentPlanInput {
@@ -879,6 +900,7 @@ export function createScopeBudget(input: CreateScopeBudgetInput): ScopeBudget {
     input.classification.taskType === "test_only"
       ? false
       : defaults.requiredTests || input.classification.likelyRequiresTests;
+  const taskBreadth = inferTaskBreadth(input.task, input.classification, taskScopeHints);
   const expectedFilesChanged = expectedFileRange(defaults.expectedFilesChanged, taskScopeHints);
   const softLimits = narrowSoftLimits(
     applyConfigLimits(defaults.softLimits, input.config),
@@ -889,6 +911,10 @@ export function createScopeBudget(input: CreateScopeBudgetInput): ScopeBudget {
     input.config,
     requiredTests,
     taskScopeHints
+  );
+  const explicitScope = buildExplicitScope(taskScopeHints);
+  const derivedScope = allowedPaths.filter(
+    (path) => !explicitScope.some((explicitPath) => pathsOverlap(path, explicitPath))
   );
   const suspiciousPaths = buildSuspiciousPaths(input.repoContext, taskScopeHints);
   const blockedWithoutApproval = buildBlockedWithoutApproval(
@@ -928,6 +954,7 @@ export function createScopeBudget(input: CreateScopeBudgetInput): ScopeBudget {
     taskType: input.classification.taskType,
     confidence: input.classification.confidence,
     riskLevel: maxRisk(defaults.riskLevel, input.classification.riskLevel),
+    taskBreadth,
     expectedFilesChanged,
     expectedLinesAdded: defaults.expectedLinesAdded,
     expectedLinesDeleted: defaults.expectedLinesDeleted,
@@ -936,6 +963,8 @@ export function createScopeBudget(input: CreateScopeBudgetInput): ScopeBudget {
     protectedChecks: hardGates,
     allowedPaths,
     expectedPaths: allowedPaths,
+    explicitScope,
+    derivedScope,
     suspiciousPaths,
     approvalRequiredFor,
     blockedWithoutApproval,
@@ -1065,7 +1094,17 @@ export function validateAgentPlan(input: ValidateAgentPlanInput): PlanValidation
   const parsedPlan = parseAgentPlan(input.planText, input.contextFiles);
   const findings: PlanValidationFinding[] = [];
   const planStructure = analyzePlanStructure(parsedPlan);
-  const outsideAllowedPaths = findOutsideAllowedPaths(parsedPlan, input.scopeBudget);
+  const targetClassifications = classifyPlanTargets({
+    parsedPlan,
+    scopeBudget: input.scopeBudget,
+    planText: input.planText,
+    taskText: input.taskText ?? "",
+    ...(input.cwd === undefined ? {} : { cwd: input.cwd })
+  });
+  const scopeTargetsNeedingClarification = targetClassifications.filter(
+    (target) =>
+      target.classification === "adjacent" || target.classification === "unexplained"
+  );
   const riskyFiles = parsedPlan.proposedFiles.filter(isRiskyPlanPath);
   const unexpectedRiskyFiles = riskyFiles.filter(
     (path) => !taskRequestsRiskyPath(input.taskText ?? "", path)
@@ -1141,7 +1180,8 @@ export function validateAgentPlan(input: ValidateAgentPlanInput): PlanValidation
       parsedPlan,
       input.scopeBudget,
       input.config,
-      input.planText
+      input.planText,
+      targetClassifications
     )
   );
   findings.push(...validateMentionedFiles(parsedPlan, input.cwd));
@@ -1188,16 +1228,26 @@ export function validateAgentPlan(input: ValidateAgentPlanInput): PlanValidation
     });
   }
 
-  if (parsedPlan.proposedFiles.length > input.scopeBudget.softLimits.maxFilesChanged) {
+  if (
+    parsedPlan.proposedFiles.length > input.scopeBudget.softLimits.maxFilesChanged &&
+    shouldWarnForPlanFileCount(input.scopeBudget, targetClassifications)
+  ) {
     findings.push({
       code: "PLAN_SCOPE_EXCEEDS_BUDGET",
       severity: "warn",
       title: "Plan exceeds expected scope",
       message: `The plan proposes ${parsedPlan.proposedFiles.length} files; the scope budget soft maximum is ${input.scopeBudget.softLimits.maxFilesChanged}.`,
-      recommendation: "Add a specific expansion rationale or narrow the proposed files.",
+      recommendation:
+        "Add rationale for adjacent targets, remove unrelated targets, or confirm explicit breadth.",
       evidence: parsedPlan.proposedFiles
     });
   }
+
+  const protectedSemanticFindings = validateProtectedSemanticScope(
+    input.taskText ?? "",
+    input.planText
+  );
+  findings.push(...protectedSemanticFindings);
 
   if (input.scopeBudget.requiredTests && !planStructure.hasVerification) {
     findings.push({
@@ -1230,8 +1280,9 @@ export function validateAgentPlan(input: ValidateAgentPlanInput): PlanValidation
 
   const riskStructureRequired =
     unexpectedRiskyFiles.length > 0 ||
-    outsideAllowedPaths.length > 0 ||
-    parsedPlan.proposedFiles.length > input.scopeBudget.softLimits.maxFilesChanged ||
+    scopeTargetsNeedingClarification.length > 0 ||
+    (parsedPlan.proposedFiles.length > input.scopeBudget.softLimits.maxFilesChanged &&
+      shouldWarnForPlanFileCount(input.scopeBudget, targetClassifications)) ||
     parsedPlan.mentionsBroadRefactor;
 
   if (riskStructureRequired && !planStructure.hasRiskRationale) {
@@ -1261,7 +1312,8 @@ export function validateAgentPlan(input: ValidateAgentPlanInput): PlanValidation
     findings: orderPlanFindings(findings),
     summary: planValidationSummary(status, findings),
     nextAction: planValidationNextAction(status),
-    parsedPlan
+    parsedPlan,
+    targetClassifications
   };
 }
 
@@ -1370,6 +1422,10 @@ function analyzeTaskScope(task: string, additionalContextFiles: string[] = []): 
   ]);
 
   for (const path of explicitEditTargets) {
+    contextFiles.delete(path);
+  }
+
+  for (const path of explicitOnlyTargets) {
     contextFiles.delete(path);
   }
 
@@ -1989,7 +2045,24 @@ function extractPlanFileMentions(planText: string, additionalContextFiles: strin
   outputFiles: string[];
   fileMentions: PlanFileMention[];
 } {
-  const allPaths = new Set(extractPathTokens(planText));
+  const allPaths = new Set<string>();
+  let inTargetSection = false;
+
+  for (const line of planText.split(/\r?\n/u)) {
+    const label = sectionLabel(line);
+    if (label !== undefined) {
+      inTargetSection = /^(?:files?|scope|targets?|touched files?|modules?|routes?|surfaces?)$/iu.test(
+        label
+      );
+    }
+
+    for (const path of extractPathTokens(line, {
+      structuredPathContext: inTargetSection || hasStructuredTargetPrefix(line)
+    })) {
+      allPaths.add(path);
+    }
+  }
+
   const explicitEditTargets = new Set(extractExplicitEditTargets(planText));
   const contextFiles = new Set([
     ...additionalContextFiles.map(normalizePath),
@@ -2064,11 +2137,15 @@ function isOutputArtifactMention(clause: string, path: string): boolean {
   );
 }
 
-function extractPathTokens(value: string): string[] {
+function extractPathTokens(
+  value: string,
+  options: { structuredPathContext?: boolean } = {}
+): string[] {
   return value
     .split(/\s+/u)
-    .map(cleanPlanToken)
-    .filter(isFileLikePlanPath)
+    .map((token) => ({ raw: token, cleaned: cleanPlanToken(token) }))
+    .filter((token) => isFileLikePlanPath(token.cleaned, token.raw, options))
+    .map((token) => token.cleaned)
     .map(normalizePath);
 }
 
@@ -2076,22 +2153,34 @@ function cleanPlanToken(value: string): string {
   return value.replace(/^[`"'<([{]+/u, "").replace(/[`"'>)\]},.;:]+$/u, "");
 }
 
-function isFileLikePlanPath(value: string): boolean {
+function isFileLikePlanPath(
+  value: string,
+  rawValue = value,
+  options: { structuredPathContext?: boolean } = {}
+): boolean {
   if (value.length === 0 || /\s/u.test(value) || /^https?:\/\//iu.test(value)) {
     return false;
   }
 
   const normalizedValue = normalizePath(value);
   const fileName = basename(normalizedValue);
+  const hasPathSyntax = normalizedValue.includes("/");
+  const hasStrongWrapper = /^[`"'<([{].*[`"'>)\]}.,;:]?$/u.test(rawValue);
+  const hasGlob = hasGlobSyntax(normalizedValue);
+  const hasRecognizedExtension =
+    /\.(?:ts|tsx|js|jsx|mjs|cjs|json|md|yml|yaml|toml|css|scss|html|py|go|rs|java|kt|cs|rb|php|vue|svelte|lock)$/iu.test(
+      fileName
+    );
 
   return (
     dependencyFileNames.has(fileName) ||
     isCiFile(normalizedValue) ||
     ["Dockerfile", "Jenkinsfile", "Makefile"].includes(fileName) ||
-    normalizedValue.includes("/") ||
-    /\.(?:ts|tsx|js|jsx|mjs|cjs|json|md|yml|yaml|toml|css|scss|html|py|go|rs|java|kt|cs|rb|php|vue|svelte|lock)$/iu.test(
-      fileName
-    )
+    hasRecognizedExtension ||
+    hasGlob ||
+    normalizedValue.startsWith("./") ||
+    normalizedValue.startsWith("../") ||
+    (hasPathSyntax && (hasStrongWrapper || options.structuredPathContext === true))
   );
 }
 
@@ -2290,13 +2379,35 @@ function analyzePlanStructure(parsedPlan: AgentPlan): PlanStructure {
 
 function hasSectionLabel(text: string, concept: RegExp): boolean {
   return text.split(/\r?\n/u).some((line) => {
-    const normalizedLine = line
-      .replace(/^\s*(?:#{1,6}|[-*]|\d+\.)\s*/u, "")
-      .trim();
-    const label = normalizedLine.split(/[:-]/u)[0]?.trim() ?? "";
+    const label = sectionLabel(line);
 
-    return concept.test(label) && (normalizedLine !== label || normalizedLine.split(/\s+/u).length <= 4);
+    return label !== undefined && concept.test(label);
   });
+}
+
+function sectionLabel(line: string): string | undefined {
+  const normalizedLine = line
+    .replace(/^\s*(?:#{1,6}|[-*]|\d+\.)\s*/u, "")
+    .trim();
+  const separatorMatch = /^([A-Za-z][A-Za-z0-9 _/-]{0,40})\s*[:-]\s*/u.exec(
+    normalizedLine
+  );
+
+  if (separatorMatch?.[1] !== undefined) {
+    return separatorMatch[1].trim().toLowerCase();
+  }
+
+  if (normalizedLine.split(/\s+/u).length <= 4) {
+    return normalizedLine.toLowerCase();
+  }
+
+  return undefined;
+}
+
+function hasStructuredTargetPrefix(line: string): boolean {
+  return /^\s*(?:[-*]|\d+\.)\s*(?:add|create|edit|modify|update|change|touch|target|file|path)\b/iu.test(
+    line
+  );
 }
 
 function isCodeTask(scopeBudget: ScopeBudget, parsedPlan: AgentPlan): boolean {
@@ -2674,24 +2785,431 @@ function isHardRiskyPath(path: string, scopeBudget: ScopeBudget): boolean {
   );
 }
 
+function classifyPlanTargets(input: {
+  parsedPlan: AgentPlan;
+  scopeBudget: ScopeBudget;
+  planText: string;
+  taskText: string;
+  cwd?: string;
+}): ScopeTargetClassification[] {
+  const explicitScope =
+    input.scopeBudget.explicitScope ??
+    input.scopeBudget.expectedPaths ??
+    input.scopeBudget.allowedPaths;
+  const derivedScope = input.scopeBudget.derivedScope ?? [];
+  const taskTerms = extractTaskTerms(input.taskText);
+  const directTargets = input.parsedPlan.proposedFiles.filter(
+    (path) =>
+      isWithinAllowedPaths(path, explicitScope) ||
+      isAcceptedContextDocsPlanTouch(path, input.scopeBudget)
+  );
+
+  return input.parsedPlan.proposedFiles.map((rawTarget) => {
+    const target = normalizePath(rawTarget);
+    const operationLine = findPlanLineForPath(input.planText, target);
+    const operationEvidence = operationLine ?? target;
+    const rationale = findScopeRationale(input.planText, target);
+
+    if (isReadOnlyContextTarget(target, input.scopeBudget)) {
+      return {
+        target,
+        classification: "unexplained",
+        reason: "Target is marked as read-only context for the active task.",
+        evidence: "read-only context declaration",
+        nextAction: "Do not edit the context file unless the task explicitly changes it."
+      };
+    }
+
+    if (
+      isWithinAllowedPaths(target, explicitScope) ||
+      isAcceptedContextDocsPlanTouch(target, input.scopeBudget)
+    ) {
+      return {
+        target,
+        classification: "direct",
+        reason: "Target matches explicit task scope or a declared scope pattern.",
+        evidence: matchingScopeEvidence(target, explicitScope) ?? "explicit task scope"
+      };
+    }
+
+    if (isWithinAllowedPaths(target, derivedScope)) {
+      return {
+        target,
+        classification: "derived",
+        reason: "Target matches repository context derived from task anchors.",
+        evidence: matchingScopeEvidence(target, derivedScope) ?? "derived scope budget entry"
+      };
+    }
+
+    const relationship = findRepositoryRelationship(
+      input.cwd,
+      target,
+      directTargets.length > 0 ? directTargets : explicitScope
+    );
+
+    if (relationship !== undefined) {
+      return {
+        target,
+        classification: "derived",
+        reason: relationship.reason,
+        evidence: relationship.evidence
+      };
+    }
+
+    if (
+      rationale.specific ||
+      (isBroadTaskBreadth(input.scopeBudget.taskBreadth) &&
+        hasObjectiveOperationEvidence(operationEvidence, taskTerms))
+    ) {
+      return {
+        target,
+        classification: "derived",
+        reason: rationale.specific
+          ? "Plan gives a specific operation rationale and verification for the target."
+          : "Target operation matches terms from a broad task objective.",
+        evidence: operationEvidence
+      };
+    }
+
+    if (
+      isBroadTaskBreadth(input.scopeBudget.taskBreadth) &&
+      isOrdinaryImplementationPath(target) &&
+      rationale.vague
+    ) {
+      return {
+        target,
+        classification: "adjacent",
+        reason:
+          "Target is plausible for the declared broad task, but no structural relationship or operation rationale was found.",
+        evidence: operationEvidence,
+        nextAction: "Add a target-specific rationale and verification."
+      };
+    }
+
+    return {
+      target,
+      classification: "unexplained",
+      reason: "No credible structural or semantic relationship to the requested objective was found.",
+      evidence: operationEvidence,
+      nextAction: "Remove the target from the plan or justify why it belongs to the task."
+    };
+  });
+}
+
+function isBroadTaskBreadth(breadth: TaskBreadth | undefined): boolean {
+  return (
+    breadth === "subsystem" ||
+    breadth === "cross_cutting" ||
+    breadth === "repository_wide"
+  );
+}
+
+function hasObjectiveOperationEvidence(value: string, taskTerms: string[]): boolean {
+  const normalized = value.toLowerCase();
+  const usefulTerms = taskTerms.filter((term) => term.length > 3);
+
+  return usefulTerms.some((term) => normalized.includes(term));
+}
+
+function isOrdinaryImplementationPath(path: string): boolean {
+  return (
+    isSourceFile(path) ||
+    isTestFile(path) ||
+    isContextDocsPath(path) ||
+    broadConfigFileNames.has(basename(path)) ||
+    /(?:^|[.-])config\.(?:js|cjs|mjs|ts|json|yml|yaml|toml)$/iu.test(basename(path))
+  );
+}
+
+function findPlanLineForPath(planText: string, path: string): string | undefined {
+  const normalizedPath = normalizePath(path).toLowerCase();
+  const windowsPath = normalizedPath.replace(/\//gu, "\\");
+  const fileName = basename(normalizedPath);
+
+  return planText
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .find((line) => {
+      const normalizedLine = normalizePath(line).toLowerCase();
+      return (
+        normalizedLine.includes(normalizedPath) ||
+        line.toLowerCase().includes(windowsPath) ||
+        normalizedLine.includes(fileName)
+      );
+    });
+}
+
+function matchingScopeEvidence(path: string, scopeEntries: string[]): string | undefined {
+  return scopeEntries.find((entry) => isWithinAllowedPaths(path, [entry]));
+}
+
+function findRepositoryRelationship(
+  cwd: string | undefined,
+  target: string,
+  directTargets: string[]
+): { reason: string; evidence: string } | undefined {
+  const normalizedTarget = normalizePath(target);
+  const normalizedDirectTargets = directTargets.map(normalizePath).filter((path) => path !== ".");
+
+  for (const directTarget of normalizedDirectTargets) {
+    if (pathsOverlap(normalizedTarget, directTarget)) {
+      return {
+        reason: "Target overlaps an explicitly scoped target.",
+        evidence: directTarget
+      };
+    }
+
+    if (isLikelyTestForTarget(normalizedTarget, directTarget)) {
+      return {
+        reason: "Target is a focused test for an explicitly scoped target.",
+        evidence: directTarget
+      };
+    }
+  }
+
+  if (cwd === undefined) {
+    return undefined;
+  }
+
+  for (const directTarget of normalizedDirectTargets) {
+    if (fileImportsTarget(cwd, directTarget, normalizedTarget)) {
+      return {
+        reason: "Target is imported by an explicitly scoped target.",
+        evidence: directTarget
+      };
+    }
+
+    if (fileImportsTarget(cwd, normalizedTarget, directTarget)) {
+      return {
+        reason: "Target imports an explicitly scoped target.",
+        evidence: directTarget
+      };
+    }
+  }
+
+  return undefined;
+}
+
+function isLikelyTestForTarget(path: string, target: string): boolean {
+  if (!isTestFile(path)) {
+    return false;
+  }
+
+  const pathStem = fileStem(path).replace(/\.(?:test|spec)$/iu, "").toLowerCase();
+  const targetStem = fileStem(target).toLowerCase();
+
+  return pathStem === targetStem || pathStem.endsWith(`/${targetStem}`);
+}
+
+function fileImportsTarget(cwd: string, importer: string, target: string): boolean {
+  const importerPath = resolve(cwd, importer);
+
+  if (!existsSync(importerPath) || !statSync(importerPath).isFile()) {
+    return false;
+  }
+
+  let content: string;
+
+  try {
+    content = readFileSync(importerPath, "utf8");
+  } catch {
+    return false;
+  }
+
+  const imports = Array.from(
+    content.matchAll(
+      /(?:import\s+(?:[^'"]+\s+from\s+)?|export\s+[^'"]+\s+from\s+|require\()\s*['"]([^'"]+)['"]/giu
+    )
+  ).map((match) => match[1] ?? "");
+
+  return imports.some((specifier) => importSpecifierResolvesTo(cwd, importer, specifier, target));
+}
+
+function importSpecifierResolvesTo(
+  cwd: string,
+  importer: string,
+  specifier: string,
+  target: string
+): boolean {
+  if (!specifier.startsWith(".")) {
+    return false;
+  }
+
+  const importerDirectory = dirname(resolve(cwd, importer));
+  const basePath = resolve(importerDirectory, specifier);
+  const targetPath = normalizePath(relative(cwd, resolve(cwd, target)));
+  const candidates = [
+    basePath,
+    ...[...sourceExtensions, ".json"].map((extension) => `${basePath}${extension}`),
+    ...[...sourceExtensions, ".json"].map((extension) => join(basePath, `index${extension}`))
+  ].map((candidate) => normalizePath(relative(cwd, candidate)));
+
+  return candidates.includes(targetPath);
+}
+
+function shouldWarnForPlanFileCount(
+  scopeBudget: ScopeBudget,
+  targetClassifications: ScopeTargetClassification[]
+): boolean {
+  if (targetClassifications.length === 0) {
+    return false;
+  }
+
+  if (
+    isBroadTaskBreadth(scopeBudget.taskBreadth) &&
+    targetClassifications.every(
+      (target) => target.classification === "direct" || target.classification === "derived"
+    )
+  ) {
+    return false;
+  }
+
+  if (!isBroadTaskBreadth(scopeBudget.taskBreadth)) {
+    return true;
+  }
+
+  return targetClassifications.some(
+    (target) =>
+      target.classification === "adjacent" || target.classification === "unexplained"
+  );
+}
+
+function isReadOnlyContextTarget(path: string, scopeBudget: ScopeBudget): boolean {
+  const normalizedPath = normalizePath(path);
+
+  return (scopeBudget.readOnlyContextPaths ?? []).some(
+    (contextPath) => normalizePath(contextPath) === normalizedPath
+  );
+}
+
+function validateProtectedSemanticScope(
+  taskText: string,
+  planText: string
+): PlanValidationFinding[] {
+  const protectedSemantics = detectProtectedSemantics(taskText);
+
+  if (protectedSemantics.length === 0) {
+    return [];
+  }
+
+  const violations = protectedSemantics.filter((semantic) =>
+    protectedSemanticViolationPattern(semantic).test(planText)
+  );
+
+  if (violations.length === 0) {
+    return [];
+  }
+
+  return [
+    {
+      code: "PLAN_HARD_GATE_VIOLATION",
+      severity: "action_required",
+      title: "Protected semantic boundary crossed",
+      message: `The plan proposes changes to protected semantic area(s): ${violations.join(", ")}.`,
+      recommendation:
+        "Revise the operation to stay within the requested behavior or ask for explicit approval.",
+      evidence: violations
+    }
+  ];
+}
+
+function detectProtectedSemantics(taskText: string): string[] {
+  const protectedSemantics = new Set<string>();
+
+  const explicitPatterns: Array<[string, RegExp]> = [
+    ["calculation", /\b(?:do not|don't|must not|without|no)\b[^.\n]{0,60}\b(?:calculation|business logic|pricing|billing|payment)\b/iu],
+    ["contract", /\b(?:do not|don't|must not|without|no)\b[^.\n]{0,60}\b(?:public contract|api contract|interface|schema)\b/iu],
+    ["persistence", /\b(?:do not|don't|must not|without|no)\b[^.\n]{0,60}\b(?:persistence|database|storage|migration|schema)\b/iu],
+    ["authentication", /\b(?:do not|don't|must not|without|no)\b[^.\n]{0,60}\b(?:auth|authentication|authorization|session|permission)\b/iu]
+  ];
+
+  for (const [semantic, pattern] of explicitPatterns) {
+    if (pattern.test(taskText)) {
+      protectedSemantics.add(semantic);
+    }
+  }
+
+  if (
+    /\b(?:presentation-only|visual-only|layout-only|styling-only|docs-only|documentation-only)\b/iu.test(
+      taskText
+    )
+  ) {
+    protectedSemantics.add("calculation");
+    protectedSemantics.add("contract");
+    protectedSemantics.add("persistence");
+    protectedSemantics.add("authentication");
+  }
+
+  return [...protectedSemantics].sort();
+}
+
+function protectedSemanticViolationPattern(semantic: string): RegExp {
+  switch (semantic) {
+    case "authentication":
+      return /\b(?:alter|change|modify|rewrite|replace|update)\b[^.\n]{0,80}\b(?:auth|authentication|authorization|session|permission|redirect semantics?)\b/iu;
+    case "calculation":
+      return /\b(?:alter|change|modify|rewrite|replace|update)\b[^.\n]{0,80}\b(?:calculation|business logic|pricing|billing|payment amount|tax|discount)\b/iu;
+    case "contract":
+      return /\b(?:alter|change|modify|rewrite|replace|update)\b[^.\n]{0,80}\b(?:public contract|api contract|interface|schema|response shape|request shape)\b/iu;
+    case "persistence":
+      return /\b(?:alter|change|modify|rewrite|replace|update)\b[^.\n]{0,80}\b(?:persistence|database|storage|migration|schema|table|column)\b/iu;
+    default:
+      return /$a/u;
+  }
+}
+
+function formatScopeTargetSummary(targets: ScopeTargetClassification[]): string {
+  const adjacent = targets.filter((target) => target.classification === "adjacent");
+  const unexplained = targets.filter((target) => target.classification === "unexplained");
+  const count = targets.length;
+  const groups = [
+    adjacent.length === 0 ? "" : `${adjacent.length} adjacent`,
+    unexplained.length === 0 ? "" : `${unexplained.length} unexplained`
+  ].filter((value) => value.length > 0);
+
+  return `${count} proposed target(s) need clarification (${groups.join(", ")}). ${formatScopeTargetEvidence(targets).join(" ")}`;
+}
+
+function formatScopeTargetEvidence(targets: ScopeTargetClassification[]): string[] {
+  return targets.map(
+    (target) =>
+      `${target.target} [${target.classification}]: ${target.reason} Evidence: ${target.evidence}${target.nextAction === undefined ? "" : ` Next: ${target.nextAction}`}`
+  );
+}
+
 function validatePlanFilesAgainstScope(
   parsedPlan: AgentPlan,
   scopeBudget: ScopeBudget,
   config: ScopeBudgetConfig | undefined,
-  planText: string
+  planText: string,
+  targetClassifications: ScopeTargetClassification[]
 ): PlanValidationFinding[] {
-  const outsideAllowedPaths = findOutsideAllowedPaths(parsedPlan, scopeBudget);
+  const classificationOutsidePaths = targetClassifications
+    .filter(
+      (target) =>
+        target.classification === "adjacent" || target.classification === "unexplained"
+    )
+    .map((target) => target.target);
+  const approvalRequiredFromAllTargets = parsedPlan.proposedFiles.filter((path) =>
+    isPlanPathApprovalRequiredForPlan(path, parsedPlan, scopeBudget, config)
+  );
+  const outsideAllowedPaths = dedupe([
+    ...classificationOutsidePaths,
+    ...approvalRequiredFromAllTargets
+  ]);
 
   if (outsideAllowedPaths.length === 0) {
     return [];
   }
 
   const approvalRequiredPaths = outsideAllowedPaths.filter((path) =>
-    isPlanPathApprovalRequired(path, scopeBudget, config)
+    isPlanPathApprovalRequiredForPlan(path, parsedPlan, scopeBudget, config)
   );
   const cleanupPaths = approvalRequiredPaths.filter(isSecretPath);
   const approvalPaths = approvalRequiredPaths.filter((path) => !cleanupPaths.includes(path));
-  const warningPaths = outsideAllowedPaths.filter((path) => !approvalRequiredPaths.includes(path));
+  const warningPaths = classificationOutsidePaths.filter(
+    (path) => !approvalRequiredPaths.includes(path)
+  );
   const findings: PlanValidationFinding[] = [];
 
   if (cleanupPaths.length > 0) {
@@ -2725,13 +3243,17 @@ function validatePlanFilesAgainstScope(
   }
 
   if (warningPaths.length > 0) {
+    const warningTargets = targetClassifications.filter((target) =>
+      warningPaths.includes(target.target)
+    );
     findings.push({
       code: "SCOPE_EXPANSION_WARN",
       severity: "warn",
       title: "Files outside expected scope",
-      message: `${warningPaths.length} proposed file(s) exceed declared task scope.`,
-      recommendation: "Narrow the plan or add a specific scope rationale for the expanded files.",
-      evidence: warningPaths
+      message: formatScopeTargetSummary(warningTargets),
+      recommendation:
+        "Add a rationale for adjacent targets and remove or justify unexplained targets.",
+      evidence: formatScopeTargetEvidence(warningTargets)
     });
   }
 
@@ -2739,9 +3261,14 @@ function validatePlanFilesAgainstScope(
     code: "PLAN_SCOPE_OUTSIDE_BUDGET",
     severity: "warn",
     title: "Plan exceeds expected scope",
-    message: `${outsideAllowedPaths.length} proposed file(s) exceed declared task scope and require clarification.`,
-    recommendation: "Name why each extra file is needed and how the expanded area will be verified.",
-    evidence: outsideAllowedPaths
+    message: formatScopeTargetSummary(
+      targetClassifications.filter((target) => outsideAllowedPaths.includes(target.target))
+    ),
+    recommendation:
+      "Name why each adjacent or unexplained file is needed and how the area will be verified.",
+    evidence: formatScopeTargetEvidence(
+      targetClassifications.filter((target) => outsideAllowedPaths.includes(target.target))
+    )
   });
 
   const rationales = outsideAllowedPaths.map((path) => findScopeRationale(planText, path));
@@ -2771,20 +3298,6 @@ function validatePlanFilesAgainstScope(
   }
 
   return findings;
-}
-
-function findOutsideAllowedPaths(parsedPlan: AgentPlan, scopeBudget: ScopeBudget): string[] {
-  const expectedPaths = scopeBudget.expectedPaths ?? scopeBudget.allowedPaths;
-
-  if (parsedPlan.proposedFiles.length === 0 || expectedPaths.length === 0) {
-    return [];
-  }
-
-  return parsedPlan.proposedFiles.filter(
-    (path) =>
-      !isWithinAllowedPaths(path, expectedPaths) &&
-      !isAcceptedContextDocsPlanTouch(path, scopeBudget)
-  );
 }
 
 function isAcceptedContextDocsPlanTouch(path: string, scopeBudget: ScopeBudget): boolean {
@@ -2903,6 +3416,24 @@ function isPlanPathApprovalRequired(
   return indicators.some((indicator) => planIndicatorMatchesPath(indicator, path));
 }
 
+function isPlanPathApprovalRequiredForPlan(
+  path: string,
+  parsedPlan: AgentPlan,
+  scopeBudget: ScopeBudget,
+  config: ScopeBudgetConfig | undefined
+): boolean {
+  if (
+    isDependencyFile(path) &&
+    !lockfileNames.has(basename(path)) &&
+    scopeBudget.hardGates.dependencyMetadataChangesAllowed === true &&
+    !parsedPlan.mentionsNewDependencies
+  ) {
+    return false;
+  }
+
+  return isPlanPathApprovalRequired(path, scopeBudget, config);
+}
+
 function planIndicatorMatchesPath(indicator: string, path: string): boolean {
   const normalizedIndicator = normalizePath(indicator);
   const normalizedPath = normalizePath(path);
@@ -2941,6 +3472,19 @@ function pathMatchesPattern(path: string, pattern: string): boolean {
     path === pattern ||
     path.startsWith(`${pattern}/`) ||
     matchesGlob(pattern, path)
+  );
+}
+
+function pathsOverlap(left: string, right: string): boolean {
+  const normalizedLeft = normalizePath(left).replace(/\/$/u, "");
+  const normalizedRight = normalizePath(right).replace(/\/$/u, "");
+
+  return (
+    normalizedLeft === normalizedRight ||
+    normalizedLeft.startsWith(`${normalizedRight}/`) ||
+    normalizedRight.startsWith(`${normalizedLeft}/`) ||
+    matchesGlob(normalizedRight, normalizedLeft) ||
+    matchesGlob(normalizedLeft, normalizedRight)
   );
 }
 
@@ -3147,6 +3691,61 @@ function buildAllowedPaths(
   }
 
   return [...paths].filter((path) => path !== ".").sort(comparePaths);
+}
+
+function buildExplicitScope(taskScopeHints: TaskScopeHints): string[] {
+  const paths = new Set<string>([
+    ...taskScopeHints.explicitEditTargets,
+    ...taskScopeHints.explicitOnlyTargets,
+    ...taskScopeHints.explicitOutputTargets,
+    ...taskScopeHints.declaredPaths
+  ]);
+
+  return [...paths].filter((path) => path !== ".").sort(comparePaths);
+}
+
+function inferTaskBreadth(
+  task: string,
+  classification: TaskClassification,
+  taskScopeHints: TaskScopeHints
+): TaskBreadth {
+  const normalizedTask = task.toLowerCase();
+
+  if (
+    /\b(?:repository-wide|repo-wide|entire repository|whole repository|all files|every file|platform-wide|across the repository)\b/iu.test(
+      task
+    )
+  ) {
+    return "repository_wide";
+  }
+
+  if (
+    taskScopeHints.hasBroadScopeSignal ||
+    /\b(?:all|every)\b[^.\n]{0,80}\b(?:routes?|surfaces?|consumers?|callers?|usages?|packages?|modules?|features?)\b/iu.test(
+      task
+    ) ||
+    /\b(?:shared|reusable|cross-cutting|cross cutting|architecture|migration)\b/iu.test(task)
+  ) {
+    return "cross_cutting";
+  }
+
+  if (
+    classification.taskType === "migration" ||
+    taskScopeHints.declaredScopeLabels.length >= 3 ||
+    taskScopeHints.explicitEditTargets.length >= 4
+  ) {
+    return "subsystem";
+  }
+
+  if (
+    taskScopeHints.declaredScopeLabels.length > 0 ||
+    taskScopeHints.explicitEditTargets.length > 1 ||
+    /\b(?:feature|route|flow|subsystem|module)\b/iu.test(normalizedTask)
+  ) {
+    return "feature";
+  }
+
+  return "local";
 }
 
 function buildSuspiciousPaths(

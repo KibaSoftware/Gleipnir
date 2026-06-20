@@ -455,6 +455,60 @@ describe("detectScopeDrift", () => {
       expect.objectContaining({ code: "SCOPE_EXPANSION_WARN" })
     );
   });
+
+  it("does not warn on broad-task file count alone", () => {
+    const result = detectScopeDrift({
+      scopeBudget: budget({
+        taskBreadth: "cross_cutting",
+        softLimits: { maxFilesChanged: 1, maxLinesAdded: 100, maxLinesDeleted: 100 },
+        allowedPaths: ["src"]
+      }),
+      gitDiffContext: diff({
+        changedFiles: ["src/a.ts", "src/b.ts", "src/c.ts"],
+        fileStats: [
+          { path: "src/a.ts", added: 1, deleted: 0 },
+          { path: "src/b.ts", added: 1, deleted: 0 },
+          { path: "src/c.ts", added: 1, deleted: 0 }
+        ],
+        totalLinesAdded: 3
+      })
+    });
+
+    expect(result.findings).not.toContainEqual(
+      expect.objectContaining({ code: "SCOPE_LIMIT_EXCEEDED" })
+    );
+  });
+
+  it("includes target classifications and reasons for unrelated final diff files", () => {
+    const result = detectScopeDrift({
+      scopeBudget: budget({
+        taskBreadth: "cross_cutting",
+        allowedPaths: ["src/routes"],
+        explicitScope: ["src/routes"]
+      }),
+      gitDiffContext: diff({
+        changedFiles: ["scripts/release.ts"],
+        fileStats: [{ path: "scripts/release.ts", added: 1, deleted: 0 }],
+        totalLinesAdded: 1
+      })
+    });
+    const finding = result.findings.find(
+      (candidate) => candidate.code === "SCOPE_EXPANSION_WARN"
+    );
+
+    expect(finding).toMatchObject({
+      code: "SCOPE_EXPANSION_WARN",
+      targetClassifications: [
+        expect.objectContaining({
+          target: "scripts/release.ts",
+          classification: "unexplained",
+          reason: expect.stringContaining("No relationship")
+        })
+      ]
+    });
+    expect(finding?.message).toContain("scripts/release.ts [unexplained]");
+    expect(finding?.message).toContain("Next:");
+  });
 });
 
 describe("session reports", () => {
