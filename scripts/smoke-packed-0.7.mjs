@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const tarball = join(root, "dist-pack", "gleip-0.7.4.tgz");
+const tarball = join(root, "dist-pack", "gleip-0.7.5.tgz");
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 const npxCommand = process.platform === "win32" ? "npx.cmd" : "npx";
 
@@ -140,7 +140,7 @@ writeRepoFile(
   ].join("\n")
 );
 
-assertEqual(runGleip(["--version"], repo).trim(), "0.7.4", "packed version");
+assertEqual(runGleip(["--version"], repo).trim(), "0.7.5", "packed version");
 runGleip(["init"], repo);
 runGleip(["preflight", "--file", "task.md"], repo);
 
@@ -157,18 +157,12 @@ assertNotIncludes(allowedPaths, "task.md", "task file editable scope");
 assertNotIncludes(evidencePaths, "vendor/foo.ts", "vendor relevance exclusion");
 assertNotIncludes(evidencePaths, "generated/foo.ts", "generated relevance exclusion");
 
-const planResult = JSON.parse(
-  runGleip(["validate-plan", "--json", "--file", "plan.md"], repo)
-);
+const planResult = JSON.parse(runGleip(["validate-plan", "--json", "--file", "plan.md"], repo));
 const planCodes = planResult.findings.map((finding) => finding.code);
 
 assertIncludes(planResult.parsedPlan.contextFiles, "plan.md", "plan file context");
 assertNotIncludes(planResult.parsedPlan.proposedFiles, "plan.md", "plan file editable scope");
-assertIncludes(
-  planCodes,
-  "DEPENDENCY_REQUIREMENT_CONFLICT",
-  "missing dependency conflict"
-);
+assertIncludes(planCodes, "DEPENDENCY_REQUIREMENT_CONFLICT", "missing dependency conflict");
 
 const expandedResult = JSON.parse(
   runGleip(["validate-plan", "--json", "--file", "expanded-plan.md"], repo)
@@ -180,11 +174,7 @@ assertNotIncludes(
   "SCOPE_EXPANSION_RATIONALE_REQUIRED",
   "specific expansion rationale"
 );
-assertNotIncludes(
-  expandedCodes,
-  "SCOPE_EXPANSION_RATIONALE_VAGUE",
-  "specific expansion rationale"
-);
+assertNotIncludes(expandedCodes, "SCOPE_EXPANSION_RATIONALE_VAGUE", "specific expansion rationale");
 
 runGleip(["preflight", "--file", "broad-task.md"], repo);
 const broadBudget = readJson(".gleip/scope-budget.json");
@@ -216,11 +206,7 @@ const semanticResult = JSON.parse(
 );
 const semanticCodes = semanticResult.findings.map((finding) => finding.code);
 assertNotIncludes(semanticCodes, "SCOPE_EXPANSION_WARN", "semantic broad task alignment");
-assertNotIncludes(
-  semanticCodes,
-  "PLAN_SCOPE_EXCEEDS_BUDGET",
-  "semantic broad task file count"
-);
+assertNotIncludes(semanticCodes, "PLAN_SCOPE_EXCEEDS_BUDGET", "semantic broad task file count");
 
 const semanticBadResult = JSON.parse(
   runGleip(["validate-plan", "--json", "--file", "semantic-bad-plan.md"], repo)
@@ -245,7 +231,7 @@ runGleip(["check"], repo);
 runGleip(["check", "--ci"], repo);
 runGleip(["doctor"], repo);
 
-console.log(`Packed Gleip 0.7.4 smoke test passed in ${repo}`);
+console.log(`Packed Gleip 0.7.5 smoke test passed in ${repo}`);
 
 function runGleip(args, cwd) {
   return run(npxCommand, ["--no-install", "gleip", ...args], cwd);

@@ -54,6 +54,12 @@ changed-file metrics and scope findings. Currently tracked runtime artifacts are
 still reported separately while they exist. Durable or user-authored `.gleip` files
 that are not runtime artifacts remain visible to Git diff analysis.
 
+Tracked recognized Gleip runtime or state files remain cleanup-required and can
+block `check --ci`. Reports classify this as repository hygiene rather than task
+drift, so scope adherence and task drift continue to describe implementation
+scope. Run `npx gleip doctor --fix` to remove only recognized runtime/state files
+from the Git index while preserving their local copies.
+
 ## Status Levels
 
 - `clean`: No findings were detected.
@@ -75,43 +81,43 @@ Text output uses a concise form such as
 
 ## Finding Codes
 
-| Code | Severity | Current signal |
-| --- | --- | --- |
-| `TEST_SKIPPED` | `action_required` | A skipped or pending test was added. |
-| `TEST_DELETED` | `action_required` | A test file was deleted. |
-| `TEST_WEAKENED` | `action_required` | Explicit test weakening intent or a large test deletion was detected. |
-| `DEPENDENCY_FILE_CHANGED` | `approval_required` | A dependency manifest changed without declared approval. |
-| `LOCKFILE_CHANGED` | `approval_required` | A lockfile changed without declared approval. |
-| `LOCAL_ARTIFACT_INCLUDED` | `cleanup_required` | A `.gleip/` session artifact is tracked by git. |
-| `NO_ACTIVE_SESSION` | `action_required` | A session-required command has no active session. |
-| `SCOPE_EXPANSION_WARN` | `warn` | Adjacent or unexplained files need scope clarification. |
-| `PLAN_TOO_VAGUE` | `warn` | Structural plan details are too vague. |
-| `MISSING_TEST_STRATEGY` | `warn` | A structurally required test strategy is absent. |
-| `SCOPE_LIMIT_EXCEEDED` | `warn` | A soft file or line limit was exceeded. |
-| `GIT_UNAVAILABLE` | `warn` | Local git evidence could not be inspected. |
-| `CI_FILE_CHANGED` | `approval_required` | CI configuration changed without declared approval. |
-| `SECRET_FILE_CHANGED` | `cleanup_required` | A likely secret or env file changed. |
-| `APPROVAL_REQUIRED_PATH_CHANGED` | `approval_required` | An explicitly protected path changed. |
-| `BLOCKED_PATH_CHANGED` | `approval_required` | A legacy protected-path rule matched. |
-| `DEPENDENCY_CHANGE_INTENT` | `approval_required` | A plan proposes an unapproved dependency change. |
-| `CI_CHANGE_INTENT` | `approval_required` | A plan proposes an unapproved CI change. |
-| `BROAD_REFACTOR_INTENT` | `warn` or `action_required` | A plan proposes a broad refactor outside the declared task. |
-| `PLAN_MISSING` | `action_required` | Structural validation received no plan text. |
-| `PLAN_REQUIRED_SECTION_MISSING` | `warn` | Implementation/change structure is absent. |
-| `PLAN_NO_FILES_MENTIONED` | `warn` | A code-task plan has no file, module, or scope signal. |
-| `PLAN_NO_VERIFICATION` | `warn` | Required verification structure or language is absent. |
-| `PLAN_RISK_RATIONALE_MISSING` | `warn` | Risky or expanded scope lacks risk/assumption/rationale structure. |
-| `PLAN_MENTIONED_FILE_MISSING` | `warn` | An edit target does not exist and is not marked new. |
-| `PLAN_SCOPE_OUTSIDE_BUDGET` | `warn` | Proposed files fall outside active expected paths. |
-| `PLAN_RISKY_FILE_MENTIONED` | `warn` | A dependency, CI, config, secret, or security-sensitive file is named. |
-| `PLAN_VENDOR_EDIT_TARGET` | `warn` | An excluded dependency/vendor/generated path is proposed for editing. |
-| `SCOPE_EXPANSION_RATIONALE_REQUIRED` | `warn` | Expanded scope lacks a named reason and verification. |
-| `SCOPE_EXPANSION_RATIONALE_VAGUE` | `warn` | Expansion rationale uses only generic wording. |
-| `DEPENDENCY_REQUIREMENT_CONFLICT` | `approval_required` | A required package is absent while new dependencies are unapproved. |
-| `DEPENDENCY_SUBSTITUTION_REQUIRES_APPROVAL` | `approval_required` | A required package is replaced without an approval marker. |
-| `RISKY_CHANGE_RATIONALE_REQUIRED` | `warn` or `approval_required` | A risky file category lacks a named reason. |
-| `PLAN_SCOPE_EXCEEDS_BUDGET` | `warn` | Proposed file count exceeds the soft maximum. |
-| `PLAN_HARD_GATE_VIOLATION` | `approval_required` | A proposed path crosses a legacy protected check. |
+| Code                                        | Severity                      | Current signal                                                         |
+| ------------------------------------------- | ----------------------------- | ---------------------------------------------------------------------- |
+| `TEST_SKIPPED`                              | `action_required`             | A skipped or pending test was added.                                   |
+| `TEST_DELETED`                              | `action_required`             | A test file was deleted.                                               |
+| `TEST_WEAKENED`                             | `action_required`             | Explicit test weakening intent or a large test deletion was detected.  |
+| `DEPENDENCY_FILE_CHANGED`                   | `approval_required`           | A dependency manifest changed without declared approval.               |
+| `LOCKFILE_CHANGED`                          | `approval_required`           | A lockfile changed without declared approval.                          |
+| `LOCAL_ARTIFACT_INCLUDED`                   | `cleanup_required`            | A `.gleip/` session artifact is tracked by git.                        |
+| `NO_ACTIVE_SESSION`                         | `action_required`             | A session-required command has no active session.                      |
+| `SCOPE_EXPANSION_WARN`                      | `warn`                        | Adjacent or unexplained files need scope clarification.                |
+| `PLAN_TOO_VAGUE`                            | `warn`                        | Structural plan details are too vague.                                 |
+| `MISSING_TEST_STRATEGY`                     | `warn`                        | A structurally required test strategy is absent.                       |
+| `SCOPE_LIMIT_EXCEEDED`                      | `warn`                        | A soft file or line limit was exceeded.                                |
+| `GIT_UNAVAILABLE`                           | `warn`                        | Local git evidence could not be inspected.                             |
+| `CI_FILE_CHANGED`                           | `approval_required`           | CI configuration changed without declared approval.                    |
+| `SECRET_FILE_CHANGED`                       | `cleanup_required`            | A likely secret or env file changed.                                   |
+| `APPROVAL_REQUIRED_PATH_CHANGED`            | `approval_required`           | An explicitly protected path changed.                                  |
+| `BLOCKED_PATH_CHANGED`                      | `approval_required`           | A legacy protected-path rule matched.                                  |
+| `DEPENDENCY_CHANGE_INTENT`                  | `approval_required`           | A plan proposes an unapproved dependency change.                       |
+| `CI_CHANGE_INTENT`                          | `approval_required`           | A plan proposes an unapproved CI change.                               |
+| `BROAD_REFACTOR_INTENT`                     | `warn` or `action_required`   | A plan proposes a broad refactor outside the declared task.            |
+| `PLAN_MISSING`                              | `action_required`             | Structural validation received no plan text.                           |
+| `PLAN_REQUIRED_SECTION_MISSING`             | `warn`                        | Implementation/change structure is absent.                             |
+| `PLAN_NO_FILES_MENTIONED`                   | `warn`                        | A code-task plan has no file, module, or scope signal.                 |
+| `PLAN_NO_VERIFICATION`                      | `warn`                        | Required verification structure or language is absent.                 |
+| `PLAN_RISK_RATIONALE_MISSING`               | `warn`                        | Risky or expanded scope lacks risk/assumption/rationale structure.     |
+| `PLAN_MENTIONED_FILE_MISSING`               | `warn`                        | An edit target does not exist and is not marked new.                   |
+| `PLAN_SCOPE_OUTSIDE_BUDGET`                 | `warn`                        | Proposed files fall outside active expected paths.                     |
+| `PLAN_RISKY_FILE_MENTIONED`                 | `warn`                        | A dependency, CI, config, secret, or security-sensitive file is named. |
+| `PLAN_VENDOR_EDIT_TARGET`                   | `warn`                        | An excluded dependency/vendor/generated path is proposed for editing.  |
+| `SCOPE_EXPANSION_RATIONALE_REQUIRED`        | `warn`                        | Expanded scope lacks a named reason and verification.                  |
+| `SCOPE_EXPANSION_RATIONALE_VAGUE`           | `warn`                        | Expansion rationale uses only generic wording.                         |
+| `DEPENDENCY_REQUIREMENT_CONFLICT`           | `approval_required`           | A required package is absent while new dependencies are unapproved.    |
+| `DEPENDENCY_SUBSTITUTION_REQUIRES_APPROVAL` | `approval_required`           | A required package is replaced without an approval marker.             |
+| `RISKY_CHANGE_RATIONALE_REQUIRED`           | `warn` or `approval_required` | A risky file category lacks a named reason.                            |
+| `PLAN_SCOPE_EXCEEDS_BUDGET`                 | `warn`                        | Proposed file count exceeds the soft maximum.                          |
+| `PLAN_HARD_GATE_VIOLATION`                  | `approval_required`           | A proposed path crosses a legacy protected check.                      |
 
 `MISSING_IMPLEMENTATION_CHANGE` is reserved but intentionally not emitted.
 Gleip does not yet have a high-confidence structural detector for that condition.

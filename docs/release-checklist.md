@@ -2,11 +2,11 @@
 
 Use this checklist for the local-only developer preview.
 
-Current release target: `0.7.4`.
+Current release target: `0.7.5`.
 
-Release focus: semantic scope target classification, broad-task precision,
-conservative path extraction, deterministic structural plan validation, stable
-findings, conservative CI behavior, and precision-first policy.
+Release focus: ownership-aware `.gleip/` lifecycle handling, explicit Git-index
+repair, safe repository uninstall, and separate task-drift and repository-hygiene
+risk reporting without weakening CI enforcement.
 
 ## Signal Quality Gates
 
@@ -34,7 +34,7 @@ findings, conservative CI behavior, and precision-first policy.
 
 ## Packed Install
 
-- Install `dist-pack/gleip-0.7.4.tgz` into a clean external temp repo.
+- Install `dist-pack/gleip-0.7.5.tgz` into a clean external temp repo.
 - Verify:
   - `npx gleip --help`
   - `npx gleip --version`
@@ -43,12 +43,14 @@ findings, conservative CI behavior, and precision-first policy.
   - `npx gleip validate-plan --file plan.md`
   - `npx gleip status`
   - `npx gleip doctor`
+  - `npx gleip doctor --fix`
   - `npx gleip check`
   - `npx gleip check --ci`
   - `npx --no-install gleip uninstall --dry-run`
   - `npx --no-install gleip uninstall`
 
-- Confirm repository cleanup removes Gleip-owned files and managed sections while preserving unrelated agent instructions.
+- Confirm repository repair restores the managed ignore policy and untracks only recognized runtime/state files while preserving local copies.
+- Confirm repository cleanup removes Gleip-owned files and managed sections while preserving unknown `.gleip/` files and unrelated agent instructions.
 - Confirm package removal remains a separate `npm uninstall gleip` step.
 
 ## Testing the workflow manually

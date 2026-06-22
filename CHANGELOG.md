@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.7.5]
+
+### Added
+
+- Added `gleip doctor --fix` as an explicit repository repair command that restores Gleip's managed `.gitignore` policy and removes only recognized Gleip runtime/state files from the Git index while preserving local copies.
+- Added repository-hygiene risk to JSON, markdown, and compact reports so tracked local Gleip state is distinguished from task implementation drift.
+
+### Fixed
+
+- Ensure `init`, `preflight`, `validate-plan`, `status`, and `report` establish or repair `.gleip/` ignore protection before writing runtime files.
+- Detect effective `.gitignore` overrides, including later negation rules, instead of validating only the presence of the managed block.
+- Report already tracked recognized `.gleip/` runtime files during initialization without silently changing the Git index.
+- Preserve unknown `.gleip/**` files during repository uninstall and remove tracked recognized runtime files from the index explicitly.
+- Keep `LOCAL_ARTIFACT_INCLUDED` cleanup-required and CI-blocking without incorrectly raising task drift risk when no implementation drift exists.
+
+### Changed
+
+- Bumped the additive report schema to `1.1.0` for `risk.repositoryHygiene`.
+- Clarified that package-manager install, update, and uninstall operations do not mutate repository lifecycle files; repository repair and cleanup remain explicit Gleip commands.
+
 ## [0.7.4]
 
 ### Fixed

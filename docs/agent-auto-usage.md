@@ -33,6 +33,7 @@ npx gleip init
 - `npx gleip init claude`
 - `npx gleip init gemini`
 - `npx gleip doctor --agents`
+- `npx gleip doctor --fix`
 - `npx gleip repair-agents --all`
 
 These are setup, diagnostics, and repair commands. The task workflow commands are intended for agents to run automatically and are available to developers for testing or fallback.
@@ -55,7 +56,7 @@ npx --no-install gleip uninstall
 npm uninstall gleip
 ```
 
-The first command removes `.gleip/`, `.gleip.yml`, `GLEIP.md`, and Gleip-managed sections in `AGENTS.md`, `CLAUDE.md`, and `GEMINI.md`. The second command removes the package dependency. Use `--dry-run` to preview cleanup or `--keep-agent-files` to leave all supported agent files unchanged.
+The first command removes recognized Gleip runtime/state files, Gleip-owned configuration, and Gleip-managed instruction and `.gitignore` sections. It preserves unknown files inside `.gleip/` and unrelated agent instructions. The second command removes only the package dependency. Likewise, `npm install`, `npm update`, and `npm uninstall` do not repair repository files or modify the Git index. Use `--dry-run` to preview cleanup or `--keep-agent-files` to leave all supported agent files unchanged.
 
 ## Limitations
 

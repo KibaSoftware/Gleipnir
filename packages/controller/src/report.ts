@@ -30,6 +30,7 @@ export interface SessionReport {
   };
   risk: {
     drift: ReportRiskLevel;
+    repositoryHygiene: ReportRiskLevel;
     testIntegrity: TestIntegrity;
     overEdit: ReportRiskLevel;
   };
@@ -311,8 +312,7 @@ export function generateSessionReport(input: GenerateSessionReportInput): Sessio
       reason: "Unexpected files need scope review or rationale.",
       evidence: outsideScopeFiles,
       files: outsideScopeFiles,
-      suggestedAction:
-        "Review the expanded scope and add rationale, or remove unrelated changes."
+      suggestedAction: "Review the expanded scope and add rationale, or remove unrelated changes."
     });
     deductions.scopeAdherence += Math.min(48, outsideScopeFiles.length * 12);
     deductions.planAlignment += Math.min(20, outsideScopeFiles.length * 5);
@@ -334,7 +334,12 @@ export function generateSessionReport(input: GenerateSessionReportInput): Sessio
     deductions
   );
 
-  const driftRisk = driftRiskFor(input.driftResult.status, input.diff.isGitRepo);
+  const driftRisk = driftRiskFor(
+    input.driftResult.status,
+    input.diff.isGitRepo,
+    input.driftResult.findings
+  );
+  const repositoryHygieneRisk = repositoryHygieneRiskFor(input.driftResult.findings);
   const testIntegrity = testIntegrityFor(input);
   const overEdit = overEditRisk(
     outsideScopeFiles.length,
@@ -343,6 +348,7 @@ export function generateSessionReport(input: GenerateSessionReportInput): Sessio
   );
 
   deductions.reviewReadiness += riskDeduction(driftRisk);
+  deductions.reviewReadiness += riskDeduction(repositoryHygieneRisk);
   if (
     hasStatusContent &&
     (input.scopeBudget?.verificationExpected ?? input.scopeBudget?.requiredTests) === true &&
@@ -375,6 +381,7 @@ export function generateSessionReport(input: GenerateSessionReportInput): Sessio
   };
   const risk = {
     drift: driftRisk,
+    repositoryHygiene: repositoryHygieneRisk,
     testIntegrity,
     overEdit
   };
@@ -394,6 +401,7 @@ export function generateSessionReport(input: GenerateSessionReportInput): Sessio
       markdown: renderCompactFinalResponse({
         scores,
         driftRisk,
+        repositoryHygieneRisk,
         efficiency,
         unresolvedWarnings: orderedWarnings.filter(
           (warning) => warning.severity === "medium" || warning.severity === "high"
@@ -444,6 +452,7 @@ Output discipline note: ${outputDisciplineNote(report)}
 
 Drift risk: ${titleCase(report.risk.drift)}
 Test integrity: ${titleCase(report.risk.testIntegrity)}
+Repository hygiene: ${titleCase(report.risk.repositoryHygiene)}
 Over-edit risk: ${titleCase(report.risk.overEdit)}
 
 Estimated token waste avoided: ~${formatTokenEstimate(report.efficiency.estimatedTokenWasteAvoided)}
@@ -719,8 +728,7 @@ function calculateEfficiency(
       scopeWasteAvoided += estimatedTokens;
       basis.push({
         source: "rejected_plan_item",
-        description:
-          "Plan validation surfaced guidance before further implementation.",
+        description: "Plan validation surfaced guidance before further implementation.",
         estimatedTokens,
         confidence: "medium"
       });
@@ -777,30 +785,52 @@ function testIntegrityFor(input: GenerateSessionReportInput): TestIntegrity {
     return "fail";
   }
 
-  if (
-    testFindings.length > 0
-  ) {
+  if (testFindings.length > 0) {
     return "warning";
   }
 
   return input.diff.isGitRepo && input.scopeBudget !== undefined ? "pass" : "unknown";
 }
 
-function driftRiskFor(status: ReportDriftResult["status"], isGitRepo: boolean): ReportRiskLevel {
+function driftRiskFor(
+  status: ReportDriftResult["status"],
+  isGitRepo: boolean,
+  findings: ReportDriftFinding[]
+): ReportRiskLevel {
   if (!isGitRepo) {
     return "medium";
   }
 
+  const driftFindings = findings.filter((finding) => finding.category !== "local_artifacts");
+
+  if (driftFindings.length === 0) {
+    return "none";
+  }
+
   if (
-    status === "blocked" ||
-    status === "needs_cleanup" ||
-    status === "needs_attention"
+    driftFindings.some(
+      (finding) =>
+        finding.severity === "blocking" ||
+        finding.severity === "blocked" ||
+        finding.severity === "action_required" ||
+        finding.severity === "cleanup_required"
+    )
   ) {
     return "high";
   }
 
-  if (status === "approval_required" || status === "needs_approval") {
+  if (
+    driftFindings.some(
+      (finding) => finding.severity === "fail" || finding.severity === "approval_required"
+    )
+  ) {
     return "medium";
+  }
+
+  if (
+    driftFindings.some((finding) => finding.severity === "warn" || finding.severity === "warning")
+  ) {
+    return "low";
   }
 
   if (status === "warning" || status === "advisory") {
@@ -808,6 +838,20 @@ function driftRiskFor(status: ReportDriftResult["status"], isGitRepo: boolean): 
   }
 
   return "none";
+}
+
+function repositoryHygieneRiskFor(findings: ReportDriftFinding[]): ReportRiskLevel {
+  const hygieneFindings = findings.filter((finding) => finding.category === "local_artifacts");
+
+  if (hygieneFindings.some((finding) => reportSeverity(finding.severity) === "high")) {
+    return "high";
+  }
+
+  if (hygieneFindings.some((finding) => reportSeverity(finding.severity) === "medium")) {
+    return "medium";
+  }
+
+  return hygieneFindings.length > 0 ? "low" : "none";
 }
 
 function overEditRisk(
@@ -1046,6 +1090,7 @@ function formatTokenEstimate(tokens: number): string {
 function renderCompactFinalResponse(input: {
   scores: SessionReport["scores"];
   driftRisk: ReportRiskLevel;
+  repositoryHygieneRisk: ReportRiskLevel;
   efficiency: SessionReport["efficiency"];
   unresolvedWarnings: ReportWarning[];
 }): string {
@@ -1060,6 +1105,7 @@ function renderCompactFinalResponse(input: {
   return `### Gleip
 - Scope adherence: ${input.scores.scopeAdherence}/100
 - Drift risk: ${titleCase(input.driftRisk)}
+- Repository hygiene: ${titleCase(input.repositoryHygieneRisk)}
 - Output discipline: ${input.scores.outputDiscipline}/100
 - Estimated token waste avoided: ~${formatTokenEstimate(input.efficiency.estimatedTokenWasteAvoided)} (${titleCase(input.efficiency.confidence)} confidence)
 - Unresolved warnings: ${warningSummary}`;

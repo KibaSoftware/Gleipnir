@@ -1,6 +1,6 @@
 {
   "name": "@gleip/core",
-  "version": "0.7.4",
+  "version": "0.7.5",
   "description": "Shared domain primitives for Gleip.",
   "license": "Apache-2.0",
   "type": "module",

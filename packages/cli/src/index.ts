@@ -2,6 +2,7 @@
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -9,6 +10,7 @@ import {
   unlinkSync,
   writeFileSync
 } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -24,7 +26,8 @@ import {
 import {
   collectWorkingTreeDiff as collectBundledWorkingTreeDiff,
   createSessionBaseline as createBundledSessionBaseline,
-  filterDiffSinceBaseline as filterBundledDiffSinceBaseline
+  filterDiffSinceBaseline as filterBundledDiffSinceBaseline,
+  isEphemeralGleipArtifactPath
 } from "../../core/src/index.js";
 import {
   classifyTask as classifyBundledTask,
@@ -46,7 +49,7 @@ const LEGACY_ARGUS_WORKFLOW_SECTION_END = "<!-- ARGUS:AGENT-WORKFLOW:END -->";
 const SUPPORTED_AGENT_TARGETS = ["auto", "generic", "codex", "claude", "gemini"] as const;
 const AGENT_INSTRUCTION_TARGETS = ["generic", "claude", "gemini"] as const;
 const GLEIP_VERSION = readPackageVersion();
-const REPORT_SCHEMA_VERSION = "1.0.0";
+const REPORT_SCHEMA_VERSION = "1.1.0";
 const CI_BLOCKING_FINDING_CODES = new Set([
   "TEST_SKIPPED",
   "TEST_DELETED",
@@ -153,6 +156,7 @@ interface InitOptions {
 
 interface DoctorOptions {
   agents?: boolean;
+  fix?: boolean;
 }
 
 interface RepairAgentsOptions {
@@ -508,6 +512,7 @@ interface SessionReport {
   };
   risk: {
     drift: "none" | "low" | "medium" | "high";
+    repositoryHygiene: "none" | "low" | "medium" | "high";
     testIntegrity: "unknown" | "pass" | "warning" | "fail";
     overEdit: "none" | "low" | "medium" | "high";
   };
@@ -658,11 +663,11 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
     .command("init")
     .description("Create local-only Gleip config, policy docs, and agent workflow files.")
     .argument("[agentTarget]", "Agent target: auto, generic, codex, claude, or gemini.")
+    .option("--agent <name>", "Create instructions for auto, generic, codex, claude, or gemini.")
     .option(
-      "--agent <name>",
-      "Create instructions for auto, generic, codex, claude, or gemini."
+      "--all-agents",
+      "Deprecated; init creates one target. Use repair-agents --all to repair all targets."
     )
-    .option("--all-agents", "Deprecated; init creates one target. Use repair-agents --all to repair all targets.")
     .option("--force", "Overwrite generated Gleip files.")
     .addHelpText("after", "\nExamples:\n  $ gleip init\n  $ gleip init claude")
     .action((agentTarget: string | undefined, commandOptions: InitOptions) => {
@@ -804,6 +809,10 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
     .command("doctor")
     .description("Verify this repository can run local-only Gleip commands.")
     .option("--agents", "Check supported coding-agent instruction files.")
+    .option(
+      "--fix",
+      "Repair Gleip .gitignore protection and untrack recognized local runtime files."
+    )
     .action(async (commandOptions: DoctorOptions) => {
       await doctor(runtime, commandOptions);
     });
@@ -828,10 +837,7 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
     .command("uninstall")
     .description("Remove Gleip-generated files and managed agent sections.")
     .option("--dry-run", "Print planned cleanup actions without changing files.")
-    .option(
-      "--keep-agent-files",
-      "Keep AGENTS.md, CLAUDE.md, and GEMINI.md unchanged."
-    )
+    .option("--keep-agent-files", "Keep AGENTS.md, CLAUDE.md, and GEMINI.md unchanged.")
     .option("--force", "Skip confirmation prompts; does not remove unrelated files.")
     .addHelpText(
       "after",
@@ -921,8 +927,8 @@ function initRepository(runtime: CommandRuntime, options: InitOptions): void {
   const agentInstructions = selection.files;
   const agentInstructionFiles = agentInstructions.map((file) => file.path);
 
-  ensureGleipDirectory(runtime.cwd);
   ensureGleipGitignore(runtime.cwd);
+  ensureGleipDirectory(runtime.cwd);
   writeGleipStateIfMissing(runtime.cwd, getDefaultGleipState(runtime.now().toISOString()), force);
   writeGeneratedFile(join(runtime.cwd, ".gleip.yml"), defaultConfigContent(), force);
   writeGeneratedFile(join(runtime.cwd, "GLEIP.md"), defaultGleipReadmeContent(), force);
@@ -937,6 +943,14 @@ function initRepository(runtime: CommandRuntime, options: InitOptions): void {
       : [`Detected agent target: ${selection.detectedTarget}.`]),
     `Agent instructions created/updated: ${agentInstructionFiles.join(", ")}.`
   ];
+  const trackedRuntimeFiles = trackedGleipRuntimeFiles(runtime.cwd);
+
+  if (trackedRuntimeFiles.length > 0) {
+    output.push(
+      `Tracked Gleip runtime files detected: ${trackedRuntimeFiles.join(", ")}.`,
+      "Run `npx gleip doctor --fix` to remove them from the Git index while preserving local copies."
+    );
+  }
 
   runtime.stdout(output.join("\n"));
 }
@@ -982,7 +996,9 @@ async function runPreflightCommand(
   }
 
   if (inlineTask.length === 0) {
-    runtime.stdout('No task text provided. Pass `gleip preflight "<task>"` or use `--file <path>`.');
+    runtime.stdout(
+      'No task text provided. Pass `gleip preflight "<task>"` or use `--file <path>`.'
+    );
     runtime.setExitCode(1);
     return;
   }
@@ -990,11 +1006,7 @@ async function runPreflightCommand(
   await preflight(runtime, inlineTask);
 }
 
-async function preflight(
-  runtime: CommandRuntime,
-  task: string,
-  taskFile?: string
-): Promise<void> {
+async function preflight(runtime: CommandRuntime, task: string, taskFile?: string): Promise<void> {
   const state = loadGleipState(runtime.cwd);
   const config = (await runtime.loadConfig(runtime.cwd)) as GleipConfigLike;
   const classification = await runtime.classifyTask(task);
@@ -1031,6 +1043,7 @@ async function preflight(
   const brief = addBaselineNote(implementationBrief, baseline);
   const sessionId = createSessionId(createdAt);
 
+  ensureGleipGitignore(runtime.cwd);
   ensureGleipDirectory(runtime.cwd);
   writeFileSync(
     join(runtime.cwd, ".gleip", "session.json"),
@@ -1147,6 +1160,7 @@ async function validatePlan(
       ...result,
       validatedAt: updatedAt
     };
+    ensureGleipGitignore(runtime.cwd);
     writeFileSync(
       sessionPath,
       `${JSON.stringify(
@@ -1316,10 +1330,12 @@ async function printStatus(
   const status = statusContent(driftResult, nextAction, filtered.baseline);
 
   if (options.writeStatusFile !== false) {
+    ensureGleipGitignore(runtime.cwd);
     writeFileSync(join(runtime.cwd, ".gleip", "status.md"), status);
   }
 
   if (options.updateSession !== false) {
+    ensureGleipGitignore(runtime.cwd);
     writeFileSync(
       sessionPath,
       `${JSON.stringify(
@@ -1439,6 +1455,7 @@ async function printReport(runtime: CommandRuntime, options: ReportOptions): Pro
   });
   const markdown = await runtime.renderSessionReportMarkdown(report);
 
+  ensureGleipGitignore(runtime.cwd);
   ensureGleipDirectory(runtime.cwd);
   writeFileSync(join(runtime.cwd, ".gleip", "report.json"), `${JSON.stringify(report, null, 2)}\n`);
   writeFileSync(join(runtime.cwd, ".gleip", "report.md"), markdown);
@@ -1505,6 +1522,11 @@ async function doctor(runtime: CommandRuntime, options: DoctorOptions = {}): Pro
     return;
   }
 
+  if (options.fix === true) {
+    doctorFix(runtime);
+    return;
+  }
+
   const checks = ["Setup:", ...setupDiagnosticLines(runtime.cwd), "", "Environment:"];
   let failed = false;
 
@@ -1542,6 +1564,15 @@ async function doctor(runtime: CommandRuntime, options: DoctorOptions = {}): Pro
     checks.push(`WARN ${warning}`);
   }
 
+  const trackedRuntimeFiles = trackedGleipRuntimeFiles(runtime.cwd);
+
+  if (trackedRuntimeFiles.length > 0) {
+    checks.push(
+      `WARN Tracked Gleip runtime files: ${trackedRuntimeFiles.join(", ")}.`,
+      "     Run: npx gleip doctor --fix"
+    );
+  }
+
   runtime.stdout(["gleip doctor", ...checks].join("\n"));
 
   if (failed) {
@@ -1573,7 +1604,7 @@ function setupDiagnosticLines(cwd: string): string[] {
     setupDiagnosticLine(
       localArtifactsIgnored,
       "Local artifacts ignored",
-      "Missing or incomplete Gleip .gitignore block"
+      "Missing, incomplete, or overridden Gleip .gitignore block"
     ),
     `  OK   CLI version resolved (${GLEIP_VERSION})`,
     "  OK   Built-in init assets available"
@@ -1589,6 +1620,33 @@ function setupDiagnosticLines(cwd: string): string[] {
   }
 
   return lines;
+}
+
+function doctorFix(runtime: CommandRuntime): void {
+  const lines = ["gleip doctor --fix"];
+  const gitignoreResult = ensureGleipGitignore(runtime.cwd);
+
+  lines.push(`Gitignore protection: ${gitignoreResult}.`);
+
+  const trackedRuntimeFiles = trackedGleipRuntimeFiles(runtime.cwd);
+
+  if (trackedRuntimeFiles.length === 0) {
+    lines.push("Tracked Gleip runtime files: none.");
+  } else {
+    const result = untrackGleipRuntimeFiles(runtime.cwd, trackedRuntimeFiles);
+
+    if (result.ok) {
+      lines.push(
+        `Removed from Git index: ${trackedRuntimeFiles.join(", ")}.`,
+        "Local copies were preserved."
+      );
+    } else {
+      lines.push(`Failed to remove tracked runtime files from Git index: ${result.error}`);
+      runtime.setExitCode(1);
+    }
+  }
+
+  runtime.stdout(lines.join("\n"));
 }
 
 function setupDiagnosticLine(ok: boolean, success: string, warning: string): string {
@@ -1690,6 +1748,7 @@ interface UninstallRemoval {
 }
 
 interface UninstallPlan {
+  indexRemovals: string[];
   modifications: UninstallModification[];
   removals: UninstallRemoval[];
   skipped: string[];
@@ -1700,6 +1759,16 @@ function uninstallRepository(runtime: CommandRuntime, options: UninstallOptions)
   const plan = createUninstallPlan(runtime.cwd, options.keepAgentFiles === true);
 
   if (options.dryRun !== true) {
+    if (plan.indexRemovals.length > 0) {
+      const result = untrackGleipRuntimeFiles(runtime.cwd, plan.indexRemovals);
+
+      if (!result.ok) {
+        runtime.stdout(`Gleip uninstall failed to update the Git index: ${result.error}`);
+        runtime.setExitCode(1);
+        return;
+      }
+    }
+
     for (const removal of plan.removals) {
       rmSync(join(runtime.cwd, removal.path), {
         force: true,
@@ -1717,14 +1786,16 @@ function uninstallRepository(runtime: CommandRuntime, options: UninstallOptions)
 
 function createUninstallPlan(cwd: string, keepAgentFiles: boolean): UninstallPlan {
   const plan: UninstallPlan = {
+    indexRemovals: [],
     modifications: [],
     removals: [],
     skipped: []
   };
 
-  planOwnedPathRemoval(cwd, ".gleip", true, plan);
-  planOwnedPathRemoval(cwd, ".gleip.yml", false, plan);
-  planOwnedPathRemoval(cwd, "GLEIP.md", false, plan);
+  planGleipRuntimeCleanup(cwd, plan);
+  planGeneratedPathRemoval(cwd, ".gleip.yml", defaultConfigContent(), plan);
+  planGeneratedPathRemoval(cwd, "GLEIP.md", defaultGleipReadmeContent(), plan);
+  planGleipGitignoreCleanup(cwd, plan);
 
   for (const target of AGENT_INSTRUCTION_TARGETS) {
     planAgentInstructionCleanup(cwd, agentInstructionFile(target), keepAgentFiles, plan);
@@ -1733,10 +1804,45 @@ function createUninstallPlan(cwd: string, keepAgentFiles: boolean): UninstallPla
   return plan;
 }
 
-function planOwnedPathRemoval(
+function planGleipRuntimeCleanup(cwd: string, plan: UninstallPlan): void {
+  const gleipDirectory = join(cwd, ".gleip");
+
+  if (!existsSync(gleipDirectory)) {
+    plan.skipped.push(".gleip (not found)");
+    return;
+  }
+
+  if (!statSync(gleipDirectory).isDirectory()) {
+    plan.skipped.push(".gleip (preserved because it is not the expected directory type)");
+    return;
+  }
+
+  const existingFiles = listFilesRecursive(gleipDirectory).map((path) =>
+    normalizeRepoRelativePath(cwd, path)
+  );
+  const recognizedFiles = existingFiles.filter(isEphemeralGleipArtifactPath).sort();
+  const unknownFiles = existingFiles.filter((path) => !isEphemeralGleipArtifactPath(path)).sort();
+
+  plan.indexRemovals.push(...trackedGleipRuntimeFiles(cwd));
+
+  if (unknownFiles.length === 0) {
+    plan.removals.push({ path: ".gleip", recursive: true });
+    return;
+  }
+
+  for (const path of recognizedFiles) {
+    plan.removals.push({ path, recursive: false });
+  }
+
+  plan.skipped.push(
+    `.gleip (preserved because it contains unknown files: ${unknownFiles.join(", ")})`
+  );
+}
+
+function planGeneratedPathRemoval(
   cwd: string,
   relativePath: string,
-  expectedDirectory: boolean,
+  expectedContent: string,
   plan: UninstallPlan
 ): void {
   const filePath = join(cwd, relativePath);
@@ -1746,20 +1852,45 @@ function planOwnedPathRemoval(
     return;
   }
 
-  const matchesExpectedType = expectedDirectory
-    ? statSync(filePath).isDirectory()
-    : statSync(filePath).isFile();
-
-  if (!matchesExpectedType) {
-    plan.skipped.push(
-      `${relativePath} (preserved because it is not the expected ${
-        expectedDirectory ? "directory" : "file"
-      } type)`
-    );
+  if (!statSync(filePath).isFile()) {
+    plan.skipped.push(`${relativePath} (preserved because it is not a file)`);
     return;
   }
 
-  plan.removals.push({ path: relativePath, recursive: expectedDirectory });
+  if (readFileSync(filePath, "utf8") !== expectedContent) {
+    plan.skipped.push(`${relativePath} (preserved because it has local changes)`);
+    return;
+  }
+
+  plan.removals.push({ path: relativePath, recursive: false });
+}
+
+function planGleipGitignoreCleanup(cwd: string, plan: UninstallPlan): void {
+  const gitignorePath = join(cwd, ".gitignore");
+
+  if (!existsSync(gitignorePath)) {
+    plan.skipped.push(".gitignore Gleip block (not found)");
+    return;
+  }
+
+  if (!statSync(gitignorePath).isFile()) {
+    plan.skipped.push(".gitignore Gleip block (preserved because .gitignore is not a file)");
+    return;
+  }
+
+  const result = removeGleipGitignoreBlock(readFileSync(gitignorePath, "utf8"));
+
+  if (!result.found) {
+    plan.skipped.push(".gitignore Gleip block (not found)");
+    return;
+  }
+
+  if (result.content.length === 0) {
+    plan.removals.push({ path: ".gitignore", recursive: false });
+    return;
+  }
+
+  plan.modifications.push({ path: ".gitignore", content: result.content });
 }
 
 function planAgentInstructionCleanup(
@@ -1831,6 +1962,9 @@ function formatUninstallPlan(plan: UninstallPlan, dryRun: boolean): string {
   return [
     dryRun ? "Gleip uninstall dry run. No files changed." : "Gleip repository cleanup complete.",
     "",
+    "Git index entries to remove:",
+    ...formatUninstallItems(plan.indexRemovals),
+    "",
     "Files/directories to remove:",
     ...formatUninstallItems(plan.removals.map((removal) => removal.path)),
     "",
@@ -1869,16 +2003,25 @@ function ensureGleipGitignore(cwd: string): GitignoreUpdateResult {
   );
   const startIndex = existing.indexOf(GLEIP_GITIGNORE_START);
   const endMarkerIndex = startIndex === -1 ? -1 : existing.indexOf(GLEIP_GITIGNORE_END, startIndex);
+  const hasCompleteBlock = startIndex !== -1 && endMarkerIndex !== -1;
   let updated: string;
 
-  if (startIndex !== -1 && endMarkerIndex !== -1) {
+  if (hasCompleteBlock && isGleipRuntimeIgnoredByGit(cwd)) {
     const endIndex = endMarkerIndex + GLEIP_GITIGNORE_END.length;
     updated = `${existing.slice(0, startIndex)}${block}${existing.slice(endIndex)}`;
+  } else if (hasCompleteBlock) {
+    const withoutBlock = removeGleipGitignoreBlock(existing).content;
+    updated = appendGleipGitignoreBlock(withoutBlock, block, lineEnding);
+  } else if (startIndex !== -1 || endMarkerIndex !== -1) {
+    updated = appendGleipGitignoreBlock(
+      removeIncompleteGleipGitignoreLines(existing, lineEnding),
+      block,
+      lineEnding
+    );
   } else if (existing.length === 0) {
     updated = `${block}${lineEnding}`;
   } else {
-    const separator = existing.endsWith("\n") ? lineEnding : `${lineEnding}${lineEnding}`;
-    updated = `${existing}${separator}${block}${lineEnding}`;
+    updated = appendGleipGitignoreBlock(existing, block, lineEnding);
   }
 
   if (updated === existing) {
@@ -1905,9 +2048,120 @@ function hasGleipGitignoreProtection(cwd: string): boolean {
   }
 
   const block = content.slice(startIndex, endIndex + GLEIP_GITIGNORE_END.length);
-  return GLEIP_GITIGNORE_ENTRIES.every((entry) =>
-    block.split("\n").some((line) => line.trim() === entry)
+  return (
+    GLEIP_GITIGNORE_ENTRIES.every((entry) =>
+      block.split("\n").some((line) => line.trim() === entry)
+    ) && isGleipRuntimeIgnoredByGit(cwd)
   );
+}
+
+function appendGleipGitignoreBlock(existing: string, block: string, lineEnding: string): string {
+  if (existing.length === 0) {
+    return `${block}${lineEnding}`;
+  }
+
+  const separator = existing.endsWith("\n") ? lineEnding : `${lineEnding}${lineEnding}`;
+  return `${existing}${separator}${block}${lineEnding}`;
+}
+
+function removeIncompleteGleipGitignoreLines(content: string, lineEnding: string): string {
+  return content
+    .split(/\r?\n/u)
+    .filter((line) => {
+      const trimmed = line.trim();
+      return (
+        trimmed !== GLEIP_GITIGNORE_START &&
+        trimmed !== GLEIP_GITIGNORE_END &&
+        !GLEIP_GITIGNORE_ENTRIES.includes(trimmed as (typeof GLEIP_GITIGNORE_ENTRIES)[number])
+      );
+    })
+    .join(lineEnding)
+    .replace(new RegExp(`(?:${escapeRegExp(lineEnding)}){3,}`, "gu"), `${lineEnding}${lineEnding}`);
+}
+
+function removeGleipGitignoreBlock(content: string): { content: string; found: boolean } {
+  const startIndex = content.indexOf(GLEIP_GITIGNORE_START);
+  const endMarkerIndex = startIndex === -1 ? -1 : content.indexOf(GLEIP_GITIGNORE_END, startIndex);
+
+  if (startIndex === -1 || endMarkerIndex === -1) {
+    return { content, found: false };
+  }
+
+  const lineEnding = content.includes("\r\n") ? "\r\n" : "\n";
+  const endIndex = endMarkerIndex + GLEIP_GITIGNORE_END.length;
+  const updated = `${content.slice(0, startIndex)}${content.slice(endIndex)}`
+    .replace(new RegExp(`(?:${escapeRegExp(lineEnding)}){3,}`, "gu"), `${lineEnding}${lineEnding}`)
+    .trimEnd();
+
+  return {
+    content: updated.length === 0 ? "" : `${updated}${lineEnding}`,
+    found: true
+  };
+}
+
+function isGleipRuntimeIgnoredByGit(cwd: string): boolean {
+  const result = runGit(cwd, ["check-ignore", "--quiet", "--no-index", ".gleip/state.json"]);
+
+  if (result.status === 0) {
+    return true;
+  }
+
+  if (result.status === 1) {
+    return false;
+  }
+
+  return true;
+}
+
+function trackedGleipRuntimeFiles(cwd: string): string[] {
+  const result = runGit(cwd, ["ls-files", "--", ".gleip"]);
+
+  if (!result.ok) {
+    return [];
+  }
+
+  return result.stdout
+    .split(/\r?\n/u)
+    .map((line) => line.trim().replace(/\\/gu, "/"))
+    .filter((path) => path.length > 0)
+    .filter((path) => isEphemeralGleipArtifactPath(path) && existsSync(join(cwd, path)))
+    .sort();
+}
+
+function untrackGleipRuntimeFiles(cwd: string, paths: string[]): { ok: boolean; error?: string } {
+  const runtimePaths = Array.from(new Set(paths.map((path) => path.replace(/\\/gu, "/"))))
+    .filter(isEphemeralGleipArtifactPath)
+    .sort();
+
+  if (runtimePaths.length === 0) {
+    return { ok: true };
+  }
+
+  const result = runGit(cwd, ["rm", "--cached", "-f", "--", ...runtimePaths]);
+
+  return result.ok
+    ? { ok: true }
+    : { ok: false, error: result.stderr || result.stdout || "git rm --cached failed." };
+}
+
+function listFilesRecursive(directory: string): string[] {
+  const files: string[] = [];
+
+  for (const entry of readdirSync(directory)) {
+    const entryPath = join(directory, entry);
+    const stat = statSync(entryPath);
+
+    if (stat.isDirectory()) {
+      files.push(...listFilesRecursive(entryPath));
+      continue;
+    }
+
+    if (stat.isFile()) {
+      files.push(entryPath);
+    }
+  }
+
+  return files;
 }
 
 function getDefaultGleipState(updatedAt = new Date().toISOString()): GleipState {
@@ -2128,7 +2382,7 @@ function gleipSectionContent(target: AgentInstructionTarget): string {
 - Before the final response, run or read \`npx --no-install gleip report\`.
 - Treat \`.gleip/report.json\` and \`.gleip/report.md\` as the source of truth for Gleip final status.
 - Include only the generated compact block under \`Recommended final response\`; do not paste the full report.
-- The generated block contains scope adherence, drift risk, output discipline, estimated token waste avoided, and unresolved warnings.
+- The generated block contains scope adherence, drift risk, repository hygiene, output discipline, estimated token waste avoided, and unresolved warnings.
 - Final response must also include files changed, tests run, and risks.
 
 ## Gleip working standard
@@ -2374,9 +2628,7 @@ function normalizeDriftResult(result: DriftResult): DriftResult {
 
     return { ...finding, severity: "action_required" as const };
   });
-  const status: DriftStatus = findings.some(
-    (finding) => finding.severity === "cleanup_required"
-  )
+  const status: DriftStatus = findings.some((finding) => finding.severity === "cleanup_required")
     ? "needs_cleanup"
     : findings.some((finding) => finding.severity === "approval_required")
       ? "needs_approval"
@@ -2480,10 +2732,7 @@ function latestSuccessfulPlanValidation(
   const latestSuccessful =
     session?.latestSuccessfulValidation ?? session?.latestSuccessfulPlanValidation;
 
-  if (
-    latestSuccessful !== undefined &&
-    isSuccessfulPlanValidationStatus(latestSuccessful.status)
-  ) {
+  if (latestSuccessful !== undefined && isSuccessfulPlanValidationStatus(latestSuccessful.status)) {
     return latestSuccessful;
   }
 
@@ -2685,9 +2934,8 @@ function scopeBudgetFromSummary(
     { length: summary?.blockedWithoutApprovalCount ?? 0 },
     (_, index) => String(index + 1)
   );
-  const stopConditions = Array.from(
-    { length: summary?.stopConditionsCount ?? 0 },
-    (_, index) => String(index + 1)
+  const stopConditions = Array.from({ length: summary?.stopConditionsCount ?? 0 }, (_, index) =>
+    String(index + 1)
   );
   const requiredTests = summary?.requiredTests ?? classification.likelyRequiresTests;
 
@@ -2793,8 +3041,7 @@ function planValidationInteractionSummary(result: PlanValidationResult): string 
   }
 
   const scopeTargets = (result.targetClassifications ?? []).filter(
-    (target) =>
-      target.classification === "adjacent" || target.classification === "unexplained"
+    (target) => target.classification === "adjacent" || target.classification === "unexplained"
   );
 
   if (scopeTargets.length > 0) {
@@ -3014,8 +3261,7 @@ function applyCiExitCode(
   if (
     options.ci === true &&
     findings.some(
-      (finding) =>
-        finding.code !== undefined && CI_BLOCKING_FINDING_CODES.has(finding.code)
+      (finding) => finding.code !== undefined && CI_BLOCKING_FINDING_CODES.has(finding.code)
     )
   ) {
     runtime.setExitCode(1);
@@ -3049,6 +3295,33 @@ function isInsideGitRepository(cwd: string): boolean {
     }
 
     current = parent;
+  }
+}
+
+function runGit(
+  cwd: string,
+  args: string[]
+): { ok: boolean; status: number | null; stdout: string; stderr: string } {
+  try {
+    const result = spawnSync("git", args, {
+      cwd,
+      encoding: "utf8",
+      shell: false
+    });
+
+    return {
+      ok: result.status === 0,
+      status: result.status,
+      stdout: result.stdout ?? "",
+      stderr: result.stderr ?? ""
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: null,
+      stdout: "",
+      stderr: error instanceof Error ? error.message : String(error)
+    };
   }
 }
 

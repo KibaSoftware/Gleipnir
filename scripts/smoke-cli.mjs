@@ -88,12 +88,12 @@ if (!validation.includes("Gleip plan check aligned with declared task scope")) {
 
 const report = JSON.parse(reportJson);
 
-if (version !== "0.7.4") {
-  throw new Error(`Expected Gleip 0.7.4, received: ${version}`);
+if (version !== "0.7.5") {
+  throw new Error(`Expected Gleip 0.7.5, received: ${version}`);
 }
 
-if (report.schemaVersion !== "1.0.0" || report.version !== "0.7.4") {
-  throw new Error(`Expected Gleip 0.7.4 report schema 1.0.0, received:\n${reportJson}`);
+if (report.schemaVersion !== "1.1.0" || report.version !== "0.7.5") {
+  throw new Error(`Expected Gleip 0.7.5 report schema 1.1.0, received:\n${reportJson}`);
 }
 
 if (!report.finalResponse?.markdown?.includes("### Gleip")) {

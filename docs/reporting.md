@@ -12,7 +12,7 @@ drift from the current Git state, current session state, current configuration, 
 the latest successful accepted plan scope. It does not treat `.gleip/status.md` as
 authoritative input; status is a regenerated output artifact.
 
-Both report artifacts include a `Recommended final response` block with scope adherence, drift risk, output discipline, estimated token waste avoided, and unresolved warnings. Agents include only that compact block, not the full report.
+Both report artifacts include a `Recommended final response` block with scope adherence, task drift risk, repository hygiene, output discipline, estimated token waste avoided, and unresolved warnings. Agents include only that compact block, not the full report.
 
 ## Report Model
 
@@ -20,14 +20,14 @@ The JSON report includes:
 
 - Product and schema versions, session ID, and generation time.
 - Scope adherence, plan alignment, output discipline, and review readiness scores.
-- Drift, test-integrity, and over-edit risks.
+- Task-drift, repository-hygiene, test-integrity, and over-edit risks.
 - Estimated token waste avoided with scope, context, and output breakdowns.
 - Evidence-backed warnings with stable IDs, severity, reason, evidence, files, and suggested action.
 - Changed-file, unplanned-file, tests-mentioned, and risks-mentioned summary fields.
 - File-level ambiguous baseline attribution when a file had preflight changes and
   then changed again after preflight.
 
-The current report schema version is `1.0.0`.
+The current report schema version is `1.1.0`.
 
 ## Deterministic Scoring
 

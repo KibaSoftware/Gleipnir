@@ -132,7 +132,7 @@ describe("detectScopeDrift", () => {
           "diff --git a/package.json b/package.json",
           "--- a/package.json",
           "+++ b/package.json",
-          '@@ -2 +2 @@',
+          "@@ -2 +2 @@",
           '-  "version": "0.6.0",',
           '+  "version": "0.7.0",'
         ].join("\n"),
@@ -149,7 +149,7 @@ describe("detectScopeDrift", () => {
           "diff --git a/package.json b/package.json",
           "--- a/package.json",
           "+++ b/package.json",
-          '@@ -10,2 +10,3 @@',
+          "@@ -10,2 +10,3 @@",
           '   "dependencies": {',
           '+    "zod": "^3.0.0",',
           '     "yaml": "^2.0.0"'
@@ -469,9 +469,7 @@ describe("detectScopeDrift", () => {
   });
 
   it("derives cleanup-specific next action", () => {
-    expect(
-      deriveNextAction([{ code: "LOCAL_ARTIFACT_INCLUDED" }])
-    ).toBe(
+    expect(deriveNextAction([{ code: "LOCAL_ARTIFACT_INCLUDED" }])).toBe(
       "Remove .gleip session artifacts from the change set or ensure .gleip/ is ignored, then rerun status."
     );
   });
@@ -637,9 +635,7 @@ describe("detectScopeDrift", () => {
         totalLinesAdded: 1
       })
     });
-    const finding = result.findings.find(
-      (candidate) => candidate.code === "SCOPE_EXPANSION_WARN"
-    );
+    const finding = result.findings.find((candidate) => candidate.code === "SCOPE_EXPANSION_WARN");
 
     expect(finding).toMatchObject({
       code: "SCOPE_EXPANSION_WARN",
@@ -673,7 +669,7 @@ describe("session reports", () => {
   it("generates stable warnings with required evidence fields", () => {
     const report = generateSessionReport({
       version: "0.3.0",
-      schemaVersion: "1.0.0",
+      schemaVersion: "1.1.0",
       generatedAt: "2026-06-09T00:00:00.000Z",
       diff: reportDiff(),
       driftResult: {
@@ -695,7 +691,7 @@ describe("session reports", () => {
   it("penalizes unplanned file changes and estimates flagged diff size", () => {
     const report = generateSessionReport({
       version: "0.3.0",
-      schemaVersion: "1.0.0",
+      schemaVersion: "1.1.0",
       sessionId: "session-1",
       generatedAt: "2026-06-09T00:00:00.000Z",
       scopeBudget: {
@@ -739,8 +735,8 @@ describe("session reports", () => {
 
   it("uses accepted plan validation for unplanned-file analysis", () => {
     const report = generateSessionReport({
-      version: "0.7.4",
-      schemaVersion: "1.0.0",
+      version: "0.7.5",
+      schemaVersion: "1.1.0",
       sessionId: "session-1",
       generatedAt: "2026-06-09T00:00:00.000Z",
       scopeBudget: {
@@ -795,8 +791,8 @@ describe("session reports", () => {
 
   it("reports dirty baseline attribution without changing drift risk", () => {
     const report = generateSessionReport({
-      version: "0.7.4",
-      schemaVersion: "1.0.0",
+      version: "0.7.5",
+      schemaVersion: "1.1.0",
       sessionId: "session-1",
       generatedAt: "2026-06-09T00:00:00.000Z",
       scopeBudget: {
@@ -833,12 +829,60 @@ describe("session reports", () => {
     );
   });
 
+  it("reports tracked Gleip runtime files as repository hygiene without task drift", () => {
+    const report = generateSessionReport({
+      version: "0.7.5",
+      schemaVersion: "1.1.0",
+      sessionId: "session-1",
+      generatedAt: "2026-06-09T00:00:00.000Z",
+      scopeBudget: {
+        softLimits: {
+          maxFilesChanged: 5,
+          maxLinesAdded: 100,
+          maxLinesDeleted: 100
+        },
+        allowedPaths: [],
+        requiredTests: false
+      },
+      diff: reportDiff(),
+      driftResult: {
+        status: "needs_cleanup",
+        findings: [
+          {
+            code: "LOCAL_ARTIFACT_INCLUDED",
+            severity: "cleanup_required",
+            title: "Local Gleip artifact included",
+            message: ".gleip/session.json are tracked by git.",
+            examples: [".gleip/session.json"],
+            recommendation:
+              "Remove .gleip session artifacts from version control and keep .gleip/ ignored.",
+            category: "local_artifacts"
+          }
+        ]
+      }
+    });
+
+    expect(report.scores.scopeAdherence).toBe(100);
+    expect(report.risk.drift).toBe("none");
+    expect(report.risk.repositoryHygiene).toBe("high");
+    expect(report.warnings).toContainEqual(
+      expect.objectContaining({
+        id: "LOCAL_ARTIFACT_INCLUDED",
+        severity: "high",
+        files: [".gleip/session.json"]
+      })
+    );
+    expect(report.finalResponse.markdown).toContain("Drift risk: None");
+    expect(report.finalResponse.markdown).toContain("Repository hygiene: High");
+    expect(report.finalResponse.markdown).toContain("LOCAL_ARTIFACT_INCLUDED");
+  });
+
   it("detects missing output evidence and repeated narration", () => {
     const repeated =
       "This is repeated narration that is long enough to be treated as review noise.";
     const report = generateSessionReport({
       version: "0.3.0",
-      schemaVersion: "1.0.0",
+      schemaVersion: "1.1.0",
       generatedAt: "2026-06-09T00:00:00.000Z",
       scopeBudget: {
         softLimits: {
@@ -881,7 +925,7 @@ describe("session reports", () => {
     ].join("\n");
     const input = {
       version: "0.3.0",
-      schemaVersion: "1.0.0",
+      schemaVersion: "1.1.0",
       generatedAt: "2026-06-09T00:00:00.000Z",
       scopeBudget: {
         softLimits: {
@@ -920,7 +964,7 @@ describe("session reports", () => {
   it("generates a compact final response block", () => {
     const report = generateSessionReport({
       version: "0.3.0",
-      schemaVersion: "1.0.0",
+      schemaVersion: "1.1.0",
       generatedAt: "2026-06-09T00:00:00.000Z",
       diff: reportDiff(),
       driftResult: {
@@ -932,13 +976,13 @@ describe("session reports", () => {
     expect(report.finalResponse.markdown).toContain("### Gleip");
     expect(report.finalResponse.markdown).toContain("Scope adherence:");
     expect(report.finalResponse.markdown).toContain("Output discipline:");
-    expect(report.finalResponse.markdown.split("\n")).toHaveLength(6);
+    expect(report.finalResponse.markdown.split("\n")).toHaveLength(7);
   });
 
   it("renders a concise markdown report", () => {
     const report = generateSessionReport({
       version: "0.3.0",
-      schemaVersion: "1.0.0",
+      schemaVersion: "1.1.0",
       sessionId: "session-1",
       generatedAt: "2026-06-09T00:00:00.000Z",
       diff: reportDiff(),
@@ -951,6 +995,7 @@ describe("session reports", () => {
 
     expect(markdown).toContain("# Gleipnir Session Report");
     expect(markdown).toContain("Scope adherence:");
+    expect(markdown).toContain("Repository hygiene:");
     expect(markdown).toContain("Estimated token waste avoided:");
     expect(markdown).toContain("## Recommended final response");
     expect(markdown).toContain("It is not exact model billing or API usage data.");

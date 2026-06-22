@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -75,7 +76,7 @@ describe("createGleipCommand", () => {
   it("--version prints the package version", async () => {
     const output = (await runHelpCommand(["--version"])).join("\n");
 
-    expect(output).toBe("0.7.4");
+    expect(output).toBe("0.7.5");
   });
 
   it("command help shows important flags and stdin support", async () => {
@@ -100,6 +101,7 @@ describe("createGleipCommand", () => {
     expect(initHelp).toContain("--agent <name>");
     expect(initHelp).toContain("--all-agents");
     expect(doctorHelp).toContain("--agents");
+    expect(doctorHelp).toContain("--fix");
     expect(repairHelp).toContain("--all");
     expect(uninstallHelp).toContain("cleanup");
     expect(uninstallHelp).toContain("--dry-run");
@@ -132,7 +134,7 @@ describe("createGleipCommand", () => {
     expect(packageJson.exports["."].import).toBe("./dist/index.js");
     expect(packageJson.exports["."].types).toBe("./dist/index.d.ts");
     expect(packageJson.name).toBe("gleip");
-    expect(packageJson.version).toBe("0.7.4");
+    expect(packageJson.version).toBe("0.7.5");
     expect(packageJson.dependencies).toEqual({
       commander: "^12.0.0",
       yaml: "^2.0.0",
@@ -177,7 +179,7 @@ describe("createGleipCommand", () => {
     });
   });
 
-  it("release metadata uses version 0.7.4 across packages", () => {
+  it("release metadata uses version 0.7.5 across packages", () => {
     const packagePaths = [
       "package.json",
       "packages/cli/package.json",
@@ -193,7 +195,7 @@ describe("createGleipCommand", () => {
       const packageJson = JSON.parse(readFileSync(join(repoRoot, packagePath), "utf8")) as {
         version: string;
       };
-      expect(packageJson.version).toBe("0.7.4");
+      expect(packageJson.version).toBe("0.7.5");
     }
 
     const cliPackageJson = readFileSync(join(repoRoot, "packages", "cli", "package.json"), "utf8");
@@ -369,15 +371,166 @@ describe("createGleipCommand", () => {
       expect(gitignore).toContain(".gleip/");
     }
 
-    for (const versionedFile of [
-      ".gleip.yml",
-      "GLEIP.md",
-      "AGENTS.md",
-      "CLAUDE.md",
-      "GEMINI.md"
-    ]) {
+    for (const versionedFile of [".gleip.yml", "GLEIP.md", "AGENTS.md", "CLAUDE.md", "GEMINI.md"]) {
       expect(gitignore).not.toContain(versionedFile);
     }
+  });
+
+  it("init protects runtime files before they can become tracked in a real git repo", async () => {
+    const repo = createGitRepo();
+
+    await runRealCommand(repo, ["init"]);
+
+    expect(git(repo, ["ls-files", "--", ".gleip"])).toBe("");
+    expect(gitSucceeds(repo, ["check-ignore", "--quiet", "--no-index", ".gleip/state.json"])).toBe(
+      true
+    );
+  });
+
+  it("real repeated init keeps one effective Gleip ignore block", async () => {
+    const repo = createGitRepo();
+
+    await runRealCommand(repo, ["init"]);
+    await runRealCommand(repo, ["init"]);
+
+    const gitignore = readFileSync(join(repo, ".gitignore"), "utf8");
+    expect(countOccurrences(gitignore, "# Gleip local artifacts")).toBe(1);
+    expect(countOccurrences(gitignore, "# End Gleip local artifacts")).toBe(1);
+    expect(gitSucceeds(repo, ["check-ignore", "--quiet", "--no-index", ".gleip/state.json"])).toBe(
+      true
+    );
+  });
+
+  it("real init repairs a missing ignore rule after prior initialization", async () => {
+    const repo = createGitRepo();
+
+    await runRealCommand(repo, ["init"]);
+    rmSync(join(repo, ".gitignore"), { force: true });
+    await runRealCommand(repo, ["init"]);
+
+    expect(readFileSync(join(repo, ".gitignore"), "utf8")).toContain(".gleip/");
+    expect(gitSucceeds(repo, ["check-ignore", "--quiet", "--no-index", ".gleip/state.json"])).toBe(
+      true
+    );
+  });
+
+  it("real preflight repairs a missing ignore rule before writing runtime files", async () => {
+    const repo = createGitRepo();
+
+    await runRealCommand(repo, ["init"]);
+    rmSync(join(repo, ".gitignore"), { force: true });
+    await runRealCommand(repo, ["preflight", "Audit artifact lifecycle"]);
+
+    expect(readFileSync(join(repo, ".gitignore"), "utf8")).toContain(".gleip/");
+    expect(git(repo, ["ls-files", "--", ".gleip"])).toBe("");
+    expect(
+      gitSucceeds(repo, ["check-ignore", "--quiet", "--no-index", ".gleip/session.json"])
+    ).toBe(true);
+  });
+
+  it("real report without prior init protects generated report files", async () => {
+    const repo = createGitRepo();
+
+    await runRealCommand(repo, ["report"]);
+
+    expect(readFileSync(join(repo, ".gitignore"), "utf8")).toContain(".gleip/");
+    expect(existsSync(join(repo, ".gleip", "report.json"))).toBe(true);
+    expect(git(repo, ["ls-files", "--", ".gleip"])).toBe("");
+    expect(gitSucceeds(repo, ["check-ignore", "--quiet", "--no-index", ".gleip/report.json"])).toBe(
+      true
+    );
+  });
+
+  it("real init reports already tracked Gleip runtime files without untracking them", async () => {
+    const repo = createGitRepo();
+    writeRepoFile(repo, ".gleip/session.json", "{}\n");
+    git(repo, ["add", "-f", ".gleip/session.json"]);
+
+    const result = await runRealCommandResult(repo, ["init"]);
+    const ci = await runRealCommandResult(repo, ["check", "--ci"]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.output.join("\n")).toContain("Tracked Gleip runtime files detected");
+    expect(git(repo, ["ls-files", "--", ".gleip/session.json"])).toBe(".gleip/session.json");
+    expect(ci.exitCode).toBe(1);
+    expect(ci.output.join("\n")).toContain("LOCAL_ARTIFACT_INCLUDED");
+  });
+
+  it("doctor --fix repairs ignore policy and untracks only recognized runtime files", async () => {
+    const repo = createGitRepo();
+
+    await runRealCommand(repo, ["init"]);
+    git(repo, ["add", ".gitignore", ".gleip.yml", "GLEIP.md", "AGENTS.md"]);
+    git(repo, ["commit", "-m", "init gleip"]);
+    writeRepoFile(repo, ".gleip/session.json", "{}\n");
+    writeRepoFile(repo, ".gleip/manual-note.txt", "manual\n");
+    git(repo, ["add", "-f", ".gleip/session.json"]);
+    const fix = await runRealCommandResult(repo, ["doctor", "--fix"]);
+
+    expect(fix.exitCode).toBe(0);
+    expect(fix.output.join("\n")).toContain("Removed from Git index: .gleip/session.json.");
+    expect(existsSync(join(repo, ".gleip", "session.json"))).toBe(true);
+    expect(existsSync(join(repo, ".gleip", "manual-note.txt"))).toBe(true);
+    expect(git(repo, ["ls-files", "--", ".gleip"])).toBe("");
+
+    const ci = await runRealCommandResult(repo, ["check", "--ci"]);
+    expect(ci.exitCode).toBe(0);
+    expect(ci.output.join("\n")).toContain("status: clean");
+  });
+
+  it("real report separates tracked runtime cleanup from task drift risk", async () => {
+    const repo = createGitRepo();
+
+    await runRealCommand(repo, ["init"]);
+    git(repo, ["add", ".gitignore", ".gleip.yml", "GLEIP.md", "AGENTS.md"]);
+    git(repo, ["commit", "-m", "init gleip"]);
+    await runRealCommand(repo, ["preflight", "Audit artifact classification"]);
+    git(repo, ["add", "-f", ".gleip/session.json"]);
+
+    const ci = await runRealCommandResult(repo, ["check", "--ci"]);
+    const output = await runRealCommand(repo, ["report", "--json"]);
+    const report = JSON.parse(output.join("\n")) as {
+      finalResponse: { markdown: string };
+      risk: { drift: string; repositoryHygiene: string };
+      scores: { scopeAdherence: number };
+      warnings: Array<{ id: string; severity: string }>;
+    };
+
+    expect(ci.exitCode).toBe(1);
+    expect(report.scores.scopeAdherence).toBe(100);
+    expect(report.risk.drift).toBe("none");
+    expect(report.risk.repositoryHygiene).toBe("high");
+    expect(report.warnings).toContainEqual(
+      expect.objectContaining({
+        id: "LOCAL_ARTIFACT_INCLUDED",
+        severity: "high"
+      })
+    );
+    expect(report.finalResponse.markdown).toContain("Drift risk: None");
+    expect(report.finalResponse.markdown).toContain("Repository hygiene: High");
+    expect(report.finalResponse.markdown).toContain("LOCAL_ARTIFACT_INCLUDED");
+  });
+
+  it("doctor detects and fixes negated ignore rules that unignore .gleip", async () => {
+    const repo = createGitRepo();
+
+    await runRealCommand(repo, ["init"]);
+    writeFileSync(
+      join(repo, ".gitignore"),
+      `${readFileSync(join(repo, ".gitignore"), "utf8")}!.gleip/\n!.gleip/**\n`
+    );
+
+    const doctor = await runRealCommand(repo, ["doctor"]);
+    expect(doctor.join("\n")).toContain(
+      "WARN Missing, incomplete, or overridden Gleip .gitignore block"
+    );
+
+    await runRealCommand(repo, ["doctor", "--fix"]);
+    const gitignore = readFileSync(join(repo, ".gitignore"), "utf8");
+    expect(countOccurrences(gitignore, "# Gleip local artifacts")).toBe(1);
+    expect(gitSucceeds(repo, ["check-ignore", "--quiet", "--no-index", ".gleip/state.json"])).toBe(
+      true
+    );
   });
 
   it("init success output includes next normal flow", async () => {
@@ -494,8 +647,10 @@ describe("createGleipCommand", () => {
     expect(agents).toContain(
       "Before the final response, run or read `npx --no-install gleip report`"
     );
-    expect(agents).toContain("Report `advisory`, `needs_attention`, `needs_cleanup`, or `needs_approval`");
-    expect(agents).toContain("scope adherence, drift risk, output discipline");
+    expect(agents).toContain(
+      "Report `advisory`, `needs_attention`, `needs_cleanup`, or `needs_approval`"
+    );
+    expect(agents).toContain("scope adherence, drift risk, repository hygiene, output discipline");
     expect(agents).toContain("estimated token waste avoided");
     expect(agents).toContain("Gleip checklist for every coding task");
     expect(agents).toContain("approval-required");
@@ -830,8 +985,8 @@ describe("createGleipCommand", () => {
     expect(report).toContain("WARN Missing .gleip/state.json");
     expect(report).toContain("WARN Missing .gleip.yml or GLEIP.md");
     expect(report).toContain("WARN Missing Gleip-managed agent instructions");
-    expect(report).toContain("WARN Missing or incomplete Gleip .gitignore block");
-    expect(report).toContain("OK   CLI version resolved (0.7.4)");
+    expect(report).toContain("WARN Missing, incomplete, or overridden Gleip .gitignore block");
+    expect(report).toContain("OK   CLI version resolved (0.7.5)");
     expect(report).toContain("OK   Built-in init assets available");
     expect(report).toContain("Run: npx gleip init");
   });
@@ -860,7 +1015,9 @@ describe("createGleipCommand", () => {
 
     const output = await runCommand(repo, ["doctor"]);
 
-    expect(output.join("\n")).toContain("WARN Missing or incomplete Gleip .gitignore block");
+    expect(output.join("\n")).toContain(
+      "WARN Missing, incomplete, or overridden Gleip .gitignore block"
+    );
     expect(output.join("\n")).toContain("Run: npx gleip init");
   });
 
@@ -1039,9 +1196,7 @@ describe("createGleipCommand", () => {
         likelyRelevantFiles: Array<{ path: string }>;
       };
     };
-    const budget = JSON.parse(
-      readFileSync(join(repo, ".gleip", "scope-budget.json"), "utf8")
-    ) as {
+    const budget = JSON.parse(readFileSync(join(repo, ".gleip", "scope-budget.json"), "utf8")) as {
       allowedPaths: string[];
       expectedFilesChanged: { min: number; max: number };
     };
@@ -1617,7 +1772,9 @@ describe("createGleipCommand", () => {
 
     const validationOutput = output.join("\n");
     expect(validationOutput).toContain("Gleip plan check aligned with declared task scope");
-    expect(validationOutput).toContain("Next: implement the plan, run verification, then run status");
+    expect(validationOutput).toContain(
+      "Next: implement the plan, run verification, then run status"
+    );
     expect(validationOutput.split("\n")).toHaveLength(2);
   });
 
@@ -1719,20 +1876,14 @@ describe("createGleipCommand", () => {
     expect(session.latestPlanValidation.parsedPlan.contextFiles).toContain("plan.md");
     expect(session.latestPlanValidation.parsedPlan.proposedFiles).not.toContain("plan.md");
 
-    expect(output.join("\n")).toContain(
-      "Gleip plan check aligned with declared task scope"
-    );
+    expect(output.join("\n")).toContain("Gleip plan check aligned with declared task scope");
   });
 
   it("validate-plan reports a missing plan file with an actionable message", async () => {
     const repo = createTempRepo();
     await runCommand(repo, ["preflight", "Add CSV export to users table"]);
 
-    const result = await runCommandResult(repo, [
-      "validate-plan",
-      "--file",
-      "missing-plan.md"
-    ]);
+    const result = await runCommandResult(repo, ["validate-plan", "--file", "missing-plan.md"]);
 
     expect(result.output.join("\n")).toContain("Plan file not found: missing-plan.md.");
     expect(result.exitCode).toBe(1);
@@ -2296,41 +2447,45 @@ describe("createGleipCommand", () => {
       | { expectedPaths?: string[]; derivedScope?: string[]; explicitScope?: string[] }
       | undefined;
     await runCommand(repo, ["preflight", "Update the user table and shared formatter"]);
-    await runCommand(repo, ["validate-plan", "Update src/users/table.ts and src/shared/format.ts"], {
-      validateAgentPlan: (input) => ({
-        status: "aligned",
-        findings: [],
-        summary: "Plan is aligned.",
-        nextAction: "Implement the plan.",
-        parsedPlan: {
-          rawText: input.planText,
-          proposedFiles: ["src/users/table.ts", "src/shared/format.ts"],
-          contextFiles: [],
-          outputFiles: [],
-          proposedDependencies: [],
-          proposedTests: [],
-          mentionedRiskyAreas: [],
-          mentionsCiChanges: false,
-          mentionsNewDependencies: false,
-          mentionsTestWeakening: false,
-          mentionsBroadRefactor: false
-        },
-        targetClassifications: [
-          {
-            target: "src/users/table.ts",
-            classification: "direct",
-            reason: "Target matches explicit task scope.",
-            evidence: "src/users/table.ts"
+    await runCommand(
+      repo,
+      ["validate-plan", "Update src/users/table.ts and src/shared/format.ts"],
+      {
+        validateAgentPlan: (input) => ({
+          status: "aligned",
+          findings: [],
+          summary: "Plan is aligned.",
+          nextAction: "Implement the plan.",
+          parsedPlan: {
+            rawText: input.planText,
+            proposedFiles: ["src/users/table.ts", "src/shared/format.ts"],
+            contextFiles: [],
+            outputFiles: [],
+            proposedDependencies: [],
+            proposedTests: [],
+            mentionedRiskyAreas: [],
+            mentionsCiChanges: false,
+            mentionsNewDependencies: false,
+            mentionsTestWeakening: false,
+            mentionsBroadRefactor: false
           },
-          {
-            target: "src/shared/format.ts",
-            classification: "derived",
-            reason: "Target is shared by the direct target.",
-            evidence: "src/users/table.ts"
-          }
-        ]
-      })
-    });
+          targetClassifications: [
+            {
+              target: "src/users/table.ts",
+              classification: "direct",
+              reason: "Target matches explicit task scope.",
+              evidence: "src/users/table.ts"
+            },
+            {
+              target: "src/shared/format.ts",
+              classification: "derived",
+              reason: "Target is shared by the direct target.",
+              evidence: "src/users/table.ts"
+            }
+          ]
+        })
+      }
+    );
 
     await runCommand(repo, ["status"], {
       collectWorkingTreeDiff: () =>
@@ -2447,7 +2602,8 @@ describe("createGleipCommand", () => {
             message: "docs/unrelated.md changed outside expected scope.",
             examples: ["docs/unrelated.md"],
             category: "allowed_scope",
-            recommendation: "Add rationale for adjacent targets and remove or justify unexplained targets."
+            recommendation:
+              "Add rationale for adjacent targets and remove or justify unexplained targets."
           }
         ],
         metrics: {
@@ -2494,41 +2650,45 @@ describe("createGleipCommand", () => {
       | { expectedPaths?: string[]; derivedScope?: string[]; explicitScope?: string[] }
       | undefined;
     await runCommand(repo, ["preflight", "Update the user table and shared formatter"]);
-    await runCommand(repo, ["validate-plan", "Update src/users/table.ts and src/shared/format.ts"], {
-      validateAgentPlan: (input) => ({
-        status: "aligned",
-        findings: [],
-        summary: "Plan is aligned.",
-        nextAction: "Implement the plan.",
-        parsedPlan: {
-          rawText: input.planText,
-          proposedFiles: ["src/users/table.ts", "src/shared/format.ts"],
-          contextFiles: [],
-          outputFiles: [],
-          proposedDependencies: [],
-          proposedTests: [],
-          mentionedRiskyAreas: [],
-          mentionsCiChanges: false,
-          mentionsNewDependencies: false,
-          mentionsTestWeakening: false,
-          mentionsBroadRefactor: false
-        },
-        targetClassifications: [
-          {
-            target: "src/users/table.ts",
-            classification: "direct",
-            reason: "Target matches explicit task scope.",
-            evidence: "src/users/table.ts"
+    await runCommand(
+      repo,
+      ["validate-plan", "Update src/users/table.ts and src/shared/format.ts"],
+      {
+        validateAgentPlan: (input) => ({
+          status: "aligned",
+          findings: [],
+          summary: "Plan is aligned.",
+          nextAction: "Implement the plan.",
+          parsedPlan: {
+            rawText: input.planText,
+            proposedFiles: ["src/users/table.ts", "src/shared/format.ts"],
+            contextFiles: [],
+            outputFiles: [],
+            proposedDependencies: [],
+            proposedTests: [],
+            mentionedRiskyAreas: [],
+            mentionsCiChanges: false,
+            mentionsNewDependencies: false,
+            mentionsTestWeakening: false,
+            mentionsBroadRefactor: false
           },
-          {
-            target: "src/shared/format.ts",
-            classification: "derived",
-            reason: "Target is shared by the direct target.",
-            evidence: "src/users/table.ts"
-          }
-        ]
-      })
-    });
+          targetClassifications: [
+            {
+              target: "src/users/table.ts",
+              classification: "direct",
+              reason: "Target matches explicit task scope.",
+              evidence: "src/users/table.ts"
+            },
+            {
+              target: "src/shared/format.ts",
+              classification: "derived",
+              reason: "Target is shared by the direct target.",
+              evidence: "src/users/table.ts"
+            }
+          ]
+        })
+      }
+    );
     await runCommand(repo, ["validate-plan", "Update package.json and scripts/release.ts"], {
       validateAgentPlan: (input) => ({
         status: "needs_approval",
@@ -2636,9 +2796,7 @@ describe("createGleipCommand", () => {
     };
 
     expect(report.risk.drift).toBe("none");
-    expect(report.warnings.map((warning) => warning.id)).not.toContain(
-      "LOCAL_ARTIFACT_INCLUDED"
-    );
+    expect(report.warnings.map((warning) => warning.id)).not.toContain("LOCAL_ARTIFACT_INCLUDED");
     expect(report.warnings.map((warning) => warning.id)).not.toContain("output.tests-missing");
     expect(report.warnings.map((warning) => warning.id)).not.toContain("output.risks-missing");
     expect(JSON.stringify(report.warnings)).not.toContain("Remove .gleip session artifacts");
@@ -2650,41 +2808,45 @@ describe("createGleipCommand", () => {
       | { expectedPaths?: string[]; derivedScope?: string[]; explicitScope?: string[] }
       | undefined;
     await runCommand(repo, ["preflight", "Update the user table and shared formatter"]);
-    await runCommand(repo, ["validate-plan", "Update src/users/table.ts and src/shared/format.ts"], {
-      validateAgentPlan: (input) => ({
-        status: "aligned",
-        findings: [],
-        summary: "Plan is aligned.",
-        nextAction: "Implement the plan.",
-        parsedPlan: {
-          rawText: input.planText,
-          proposedFiles: ["src/users/table.ts", "src/shared/format.ts"],
-          contextFiles: [],
-          outputFiles: [],
-          proposedDependencies: [],
-          proposedTests: [],
-          mentionedRiskyAreas: [],
-          mentionsCiChanges: false,
-          mentionsNewDependencies: false,
-          mentionsTestWeakening: false,
-          mentionsBroadRefactor: false
-        },
-        targetClassifications: [
-          {
-            target: "src/users/table.ts",
-            classification: "direct",
-            reason: "Target matches explicit task scope.",
-            evidence: "src/users/table.ts"
+    await runCommand(
+      repo,
+      ["validate-plan", "Update src/users/table.ts and src/shared/format.ts"],
+      {
+        validateAgentPlan: (input) => ({
+          status: "aligned",
+          findings: [],
+          summary: "Plan is aligned.",
+          nextAction: "Implement the plan.",
+          parsedPlan: {
+            rawText: input.planText,
+            proposedFiles: ["src/users/table.ts", "src/shared/format.ts"],
+            contextFiles: [],
+            outputFiles: [],
+            proposedDependencies: [],
+            proposedTests: [],
+            mentionedRiskyAreas: [],
+            mentionsCiChanges: false,
+            mentionsNewDependencies: false,
+            mentionsTestWeakening: false,
+            mentionsBroadRefactor: false
           },
-          {
-            target: "src/shared/format.ts",
-            classification: "derived",
-            reason: "Target is shared by the direct target.",
-            evidence: "src/users/table.ts"
-          }
-        ]
-      })
-    });
+          targetClassifications: [
+            {
+              target: "src/users/table.ts",
+              classification: "direct",
+              reason: "Target matches explicit task scope.",
+              evidence: "src/users/table.ts"
+            },
+            {
+              target: "src/shared/format.ts",
+              classification: "derived",
+              reason: "Target is shared by the direct target.",
+              evidence: "src/users/table.ts"
+            }
+          ]
+        })
+      }
+    );
     await runCommand(repo, ["validate-plan", "Update package.json and scripts/release.ts"], {
       validateAgentPlan: (input) => ({
         status: "needs_approval",
@@ -2759,27 +2921,31 @@ describe("createGleipCommand", () => {
     const repo = createTempRepo();
     let observedScope: { expectedPaths?: string[]; explicitScope?: string[] } | undefined;
     await runCommand(repo, ["preflight", "Update the user table and shared formatter"]);
-    await runCommand(repo, ["validate-plan", "Update src/users/table.ts and src/shared/format.ts"], {
-      validateAgentPlan: (input) => ({
-        status: "aligned",
-        findings: [],
-        summary: "Plan is aligned.",
-        nextAction: "Implement the plan.",
-        parsedPlan: {
-          rawText: input.planText,
-          proposedFiles: ["src/users/table.ts", "src/shared/format.ts"],
-          contextFiles: [],
-          outputFiles: [],
-          proposedDependencies: [],
-          proposedTests: [],
-          mentionedRiskyAreas: [],
-          mentionsCiChanges: false,
-          mentionsNewDependencies: false,
-          mentionsTestWeakening: false,
-          mentionsBroadRefactor: false
-        }
-      })
-    });
+    await runCommand(
+      repo,
+      ["validate-plan", "Update src/users/table.ts and src/shared/format.ts"],
+      {
+        validateAgentPlan: (input) => ({
+          status: "aligned",
+          findings: [],
+          summary: "Plan is aligned.",
+          nextAction: "Implement the plan.",
+          parsedPlan: {
+            rawText: input.planText,
+            proposedFiles: ["src/users/table.ts", "src/shared/format.ts"],
+            contextFiles: [],
+            outputFiles: [],
+            proposedDependencies: [],
+            proposedTests: [],
+            mentionedRiskyAreas: [],
+            mentionsCiChanges: false,
+            mentionsNewDependencies: false,
+            mentionsTestWeakening: false,
+            mentionsBroadRefactor: false
+          }
+        })
+      }
+    );
     await runCommand(repo, ["validate-plan", "Update package.json"], {
       validateAgentPlan: (input) => ({
         status: "needs_approval",
@@ -2887,10 +3053,10 @@ describe("createGleipCommand", () => {
     expect(output.join("\n")).toContain("Gleip report ready · output discipline:");
     expect(output.join("\n")).toContain("Report: .gleip/report.md");
     expect(output.join("\n").split("\n")).toHaveLength(3);
-    expect(report.schemaVersion).toBe("1.0.0");
+    expect(report.schemaVersion).toBe("1.1.0");
     expect(report.scores.scopeAdherence).toBeGreaterThanOrEqual(0);
     expect(report.finalResponse.markdown).toContain("### Gleip");
-    expect(report.finalResponse.markdown.split("\n")).toHaveLength(6);
+    expect(report.finalResponse.markdown.split("\n")).toHaveLength(7);
     expect(markdown).toContain("# Gleipnir Session Report");
     expect(markdown).toContain("Estimated token waste avoided:");
     expect(markdown).toContain("## Recommended final response");
@@ -2917,7 +3083,7 @@ describe("createGleipCommand", () => {
     expect(output).toHaveLength(1);
     expect(output[0]?.trimStart().startsWith("{")).toBe(true);
     expect(output.join("\n")).not.toContain("Gleip report ready");
-    expect(report.version).toBe("0.7.4");
+    expect(report.version).toBe("0.7.5");
     expect(report.generatedAt).toBe("2026-05-30T00:00:00.000Z");
     expect(report.summary.filesChanged).toBe(0);
     expect(existsSync(join(repo, ".gleip", "report.json"))).toBe(true);
@@ -3064,6 +3230,34 @@ describe("createGleipCommand", () => {
     );
   });
 
+  it("real uninstall preserves unknown .gleip files and removes the managed ignore block", async () => {
+    const repo = createGitRepo();
+    writeRepoFile(repo, ".gitignore", "node_modules/\n");
+    await runRealCommand(repo, ["init"]);
+    writeRepoFile(repo, ".gleip/manual-note.txt", "manual\n");
+
+    const output = await runRealCommand(repo, ["uninstall"]);
+
+    expect(output.join("\n")).toContain("Gleip repository cleanup complete.");
+    expect(existsSync(join(repo, ".gleip", "manual-note.txt"))).toBe(true);
+    expect(existsSync(join(repo, ".gleip", "state.json"))).toBe(false);
+    expect(readFileSync(join(repo, ".gitignore"), "utf8")).toBe("node_modules/\n");
+  });
+
+  it("real reinstall through init restores a clean repository lifecycle after uninstall", async () => {
+    const repo = createGitRepo();
+
+    await runRealCommand(repo, ["init"]);
+    await runRealCommand(repo, ["uninstall"]);
+    await runRealCommand(repo, ["init"]);
+
+    expect(existsSync(join(repo, ".gleip", "state.json"))).toBe(true);
+    expect(git(repo, ["ls-files", "--", ".gleip"])).toBe("");
+    expect(gitSucceeds(repo, ["check-ignore", "--quiet", "--no-index", ".gleip/state.json"])).toBe(
+      true
+    );
+  });
+
   it("uninstall removes managed sections while preserving unrelated agent instructions", async () => {
     const repo = createTempRepo();
     writeRepoFile(repo, "AGENTS.md", "# Existing Agent Rules\n\nKeep agent content.\n");
@@ -3167,6 +3361,17 @@ describe("createGleipCommand", () => {
 function createTempRepo(): string {
   const repo = mkdtempSync(join(tmpdir(), "gleip-cli-"));
   tempRepos.push(repo);
+  return repo;
+}
+
+function createGitRepo(): string {
+  const repo = createTempRepo();
+  git(repo, ["init"]);
+  git(repo, ["config", "user.email", "gleip@example.com"]);
+  git(repo, ["config", "user.name", "Gleip Test"]);
+  writeRepoFile(repo, "README.md", "base\n");
+  git(repo, ["add", "README.md"]);
+  git(repo, ["commit", "-m", "initial"]);
   return repo;
 }
 
@@ -3285,6 +3490,45 @@ async function runCommandResult(
   return { exitCode, output };
 }
 
+async function runRealCommand(cwd: string, args: string[]): Promise<string[]> {
+  return (await runRealCommandResult(cwd, args)).output;
+}
+
+async function runRealCommandResult(
+  cwd: string,
+  args: string[]
+): Promise<{ exitCode: number; output: string[] }> {
+  let exitCode = 0;
+  const output: string[] = [];
+  const program = createGleipCommand({
+    cwd,
+    now: () => new Date("2026-05-30T00:00:00.000Z"),
+    readStdin: () => "",
+    setExitCode: (code) => {
+      exitCode = code;
+    },
+    stdout: (message) => output.push(message),
+    stderr: (message) => output.push(message)
+  });
+
+  program.exitOverride();
+  await program.parseAsync(["node", "gleip", ...args], { from: "node" });
+  return { exitCode, output };
+}
+
+function git(cwd: string, args: string[]): string {
+  return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+}
+
+function gitSucceeds(cwd: string, args: string[]): boolean {
+  try {
+    git(cwd, args);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function runHelpCommand(args: string[]): Promise<string[]> {
   const output: string[] = [];
   const program = createGleipCommand({ cwd: createTempRepo() });
@@ -3317,7 +3561,10 @@ function countOccurrences(value: string, pattern: string): number {
   return value.split(pattern).length - 1;
 }
 
-function assertOnlyInstructionFile(repo: string, expectedPath: "AGENTS.md" | "CLAUDE.md" | "GEMINI.md"): void {
+function assertOnlyInstructionFile(
+  repo: string,
+  expectedPath: "AGENTS.md" | "CLAUDE.md" | "GEMINI.md"
+): void {
   for (const path of ["AGENTS.md", "CLAUDE.md", "GEMINI.md", "CODEX.md"]) {
     expect(existsSync(join(repo, path))).toBe(path === expectedPath);
   }
@@ -3345,13 +3592,15 @@ function assertGleipWorkflowInstructions(content: string): void {
   expect(content).toContain("Do not edit or commit files under `.gleip/`");
   expect(content).toContain("Address cleanup and action-required findings");
   expect(content).toContain("Keep changes minimal and scoped to the requested task");
-  expect(content).toContain("scope adherence, drift risk, output discipline");
+  expect(content).toContain("scope adherence, drift risk, repository hygiene, output discipline");
   expect(content).toContain("estimated token waste avoided");
   expect(content).toContain("## Gleip working standard");
   expect(content).toContain("Think before coding");
   expect(content).toContain("Simplicity first");
   expect(content).toContain("Surgical changes");
   expect(content).toContain("Goal-driven execution");
-  expect(content).toContain("Do not assume, hide confusion, or silently choose between ambiguous interpretations.");
+  expect(content).toContain(
+    "Do not assume, hide confusion, or silently choose between ambiguous interpretations."
+  );
   expect(content).toContain("<!-- GLEIP:END -->");
 }

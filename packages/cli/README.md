@@ -57,23 +57,24 @@ For each coding task, agents should:
 
 ## Commands for Developers
 
-| Command                         | Purpose                                                                                 | When to use                                                         |
-| ------------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| `npx gleip init`                | Create Gleip config, policy docs, and generic/Codex-compatible `AGENTS.md`.             | Recommended first-time setup.                                       |
-| `npx gleip init auto`           | Create or update one detected agent instruction file.                                   | When agent files already exist.                                     |
-| `npx gleip doctor --agents`     | Check local prerequisites and supported agent files.                                    | Diagnose setup or instruction problems.                             |
-| `npx gleip repair-agents --all` | Repair managed instruction sections for all supported agents.                           | Restore missing or stale generated instructions.                    |
-| `npx gleip state`               | Print the repository-local enabled/disabled state.                                      | Confirm whether guidance is active.                                 |
-| `npx gleip enable`              | Enable guidance, optionally with `--reason`.                                            | Resume normal Gleip checks.                                         |
-| `npx gleip disable`             | Disable guidance, optionally with `--reason`.                                           | Temporarily pause checks with an explicit local record.             |
-| `npx gleip report`              | Generate and summarize the canonical session report.                                    | Inspect the current session outcome.                                |
-| `npx gleip report --json`       | Generate the report and print stable JSON only.                                         | Local scripts, tooling, or debugging.                               |
-| `npx gleip check`               | Check the working tree against scope without updating the active status file.           | Run a manual drift check; add `--json` for machine-readable output. |
-| `npx gleip check --ci`          | Run the conservative CI check and fail only on documented action-required codes.        | Use in local CI without network access or telemetry.                |
-| `npx gleip brief`               | Print the active implementation brief.                                                  | Inspect or debug agent context.                                     |
-| `npx gleip stop`                | Archive the active session; `--clean` also removes its brief, budget, and status files. | End or reset a task session.                                        |
-| `npx gleip uninstall --dry-run` | Preview repository cleanup.                                                             | Review removals before uninstalling.                                |
-| `npx gleip uninstall`           | Remove Gleip-owned repository files and managed instruction sections.                   | Run before `npm uninstall gleip`.                                   |
+| Command                         | Purpose                                                                                 | When to use                                                             |
+| ------------------------------- | --------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `npx gleip init`                | Create Gleip config, policy docs, and generic/Codex-compatible `AGENTS.md`.             | Recommended first-time setup.                                           |
+| `npx gleip init auto`           | Create or update one detected agent instruction file.                                   | When agent files already exist.                                         |
+| `npx gleip doctor --agents`     | Check local prerequisites and supported agent files.                                    | Diagnose setup or instruction problems.                                 |
+| `npx gleip doctor --fix`        | Repair `.gleip/` ignore protection and untrack recognized runtime files.                | Recover older or damaged repository setup while preserving local files. |
+| `npx gleip repair-agents --all` | Repair managed instruction sections for all supported agents.                           | Restore missing or stale generated instructions.                        |
+| `npx gleip state`               | Print the repository-local enabled/disabled state.                                      | Confirm whether guidance is active.                                     |
+| `npx gleip enable`              | Enable guidance, optionally with `--reason`.                                            | Resume normal Gleip checks.                                             |
+| `npx gleip disable`             | Disable guidance, optionally with `--reason`.                                           | Temporarily pause checks with an explicit local record.                 |
+| `npx gleip report`              | Generate and summarize the canonical session report.                                    | Inspect the current session outcome.                                    |
+| `npx gleip report --json`       | Generate the report and print stable JSON only.                                         | Local scripts, tooling, or debugging.                                   |
+| `npx gleip check`               | Check the working tree against scope without updating the active status file.           | Run a manual drift check; add `--json` for machine-readable output.     |
+| `npx gleip check --ci`          | Run the conservative CI check and fail only on documented action-required codes.        | Use in local CI without network access or telemetry.                    |
+| `npx gleip brief`               | Print the active implementation brief.                                                  | Inspect or debug agent context.                                         |
+| `npx gleip stop`                | Archive the active session; `--clean` also removes its brief, budget, and status files. | End or reset a task session.                                            |
+| `npx gleip uninstall --dry-run` | Preview repository cleanup.                                                             | Review removals before uninstalling.                                    |
+| `npx gleip uninstall`           | Remove Gleip-owned repository files and managed instruction sections.                   | Run before `npm uninstall gleip`.                                       |
 
 All commands also accept the global `--cwd <path>` option.
 
@@ -81,15 +82,15 @@ All commands also accept the global `--cwd <path>` option.
 
 Generated agent instructions use these commands through `npx --no-install` so the repository-local package is used. Developers normally do not need to run them manually.
 
-| Command                                         | Agent use                                                             | Main artifacts                                                                                                   |
-| ----------------------------------------------- | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `npx --no-install gleip preflight "<task>"`     | Classify the task and establish local scope before editing.           | `.gleip/session.json`, `.gleip/baseline.json`, `.gleip/brief.md`, `.gleip/scope-budget.json`, `.gleip/status.md` |
-| `npx --no-install gleip preflight --file task.md` | Read a full task contract as read-only context and establish scope. | Same preflight artifacts; full task text is stored in the local session. |
-| `npx --no-install gleip validate-plan "<plan>"` | Check a proposed implementation plan against the active scope budget. | Latest plan validation in `.gleip/session.json`                                                                  |
-| `npx --no-install gleip validate-plan --file plan.md` | Read and structurally validate a plan file as read-only context. | Latest plan validation and stable finding codes in `.gleip/session.json` |
-| `npx --no-install gleip check`                  | Check current changes before claiming completion.                     | Concise drift result; does not update `.gleip/status.md`                                                         |
-| `npx --no-install gleip status`                 | Update drift and status evidence before the final response.           | `.gleip/status.md`, updated `.gleip/session.json`                                                                |
-| `npx --no-install gleip report`                 | Generate the canonical final status and compact response block.       | `.gleip/report.md`, `.gleip/report.json`                                                                         |
+| Command                                               | Agent use                                                             | Main artifacts                                                                                                   |
+| ----------------------------------------------------- | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `npx --no-install gleip preflight "<task>"`           | Classify the task and establish local scope before editing.           | `.gleip/session.json`, `.gleip/baseline.json`, `.gleip/brief.md`, `.gleip/scope-budget.json`, `.gleip/status.md` |
+| `npx --no-install gleip preflight --file task.md`     | Read a full task contract as read-only context and establish scope.   | Same preflight artifacts; full task text is stored in the local session.                                         |
+| `npx --no-install gleip validate-plan "<plan>"`       | Check a proposed implementation plan against the active scope budget. | Latest plan validation in `.gleip/session.json`                                                                  |
+| `npx --no-install gleip validate-plan --file plan.md` | Read and structurally validate a plan file as read-only context.      | Latest plan validation and stable finding codes in `.gleip/session.json`                                         |
+| `npx --no-install gleip check`                        | Check current changes before claiming completion.                     | Concise drift result; does not update `.gleip/status.md`                                                         |
+| `npx --no-install gleip status`                       | Update drift and status evidence before the final response.           | `.gleip/status.md`, updated `.gleip/session.json`                                                                |
+| `npx --no-install gleip report`                       | Generate the canonical final status and compact response block.       | `.gleip/report.md`, `.gleip/report.json`                                                                         |
 
 `gleip start` is an implemented alias for `gleip preflight`. Preflight and plan validation accept `--file <path>`; plan validation also accepts stdin. Task and plan files are read-only context unless explicitly proposed as edit targets. `status` supports `--json` and `--include-baseline`.
 
@@ -97,7 +98,7 @@ Normal workflow commands print concise 1-5 line summaries that confirm the compl
 
 ## Stable Findings and CI
 
-Gleip 0.7.4 emits `clean`, `advisory`, `needs_attention`, `needs_cleanup`, or
+Gleip 0.7.5 emits `clean`, `advisory`, `needs_attention`, `needs_cleanup`, or
 `needs_approval`. It never emits `blocked` as a new top-level status.
 
 Stable findings use `info`, `warn`, `action_required`, `approval_required`, and
@@ -132,14 +133,14 @@ clarity without creating extra justification work.
 
 ## Reports and Metrics
 
-Gleip 0.7.4 generates:
+Gleip 0.7.5 generates:
 
 - `.gleip/report.md`: concise scores, risks, findings, actions, and the recommended final-response block.
 - `.gleip/report.json`: stable machine-readable report data, warnings, evidence, summary, and efficiency estimate.
 
-The report includes deterministic local scores for scope adherence, plan alignment, output discipline, and review readiness. It also reports drift, test-integrity, and over-edit risk. These heuristics surface review evidence; they do not prove semantic correctness.
+The report includes deterministic local scores for scope adherence, plan alignment, output discipline, and review readiness. It also reports task drift, repository hygiene, test-integrity, and over-edit risk. Repository hygiene covers tracked Gleip runtime/state files without mislabeling them as implementation drift. These heuristics surface review evidence; they do not prove semantic correctness.
 
-Before responding, agents treat the report as the source of truth and include only its compact `Recommended final response` block, not the full report. The block contains scope adherence, drift risk, output discipline, estimated token waste avoided, and unresolved warnings.
+Before responding, agents treat the report as the source of truth and include only its compact `Recommended final response` block, not the full report. The block contains scope adherence, drift risk, repository hygiene, output discipline, estimated token waste avoided, and unresolved warnings.
 
 **Estimated output/token waste avoided is a deterministic local estimate. It is not exact model billing or API usage data.**
 
@@ -194,7 +195,7 @@ npx --no-install gleip uninstall
 npm uninstall gleip
 ```
 
-The Gleip command removes generated repository files and managed instruction sections. Package dependency removal remains a separate npm command.
+The Gleip command removes recognized generated repository files, safely removes managed instruction and ignore sections, and preserves unknown `.gleip/**` files. Package dependency removal remains a separate npm command. `npm install`, `npm update`, and `npm uninstall` do not run Gleip repository repair or modify the Git index.
 
 ## Development
 
@@ -210,6 +211,6 @@ pnpm pack:cli
 
 ## Status
 
-- Current release: `0.7.4`
+- Current release: `0.7.5`
 - License: Apache-2.0
 - Local-only developer preview
