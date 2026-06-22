@@ -52,8 +52,9 @@ For each coding task, agents should:
 1. Run `npx --no-install gleip preflight "<task>"` before editing.
 2. Read `.gleip/brief.md` and follow `.gleip/scope-budget.json`.
 3. Validate non-trivial plans with `npx --no-install gleip validate-plan`.
-4. Run `npx --no-install gleip check` before claiming completion.
-5. Run `npx --no-install gleip status` when the expected next action is unclear.
+4. Run the narrowest existing validation while iterating; run complete required validation once for the final repository state.
+5. Run `npx --no-install gleip check --incremental` before claiming completion.
+6. Run `npx --no-install gleip status --compact` when the expected next action is unclear.
 
 ## Commands for Developers
 
@@ -70,7 +71,9 @@ For each coding task, agents should:
 | `npx gleip report`              | Generate and summarize the canonical session report.                                    | Inspect the current session outcome.                                    |
 | `npx gleip report --json`       | Generate the report and print stable JSON only.                                         | Local scripts, tooling, or debugging.                                   |
 | `npx gleip check`               | Check the working tree against scope without updating the active status file.           | Run a manual drift check; add `--json` for machine-readable output.     |
+| `npx gleip check --incremental` | Reuse a complete deterministic result when all check inputs match.                      | Iterative agent checks; add `--force` to recompute.                     |
 | `npx gleip check --ci`          | Run the conservative CI check and fail only on documented action-required codes.        | Use in local CI without network access or telemetry.                    |
+| `npx gleip status --compact`    | Print only task, repository change, finding counts, check need, and next action.        | Iterative status without repeated brief or plan output.                 |
 | `npx gleip brief`               | Print the active implementation brief.                                                  | Inspect or debug agent context.                                         |
 | `npx gleip stop`                | Archive the active session; `--clean` also removes its brief, budget, and status files. | End or reset a task session.                                            |
 | `npx gleip uninstall --dry-run` | Preview repository cleanup.                                                             | Review removals before uninstalling.                                    |
@@ -88,17 +91,17 @@ Generated agent instructions use these commands through `npx --no-install` so th
 | `npx --no-install gleip preflight --file task.md`     | Read a full task contract as read-only context and establish scope.   | Same preflight artifacts; full task text is stored in the local session.                                         |
 | `npx --no-install gleip validate-plan "<plan>"`       | Check a proposed implementation plan against the active scope budget. | Latest plan validation in `.gleip/session.json`                                                                  |
 | `npx --no-install gleip validate-plan --file plan.md` | Read and structurally validate a plan file as read-only context.      | Latest plan validation and stable finding codes in `.gleip/session.json`                                         |
-| `npx --no-install gleip check`                        | Check current changes before claiming completion.                     | Concise drift result; does not update `.gleip/status.md`                                                         |
-| `npx --no-install gleip status`                       | Update drift and status evidence before the final response.           | `.gleip/status.md`, updated `.gleip/session.json`                                                                |
+| `npx --no-install gleip check --incremental`          | Check current changes or reuse the matching complete result.          | `.gleip/check-cache.json`; complete baseline or finding delta                                                    |
+| `npx --no-install gleip status --compact`             | Print compact iterative state and the next required action.           | Five-line output; no repeated brief, plan, or unchanged finding details                                          |
 | `npx --no-install gleip report`                       | Generate the canonical final status and compact response block.       | `.gleip/report.md`, `.gleip/report.json`                                                                         |
 
 `gleip start` is an implemented alias for `gleip preflight`. Preflight and plan validation accept `--file <path>`; plan validation also accepts stdin. Task and plan files are read-only context unless explicitly proposed as edit targets. `status` supports `--json` and `--include-baseline`.
 
-Normal workflow commands print concise 1-5 line summaries that confirm the completed phase and the next expected agent action. JSON modes remain machine-readable without human summary noise.
+Default workflow modes print concise 1-5 line summaries that confirm the completed phase and next action. An incremental baseline or delta adds one line per finding that must be emitted; unchanged findings remain a count. JSON modes remain machine-readable without human summary noise.
 
 ## Stable Findings and CI
 
-Gleip 0.7.5 emits `clean`, `advisory`, `needs_attention`, `needs_cleanup`, or
+Gleip 0.8.0 emits `clean`, `advisory`, `needs_attention`, `needs_cleanup`, or
 `needs_approval`. It never emits `blocked` as a new top-level status.
 
 Stable findings use `info`, `warn`, `action_required`, `approval_required`, and
@@ -106,6 +109,9 @@ Stable findings use `info`, `warn`, `action_required`, `approval_required`, and
 when the command succeeds. `check --ci` may exit `1` for documented
 high-confidence findings such as skipped/deleted tests or tracked `.gleip/`
 artifacts, while still using guidance-oriented wording.
+`check --incremental` preserves that contract: without `--ci` it exits `0` after
+a successful check, while `check --incremental --ci` uses the complete current or
+reused finding set. Reusing an unchanged blocking result retains exit code `1`.
 
 Expected paths describe likely declared scope, not exclusive permission. Narrow
 `modify only` tasks remain tight, while explicitly broad multi-area work receives
@@ -133,7 +139,7 @@ clarity without creating extra justification work.
 
 ## Reports and Metrics
 
-Gleip 0.7.5 generates:
+Gleip 0.8.0 generates:
 
 - `.gleip/report.md`: concise scores, risks, findings, actions, and the recommended final-response block.
 - `.gleip/report.json`: stable machine-readable report data, warnings, evidence, summary, and efficiency estimate.
@@ -145,6 +151,14 @@ Before responding, agents treat the report as the source of truth and include on
 **Estimated output/token waste avoided is a deterministic local estimate. It is not exact model billing or API usage data.**
 
 Estimates use only local artifacts and diff, context, or output size. When evidence is insufficient, Gleip returns zero or low confidence. Gleip has no separate `metrics` command or remote metrics service; report scores and estimates provide the implemented visibility.
+
+Incremental JSON output directly reports whether a check executed or was reused,
+its reuse rate, full and delta findings emitted, added/updated/resolved counts, and
+changed files. Validation-cycle and repeated-command measurements are `unavailable`
+because Gleip does not intercept shell commands or agent tools. The first incremental
+check emits a complete baseline; later changed checks emit finding deltas and an
+unchanged count. Identical fingerprints reuse the complete cached result. Use
+`check --incremental --force` to recompute deliberately.
 
 ## What Gets Committed?
 
@@ -166,6 +180,7 @@ The `.gitignore` block added by `gleip init` ignores `.gleip/`. This local-only 
 - `status.md`
 - `report.md`
 - `report.json`
+- `check-cache.json`
 - Timestamped `session-*.json` archives created by `gleip stop`
 
 ## Local-Only Guarantee
@@ -211,6 +226,6 @@ pnpm pack:cli
 
 ## Status
 
-- Current release: `0.7.5`
+- Current release: `0.8.0`
 - License: Apache-2.0
 - Local-only developer preview

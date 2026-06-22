@@ -1045,15 +1045,22 @@ ${formatApprovalRequired(scopeBudget.approvalRequiredFor)}
 ## Verification expected
 ${formatRequiredTests(scopeBudget)}
 
+## Iterative verification
+- Run the narrowest existing validation that covers the changed area while iterating.
+- Do not rerun a full validation suite while repository state is unchanged.
+- Run complete required validation once before final completion.
+- Rerun complete validation only after changes that can invalidate the result.
+
 ## Pause and clarify conditions
 ${formatStringListForBrief(scopeBudget.stopConditions, 8)}
 
 ## Before final response
-1. Run \`npx --no-install gleip status\`.
-2. Run relevant tests if available.
-3. Report files changed.
-4. Report tests run.
-5. Report whether Gleip status is clean, advisory, needs_attention, needs_cleanup, or needs_approval.
+1. Run complete required validation if it has not been run for the current repository state.
+2. Run \`npx --no-install gleip check --incremental\`.
+3. Run \`npx --no-install gleip status --compact\`.
+4. Report files changed.
+5. Report tests run.
+6. Report whether Gleip status is clean, advisory, needs_attention, needs_cleanup, or needs_approval.
 `;
 }
 

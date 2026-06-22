@@ -30,7 +30,10 @@ Gleip does not make network calls, does not call LLM APIs, does not require an a
 - `.gleip/report.json`
 - `.gleip/report.md`
 - `.gleip/state.json`
+- `.gleip/check-cache.json`
 
 The `.gleip/` directory contains local session state and should generally be ignored.
+
+The incremental check cache stores only local fingerprints, normalized finding data, and result metadata. It does not duplicate source files or diff contents.
 
 Report generation reads only local artifacts and git state. It does not send scores, warnings, file paths, diffs, or efficiency estimates anywhere.

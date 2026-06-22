@@ -38,18 +38,30 @@ latest validated plan when present. Planning-time tolerance does not make unrela
 diff files acceptable: changed files outside explicit or derived scope are reported
 with target classification, reason, evidence, and the required next action.
 
-`gleip status` recomputes findings and the next action from the current Git diff on
-every run. Previous status snapshots are history only; they do not keep resolved
-cleanup or scope findings active. Accepted direct and derived targets from the
-latest successful `validate-plan` run are reused during status so files already
-validated as task-related are not reclassified as unexplained.
+Normal `gleip status` and `gleip check` behavior is unchanged and recomputes current
+findings. Explicit `gleip check --incremental` stores a local complete-result cache.
+It reuses that result only when one canonical fingerprint matches repository HEAD,
+staged/unstaged/untracked result inputs, session and task, brief, baseline, scope
+budget, plan state, configuration, enabled state, analysis flags, and Gleip version.
+It never uses mtimes. Missing, corrupt, schema-incompatible, or version-incompatible
+cache data causes a safe complete check. Use `--force` to recompute explicitly.
+
+The first incremental run prints the complete finding baseline. Later executed runs
+print added, updated, and resolved findings plus an unchanged count. Reused runs
+skip deterministic drift analysis and retain the exit code implied by the complete
+cached finding set, including `check --incremental --ci` failures.
+
+`gleip status --compact` prints only session/task identity, repository-change state,
+warning and blocking counts, whether another incremental check is necessary, and
+the next required action. Accepted direct and derived targets from the latest
+successful `validate-plan` run remain part of both full and incremental analysis.
 
 `gleip report` uses the same current Git diff, baseline filtering, configuration,
 and latest successful accepted plan scope. It does not read `.gleip/status.md` as
 authoritative evidence; status is an output artifact that can be regenerated.
 
 Known Gleip runtime artifacts under `.gleip/`, such as session, baseline, brief,
-scope-budget, status, report, and archived session files, are excluded from task
+scope-budget, status, report, check cache, and archived session files, are excluded from task
 changed-file metrics and scope findings. Currently tracked runtime artifacts are
 still reported separately while they exist. Durable or user-authored `.gleip` files
 that are not runtime artifacts remain visible to Git diff analysis.
@@ -124,7 +136,8 @@ Gleip does not yet have a high-confidence structural detector for that condition
 
 ## How Agents Should Use It
 
-Agents run `npx --no-install gleip status` before the final response.
+Agents run `npx --no-install gleip check --incremental` and
+`npx --no-install gleip status --compact` before the final response.
 
 Use `nextAction` as the finding-specific instruction. Advisory scope findings ask
 for review or rationale. Cleanup findings name artifacts or sensitive files to
@@ -151,6 +164,7 @@ Use `--json` for future editor or agent integrations:
 ```sh
 npx --no-install gleip status --json
 npx --no-install gleip check --json
+npx --no-install gleip check --incremental --json
 ```
 
 JSON output includes:
@@ -162,6 +176,10 @@ JSON output includes:
 - `nextAction`
 
 `npx --no-install gleip check --json` is non-mutating, like the text check command.
+Incremental JSON retains the complete `findings` array and adds execution/reuse,
+finding-delta, emission-count, reuse-rate, and changed-file measurements. Metrics
+that Gleip cannot directly observe, including validation cycles and repeated
+external commands, are `unavailable` rather than estimated.
 
 ## CI Mode
 

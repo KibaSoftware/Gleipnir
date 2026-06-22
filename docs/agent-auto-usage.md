@@ -1,6 +1,6 @@
 # Agent Auto-Usage
 
-Agent auto-usage means the developer initializes Gleip once, then keeps using their coding agent normally. Generated repository instructions tell the agent to run Gleip before editing code, validate non-trivial plans, stay inside the scope budget, run check before claiming completion, and use status when the next action is unclear.
+Agent auto-usage means the developer initializes Gleip once, then keeps using their coding agent normally. Generated repository instructions tell the agent to run Gleip before editing code, validate non-trivial plans, stay inside the scope budget, run incremental check before claiming completion, and use compact status when the next action is unclear.
 
 Agents use `npx --no-install gleip` for task workflow commands so Gleip can remain a local development dependency.
 
@@ -39,13 +39,16 @@ npx gleip init
 These are setup, diagnostics, and repair commands. The task workflow commands are intended for agents to run automatically and are available to developers for testing or fallback.
 
 For each task, agents run preflight, read `.gleip/brief.md` and `.gleip/scope-budget.json`,
-validate non-trivial plans, keep changes minimal, and run `npx --no-install gleip check`
-before completion. They do not edit or commit `.gleip/` artifacts unless explicitly asked,
+validate non-trivial plans, keep changes minimal, run the narrowest existing validation
+while iterating, and run `npx --no-install gleip check --incremental` before completion.
+They use `npx --no-install gleip status --compact` for iterative status. They do not
+rerun a full suite while repository state is unchanged, run complete required validation
+once for the final state, and rerun it only after invalidating changes. They do not edit or commit `.gleip/` artifacts unless explicitly asked,
 and they explain any failing Gleip check they cannot resolve.
 
 Before final response, agents run or read `npx --no-install gleip report`, treat it as the source of truth, and include only its generated `Recommended final response` block. They do not paste the full report. Developers do not need to run this manually during normal usage.
 
-Normal workflow commands emit concise 1-5 line summaries that confirm the completed phase and next expected agent action. Detailed evidence remains in local artifacts, while JSON mode stays machine-readable.
+Normal workflow commands emit concise summaries that confirm the completed phase and next expected agent action. Incremental baselines and deltas add only the finding lines required by that run; unchanged findings remain a count. Detailed evidence remains in local artifacts, while JSON mode stays machine-readable.
 
 ## Repository Lifecycle
 

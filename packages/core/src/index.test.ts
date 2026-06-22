@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   collectWorkingTreeDiff,
   createSessionBaseline,
+  fingerprintRepositoryState,
   filterDiffSinceBaseline,
   packageName
 } from "./index.js";
@@ -37,6 +38,61 @@ describe("collectWorkingTreeDiff", () => {
     expect(diff.changedFiles).toEqual([]);
     expect(diff.totalLinesAdded).toBe(0);
     expect(diff.totalLinesDeleted).toBe(0);
+    expect(diff.head).toMatch(/^[0-9a-f]{40}$/u);
+  });
+
+  it("fingerprints equivalent Windows and POSIX paths identically", () => {
+    const base = {
+      changedFiles: ["src/index.ts"],
+      fileStats: [
+        {
+          path: "src/index.ts",
+          added: 1,
+          deleted: 0,
+          diffFingerprint: "content"
+        }
+      ],
+      rawDiff: "",
+      totalLinesAdded: 1,
+      totalLinesDeleted: 0,
+      isGitRepo: true,
+      hasChanges: true,
+      head: "abc123",
+      trackedLocalArtifacts: [".gleip/session.json"]
+    };
+
+    expect(fingerprintRepositoryState(base)).toBe(
+      fingerprintRepositoryState({
+        ...base,
+        changedFiles: ["src\\index.ts"],
+        fileStats: [{ ...base.fileStats[0]!, path: "src\\index.ts" }],
+        trackedLocalArtifacts: [".gleip\\session.json"]
+      })
+    );
+  });
+
+  it("includes HEAD in the repository-state fingerprint", () => {
+    const repo = createCommittedRepo();
+    const before = collectWorkingTreeDiff({ cwd: repo });
+    writeRepoFile(repo, "README.md", "next\n");
+    git(repo, ["add", "README.md"]);
+    git(repo, ["commit", "-m", "next"]);
+    const after = collectWorkingTreeDiff({ cwd: repo });
+
+    expect(before.changedFiles).toEqual([]);
+    expect(after.changedFiles).toEqual([]);
+    expect(fingerprintRepositoryState(before)).not.toBe(fingerprintRepositoryState(after));
+  });
+
+  it("distinguishes staged and unstaged state with the same working-tree content", () => {
+    const repo = createCommittedRepo();
+    writeRepoFile(repo, "src/index.ts", "export const value = 2;\n");
+    const unstaged = collectWorkingTreeDiff({ cwd: repo });
+    git(repo, ["add", "src/index.ts"]);
+    const staged = collectWorkingTreeDiff({ cwd: repo });
+
+    expect(unstaged.rawDiff).toBe(staged.rawDiff);
+    expect(fingerprintRepositoryState(unstaged)).not.toBe(fingerprintRepositoryState(staged));
   });
 
   it("detects changed files and line counts", () => {

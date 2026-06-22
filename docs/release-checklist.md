@@ -2,11 +2,11 @@
 
 Use this checklist for the local-only developer preview.
 
-Current release target: `0.7.5`.
+Current release target: `0.8.0`.
 
-Release focus: ownership-aware `.gleip/` lifecycle handling, explicit Git-index
-repair, safe repository uninstall, and separate task-drift and repository-hygiene
-risk reporting without weakening CI enforcement.
+Release focus: deterministic incremental checks, finding-delta output, compact
+iterative status, verification-efficiency guidance, and directly observable local
+efficiency measurements without changing default check or CI behavior.
 
 ## Signal Quality Gates
 
@@ -30,11 +30,12 @@ risk reporting without weakening CI enforcement.
   - `pnpm lint`
   - `pnpm smoke:cli`
   - `pnpm pack:cli`
-  - `npm pack`
+  - `pnpm smoke:packed`
+  - `npm pack --dry-run`
 
 ## Packed Install
 
-- Install `dist-pack/gleip-0.7.5.tgz` into a clean external temp repo.
+- Install `dist-pack/gleip-0.8.0.tgz` into a clean external temp repo.
 - Verify:
   - `npx gleip --help`
   - `npx gleip --version`
@@ -46,6 +47,11 @@ risk reporting without weakening CI enforcement.
   - `npx gleip doctor --fix`
   - `npx gleip check`
   - `npx gleip check --ci`
+  - `npx gleip check --incremental`
+  - a second identical `npx gleip check --incremental` to verify reuse
+  - `npx gleip check --incremental --force`
+  - `npx gleip check --incremental --ci`
+  - `npx gleip status --compact`
   - `npx --no-install gleip uninstall --dry-run`
   - `npx --no-install gleip uninstall`
 
@@ -63,9 +69,12 @@ Task workflow commands are for agents and direct release testing, not the normal
 - `npx gleip validate-plan "Update the discount calculation and its focused checkout tests."`
 - `npx gleip validate-plan --file plan.md`
 - `npx gleip status`
+- `npx gleip status --compact`
 - `npx gleip report`
 - `npx gleip report --json`
 - `npx gleip check`
+- `npx gleip check --incremental --json`
+- `npx gleip check --incremental --force --json`
 - `npx gleip disable --reason "manual test"`
 - `npx gleip enable --reason "manual test complete"`
 
@@ -75,7 +84,7 @@ Task workflow commands are for agents and direct release testing, not the normal
 - Confirm no source code, diffs, prompts, file names, repository metadata, or usage data leave the repository.
 - Confirm `.gleip/` is ignored.
 - Confirm `.gleip.yml` is not ignored.
-- Confirm generated agent instructions use `npx --no-install gleip` for preflight, plan validation, check, status, and report.
+- Confirm generated agent instructions use `npx --no-install gleip` for preflight, plan validation, incremental check, compact status, and report, and include verification-efficiency guidance.
 - Confirm `doctor` reports complete setup and identifies missing `.gitignore` or agent instructions.
 - Confirm the root and npm READMEs lead with agent auto-usage and list Codex/generic agents, Claude Code, and Gemini CLI.
 - Confirm the root and npm READMEs document the uninstall lifecycle.

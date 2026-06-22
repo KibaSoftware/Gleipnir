@@ -19,3 +19,10 @@ Agents touch only what the task requires. They preserve nearby style, avoid unre
 Agents turn the task into verifiable goals before implementing. Bug fixes should reproduce the issue with a focused test when practical, broad fixes should define concrete success criteria, and refactors should verify behavior before and after the change.
 
 For multi-step tasks, generated instructions ask agents to state a brief plan with a verification check for each step.
+
+## Verification efficiency
+
+Agents run the narrowest existing validation covering the changed area while
+iterating. They do not repeat a full suite while repository state is unchanged.
+They run complete required validation once before final completion and rerun it
+only after changes that can invalidate the result.

@@ -29,6 +29,9 @@ export interface GitDiffContext {
   totalLinesDeleted: number;
   isGitRepo: boolean;
   hasChanges: boolean;
+  head?: string;
+  stagedFingerprint?: string;
+  unstagedFingerprint?: string;
   trackedLocalArtifacts?: string[];
   error?: string;
 }
@@ -65,7 +68,8 @@ export const EPHEMERAL_GLEIP_ARTIFACTS = [
   ".gleip/scope-budget.json",
   ".gleip/status.md",
   ".gleip/report.md",
-  ".gleip/report.json"
+  ".gleip/report.json",
+  ".gleip/check-cache.json"
 ] as const;
 
 interface GitResult {
@@ -81,7 +85,9 @@ export function collectWorkingTreeDiff(options: CollectWorkingTreeDiffOptions): 
     return emptyDiff(false, "Current directory is not a git repository.");
   }
 
-  const hasHead = runGit(options.cwd, ["rev-parse", "--verify", "HEAD"]).ok;
+  const headResult = runGit(options.cwd, ["rev-parse", "--verify", "HEAD"]);
+  const hasHead = headResult.ok;
+  const head = hasHead ? headResult.stdout.trim() : undefined;
   const diffContexts =
     options.base !== undefined
       ? [collectDiffForBase(options.cwd, options.base)]
@@ -157,6 +163,8 @@ export function collectWorkingTreeDiff(options: CollectWorkingTreeDiffOptions): 
   const totalLinesDeleted = fileStats.reduce((total, stat) => total + stat.deleted, 0);
   const filteredRawDiff = filterRawDiffSections(rawDiff, sortedChangedFiles);
   const trackedLocalArtifacts = listTrackedLocalArtifacts(options.cwd);
+  const stagedDiff = runGit(options.cwd, ["diff", "--no-ext-diff", "--cached", "--", "."]);
+  const unstagedDiff = runGit(options.cwd, ["diff", "--no-ext-diff", "--", "."]);
 
   return {
     changedFiles: sortedChangedFiles,
@@ -166,8 +174,40 @@ export function collectWorkingTreeDiff(options: CollectWorkingTreeDiffOptions): 
     totalLinesDeleted,
     isGitRepo: true,
     hasChanges: sortedChangedFiles.length > 0,
+    ...(head === undefined ? {} : { head }),
+    ...(stagedDiff.ok
+      ? { stagedFingerprint: hashText(stagedDiff.stdout.replace(/\r\n/gu, "\n")) }
+      : {}),
+    ...(unstagedDiff.ok
+      ? { unstagedFingerprint: hashText(unstagedDiff.stdout.replace(/\r\n/gu, "\n")) }
+      : {}),
     trackedLocalArtifacts
   };
+}
+
+export function fingerprintRepositoryState(diff: GitDiffContext): string {
+  return hashText(
+    JSON.stringify({
+      head: diff.head ?? null,
+      stagedFingerprint: diff.stagedFingerprint ?? null,
+      unstagedFingerprint: diff.unstagedFingerprint ?? null,
+      isGitRepo: diff.isGitRepo,
+      changedFiles: diff.changedFiles.map(normalizePath).sort(),
+      fileStats: diff.fileStats
+        .map((stat) => ({
+          path: normalizePath(stat.path),
+          added: stat.added,
+          deleted: stat.deleted,
+          isDeleted: stat.isDeleted === true,
+          isUntracked: stat.isUntracked === true,
+          diffFingerprint: stat.diffFingerprint ?? null
+        }))
+        .sort((left, right) => left.path.localeCompare(right.path)),
+      rawDiffFingerprint: hashText(diff.rawDiff.replace(/\r\n/gu, "\n")),
+      trackedLocalArtifacts: (diff.trackedLocalArtifacts ?? []).map(normalizePath).sort(),
+      error: diff.error ?? null
+    })
+  );
 }
 
 export function createSessionBaseline(diff: GitDiffContext, createdAt: string): SessionBaseline {

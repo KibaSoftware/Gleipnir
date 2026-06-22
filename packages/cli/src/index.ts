@@ -11,6 +11,7 @@ import {
   writeFileSync
 } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -27,6 +28,7 @@ import {
   collectWorkingTreeDiff as collectBundledWorkingTreeDiff,
   createSessionBaseline as createBundledSessionBaseline,
   filterDiffSinceBaseline as filterBundledDiffSinceBaseline,
+  fingerprintRepositoryState,
   isEphemeralGleipArtifactPath
 } from "../../core/src/index.js";
 import {
@@ -50,6 +52,7 @@ const SUPPORTED_AGENT_TARGETS = ["auto", "generic", "codex", "claude", "gemini"]
 const AGENT_INSTRUCTION_TARGETS = ["generic", "claude", "gemini"] as const;
 const GLEIP_VERSION = readPackageVersion();
 const REPORT_SCHEMA_VERSION = "1.1.0";
+const CHECK_CACHE_SCHEMA_VERSION = 1;
 const CI_BLOCKING_FINDING_CODES = new Set([
   "TEST_SKIPPED",
   "TEST_DELETED",
@@ -179,7 +182,10 @@ interface StateChangeOptions {
 
 interface StatusCommandOptions {
   ci?: boolean;
+  compact?: boolean;
+  force?: boolean;
   includeBaseline?: boolean;
+  incremental?: boolean;
   json?: boolean;
 }
 
@@ -271,6 +277,9 @@ interface GitDiffContext {
   totalLinesDeleted: number;
   isGitRepo: boolean;
   hasChanges: boolean;
+  head?: string;
+  stagedFingerprint?: string;
+  unstagedFingerprint?: string;
   trackedLocalArtifacts?: string[];
   error?: string;
 }
@@ -582,6 +591,30 @@ interface GleipSession {
   [key: string]: unknown;
 }
 
+interface FindingDelta {
+  added: DriftFinding[];
+  updated: DriftFinding[];
+  resolved: DriftFinding[];
+  unchanged: number;
+}
+
+interface CachedCheckResult {
+  driftResult: DriftResult;
+  nextAction: string;
+  baseline: BaselineContext;
+}
+
+interface IncrementalCheckCache {
+  schemaVersion: number;
+  gleipVersion: string;
+  fingerprint: string;
+  repositoryFingerprint: string;
+  result: CachedCheckResult;
+  metadata: {
+    createdAt: string;
+  };
+}
+
 interface ScopeBudgetSummary {
   expectedFilesChanged: NumberRange;
   softLimits: ScopeBudget["softLimits"];
@@ -761,6 +794,7 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
   program
     .command("status")
     .description("Print and update the active Gleip session status.")
+    .option("--compact", "Print only iterative task, change, finding-count, and next-action state.")
     .option(
       "--include-baseline",
       "Analyze the full working tree, including preflight baseline changes."
@@ -769,6 +803,7 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
     .action(async (commandOptions: StatusCommandOptions) => {
       await printStatus(runtime, {
         commandName: "status",
+        compact: commandOptions.compact === true,
         disabledSuffix: "Status can still be checked manually.",
         includeBaseline: commandOptions.includeBaseline === true,
         json: commandOptions.json === true
@@ -778,6 +813,8 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
   program
     .command("check")
     .description("Check current repository changes against the local-only scope budget.")
+    .option("--incremental", "Reuse a complete result when deterministic check inputs match.")
+    .option("--force", "Recompute even when the incremental cache matches.")
     .option(
       "--include-baseline",
       "Analyze the full working tree, including preflight baseline changes."
@@ -791,6 +828,8 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
         commandName: "check",
         disabledSuffix: "Check can still be run manually.",
         includeBaseline: commandOptions.includeBaseline === true,
+        incremental: commandOptions.incremental === true,
+        force: commandOptions.force === true,
         json: commandOptions.json === true,
         writeStatusFile: false,
         updateSession: false
@@ -1271,9 +1310,12 @@ function printGleipState(runtime: CommandRuntime): void {
 interface PrintStatusOptions {
   allowMissingSession?: boolean;
   ci?: boolean;
+  compact?: boolean;
   commandName?: "check" | "status";
   disabledSuffix?: string;
   includeBaseline?: boolean;
+  incremental?: boolean;
+  force?: boolean;
   json?: boolean;
   writeStatusFile?: boolean;
   updateSession?: boolean;
@@ -1319,14 +1361,53 @@ async function printStatus(
   const filtered = await runtime.filterDiffSinceBaseline(gitDiffContext, baseline, {
     includeBaseline: options.includeBaseline === true
   });
-  const driftResult = normalizeDriftResult(
-    await runtime.detectScopeDrift({
-      scopeBudget,
-      gitDiffContext: filtered.diff,
-      config
-    })
-  );
+  const repositoryFingerprint = fingerprintRepositoryState(gitDiffContext);
+  const fingerprint = createCheckStateFingerprint(runtime.cwd, {
+    repositoryFingerprint,
+    session,
+    state,
+    baseline,
+    scopeBudget,
+    config,
+    includeBaseline: options.includeBaseline === true
+  });
+  const cached =
+    options.incremental === true || options.compact === true
+      ? readCompatibleCheckCache(runtime.cwd)
+      : undefined;
+  const reused =
+    cached !== undefined && cached.fingerprint === fingerprint && options.force !== true;
+  const driftResult = reused
+    ? cached.result.driftResult
+    : normalizedCheckResult(
+        await runtime.detectScopeDrift({
+          scopeBudget,
+          gitDiffContext: filtered.diff,
+          config
+        })
+      );
   const nextAction = nextActionForReport(driftResult);
+  const completeResult: CachedCheckResult = {
+    driftResult,
+    nextAction,
+    baseline: filtered.baseline
+  };
+
+  if (
+    printEfficiencyMode(runtime, options, state, {
+      fingerprint,
+      repositoryFingerprint,
+      cached,
+      reused,
+      completeResult,
+      createdAt: updatedAt,
+      session,
+      task
+    })
+  ) {
+    return;
+  }
+
   const status = statusContent(driftResult, nextAction, filtered.baseline);
 
   if (options.writeStatusFile !== false) {
@@ -1488,14 +1569,46 @@ async function printCheckWithoutSession(
     includeBaseline: options.includeBaseline === true,
     possiblyPreExistingFiles: []
   };
-  const driftResult = normalizeDriftResult(
-    await runtime.detectScopeDrift({
-      scopeBudget: defaultScopeBudgetForCheck(config),
-      gitDiffContext,
-      config
-    })
-  );
+  const scopeBudget = defaultScopeBudgetForCheck(config);
+  const repositoryFingerprint = fingerprintRepositoryState(gitDiffContext);
+  const fingerprint = createCheckStateFingerprint(runtime.cwd, {
+    repositoryFingerprint,
+    state,
+    scopeBudget,
+    config,
+    includeBaseline: options.includeBaseline === true
+  });
+  const cached =
+    options.incremental === true || options.compact === true
+      ? readCompatibleCheckCache(runtime.cwd)
+      : undefined;
+  const reused =
+    cached !== undefined && cached.fingerprint === fingerprint && options.force !== true;
+  const driftResult = reused
+    ? cached.result.driftResult
+    : normalizedCheckResult(
+        await runtime.detectScopeDrift({
+          scopeBudget,
+          gitDiffContext,
+          config
+        })
+      );
   const nextAction = nextActionForReport(driftResult);
+  const completeResult = { driftResult, nextAction, baseline };
+
+  if (
+    printEfficiencyMode(runtime, options, state, {
+      fingerprint,
+      repositoryFingerprint,
+      cached,
+      reused,
+      completeResult,
+      createdAt: runtime.now().toISOString(),
+      task: "No active task"
+    })
+  ) {
+    return;
+  }
 
   runtime.stdout(
     formatCommandOutput(
@@ -2375,10 +2488,13 @@ function gleipSectionContent(target: AgentInstructionTarget): string {
 - During implementation, use the expected paths in \`.gleip/scope-budget.json\` as guidance and explain necessary expansion.
 - Keep changes minimal and scoped to the requested task.
 - Do not edit or commit files under \`.gleip/\` unless the user explicitly asks.
-- Before claiming completion, run \`npx --no-install gleip check\`.
-- Run \`npx --no-install gleip status\` whenever Gleip's expected next action is unclear.
+- During iteration, run the narrowest existing validation that covers the changed area.
+- Do not rerun a full validation suite while repository state is unchanged.
+- Before final completion, run the complete required validation once. Rerun it only after changes that can invalidate the result.
+- Before claiming completion, run \`npx --no-install gleip check --incremental\`.
+- Run \`npx --no-install gleip status --compact\` whenever Gleip's expected next action is unclear.
 - Address cleanup and action-required findings before finalizing. Request approval for approval-required changes.
-- Before the final response, run \`npx --no-install gleip status\`. Report \`advisory\`, \`needs_attention\`, \`needs_cleanup\`, or \`needs_approval\` clearly.
+- Before the final response, run \`npx --no-install gleip status --compact\`. Report \`advisory\`, \`needs_attention\`, \`needs_cleanup\`, or \`needs_approval\` clearly.
 - Before the final response, run or read \`npx --no-install gleip report\`.
 - Treat \`.gleip/report.json\` and \`.gleip/report.md\` as the source of truth for Gleip final status.
 - Include only the generated compact block under \`Recommended final response\`; do not paste the full report.
@@ -2445,8 +2561,9 @@ For multi-step tasks, state a brief plan in this format:
 - [ ] Read \`.gleip/brief.md\`
 - [ ] Validate plan with \`npx --no-install gleip validate-plan\`
 - [ ] Implement within \`.gleip/scope-budget.json\`
-- [ ] Run \`npx --no-install gleip check\`
-- [ ] Run \`npx --no-install gleip status\`
+- [ ] Run narrow validation while iterating and complete required validation once before final completion
+- [ ] Run \`npx --no-install gleip check --incremental\`
+- [ ] Run \`npx --no-install gleip status --compact\`
 - [ ] Run or read \`npx --no-install gleip report\`
 - [ ] Include only the generated compact Gleip block, plus files changed, tests run, and risks
 ${GLEIP_SECTION_END}`;
@@ -2527,7 +2644,7 @@ function defaultGleipReadmeContent(): string {
 
 This repository uses Gleip as a local-only guidance tool for AI coding agents. Gleip is not a permission system and performs no external review.
 
-Agents should run \`npx --no-install gleip preflight "<task>"\` before editing code, validate a short plan with \`npx --no-install gleip validate-plan "<plan>"\`, use the generated expected scope as guidance, then run \`npx --no-install gleip status\` and \`npx --no-install gleip report\` before the final response.
+Agents should run \`npx --no-install gleip preflight "<task>"\` before editing code, validate a short plan with \`npx --no-install gleip validate-plan "<plan>"\`, use the generated expected scope as guidance, then run \`npx --no-install gleip check --incremental\`, \`npx --no-install gleip status --compact\`, and \`npx --no-install gleip report\` before the final response.
 
 To remove Gleip from this repository, run \`npx --no-install gleip uninstall\`, then run \`npm uninstall gleip\` to remove the package dependency.
 `;
@@ -3143,6 +3260,439 @@ function statusJson(
     findings: orderFindings(driftResult.findings),
     nextAction
   };
+}
+
+function printEfficiencyMode(
+  runtime: CommandRuntime,
+  options: PrintStatusOptions,
+  state: GleipState | undefined,
+  input: {
+    fingerprint: string;
+    repositoryFingerprint: string;
+    cached: IncrementalCheckCache | undefined;
+    reused: boolean;
+    completeResult: CachedCheckResult;
+    createdAt: string;
+    session?: GleipSession | undefined;
+    task: string;
+  }
+): boolean {
+  if (options.incremental === true) {
+    const delta = compareFindingSets(
+      input.cached?.result.driftResult.findings ?? [],
+      input.completeResult.driftResult.findings
+    );
+    const baselineRun = input.cached === undefined;
+
+    if (!input.reused) {
+      writeCheckCache(runtime.cwd, {
+        schemaVersion: CHECK_CACHE_SCHEMA_VERSION,
+        gleipVersion: GLEIP_VERSION,
+        fingerprint: input.fingerprint,
+        repositoryFingerprint: input.repositoryFingerprint,
+        result: input.completeResult,
+        metadata: { createdAt: input.createdAt }
+      });
+    }
+
+    runtime.stdout(
+      formatCommandOutput(
+        options.json === true
+          ? JSON.stringify(
+              incrementalCheckJson(input.completeResult, delta, {
+                baseline: baselineRun,
+                reused: input.reused,
+                forced: options.force === true
+              }),
+              null,
+              2
+            )
+          : incrementalCheckSummary(input.completeResult, delta, {
+              baseline: baselineRun,
+              reused: input.reused,
+              forced: options.force === true
+            }),
+        state,
+        options.disabledSuffix ?? "Check can still be run manually.",
+        options.json === true
+      )
+    );
+    applyCiExitCode(runtime, options, input.completeResult.driftResult.findings);
+    return true;
+  }
+
+  if (options.compact === true) {
+    runtime.stdout(
+      compactStatusSummary({
+        session: input.session,
+        task: input.task,
+        repositoryChanged:
+          input.cached === undefined ||
+          input.cached.repositoryFingerprint !== input.repositoryFingerprint,
+        checkNecessary: !input.reused,
+        driftResult: input.completeResult.driftResult,
+        nextAction: input.completeResult.nextAction
+      })
+    );
+    return true;
+  }
+
+  return false;
+}
+
+function createCheckStateFingerprint(
+  cwd: string,
+  input: {
+    repositoryFingerprint: string;
+    session?: GleipSession | undefined;
+    state?: GleipState | undefined;
+    baseline?: SessionBaseline | undefined;
+    scopeBudget: ScopeBudget;
+    config: GleipConfigLike;
+    includeBaseline: boolean;
+  }
+): string {
+  const session = input.session;
+
+  return hashDeterministicValue({
+    gleipVersion: GLEIP_VERSION,
+    repositoryFingerprint: input.repositoryFingerprint,
+    session:
+      session === undefined
+        ? null
+        : {
+            sessionId: session.sessionId ?? null,
+            task: session.task ?? null,
+            taskFile: session.taskFile ?? null,
+            classification: session.classification ?? null,
+            repoContext: session.repoContext ?? null,
+            scopeBudgetSummary: session.scopeBudgetSummary ?? null,
+            latestValidationAttempt: session.latestValidationAttempt ?? null,
+            latestSuccessfulValidation: session.latestSuccessfulValidation ?? null,
+            latestPlanValidation: session.latestPlanValidation ?? null,
+            latestSuccessfulPlanValidation: session.latestSuccessfulPlanValidation ?? null,
+            createdAt: session.created_at ?? null
+          },
+    briefHash: hashLocalFile(join(cwd, ".gleip", "brief.md")),
+    baseline: input.baseline ?? null,
+    scopeBudget: input.scopeBudget,
+    config: input.config,
+    configFileHash: hashLocalFile(join(cwd, ".gleip.yml")),
+    state: input.state ?? null,
+    flags: {
+      includeBaseline: input.includeBaseline
+    }
+  });
+}
+
+function hashLocalFile(path: string): string | null {
+  try {
+    if (!existsSync(path) || !statSync(path).isFile()) {
+      return null;
+    }
+
+    return createHash("sha256")
+      .update(readFileSync(path, "utf8").replace(/\r\n/gu, "\n"))
+      .digest("hex");
+  } catch {
+    return null;
+  }
+}
+
+function hashDeterministicValue(value: unknown): string {
+  return createHash("sha256").update(stableSerialize(value)).digest("hex");
+}
+
+function stableSerialize(value: unknown): string {
+  return JSON.stringify(stableValue(value));
+}
+
+function stableValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(stableValue);
+  }
+
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([, entry]) => entry !== undefined)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, entry]) => [key, stableValue(entry)])
+    );
+  }
+
+  return value;
+}
+
+function normalizedCheckResult(result: DriftResult): DriftResult {
+  const normalized = normalizeDriftResult(result);
+
+  return {
+    ...normalized,
+    findings: orderFindings(normalized.findings).map(normalizeFindingForCache)
+  };
+}
+
+function normalizeFindingForCache(finding: DriftFinding): DriftFinding {
+  return {
+    ...finding,
+    ...(finding.file === undefined ? {} : { file: normalizeCachedPath(finding.file) }),
+    ...(finding.examples === undefined
+      ? {}
+      : { examples: finding.examples.map(normalizeCachedPath) }),
+    ...(finding.targetClassifications === undefined
+      ? {}
+      : {
+          targetClassifications: finding.targetClassifications.map((target) => ({
+            ...target,
+            target: normalizeCachedPath(target.target)
+          }))
+        })
+  };
+}
+
+function normalizeCachedPath(path: string): string {
+  return path.replace(/\\/gu, "/").replace(/^\.\//u, "");
+}
+
+function compareFindingSets(previous: DriftFinding[], current: DriftFinding[]): FindingDelta {
+  const previousByIdentity = new Map(
+    previous.map((finding) => [findingIdentity(finding), normalizeFindingForCache(finding)])
+  );
+  const added: DriftFinding[] = [];
+  const updated: DriftFinding[] = [];
+  let unchanged = 0;
+
+  for (const finding of current.map(normalizeFindingForCache)) {
+    const identity = findingIdentity(finding);
+    const prior = previousByIdentity.get(identity);
+
+    if (prior === undefined) {
+      added.push(finding);
+    } else if (stableSerialize(prior) === stableSerialize(finding)) {
+      unchanged += 1;
+    } else {
+      updated.push(finding);
+    }
+
+    previousByIdentity.delete(identity);
+  }
+
+  return {
+    added: orderFindings(added),
+    updated: orderFindings(updated),
+    resolved: orderFindings(Array.from(previousByIdentity.values())),
+    unchanged
+  };
+}
+
+function findingIdentity(finding: DriftFinding): string {
+  return stableSerialize({
+    code: finding.code ?? null,
+    category: finding.category,
+    title: finding.title,
+    file: finding.file === undefined ? null : normalizeCachedPath(finding.file)
+  });
+}
+
+function readCompatibleCheckCache(cwd: string): IncrementalCheckCache | undefined {
+  const result = readJsonFile<unknown>(join(cwd, ".gleip", "check-cache.json"));
+
+  return isCompatibleCheckCache(result.value) ? result.value : undefined;
+}
+
+function isCompatibleCheckCache(value: unknown): value is IncrementalCheckCache {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  const result = value.result;
+
+  return (
+    value.schemaVersion === CHECK_CACHE_SCHEMA_VERSION &&
+    value.gleipVersion === GLEIP_VERSION &&
+    typeof value.fingerprint === "string" &&
+    typeof value.repositoryFingerprint === "string" &&
+    isRecord(value.metadata) &&
+    typeof value.metadata.createdAt === "string" &&
+    isRecord(result) &&
+    isCachedDriftResult(result.driftResult) &&
+    typeof result.nextAction === "string" &&
+    isBaselineContext(result.baseline)
+  );
+}
+
+function isCachedDriftResult(value: unknown): value is DriftResult {
+  if (!isRecord(value) || !Array.isArray(value.findings) || !isRecord(value.metrics)) {
+    return false;
+  }
+
+  return (
+    ["clean", "advisory", "needs_attention", "needs_cleanup", "needs_approval"].includes(
+      String(value.status)
+    ) &&
+    typeof value.summary === "string" &&
+    typeof value.metrics.filesChanged === "number" &&
+    typeof value.metrics.linesAdded === "number" &&
+    typeof value.metrics.linesDeleted === "number" &&
+    value.findings.every(isCachedFinding)
+  );
+}
+
+function isCachedFinding(value: unknown): value is DriftFinding {
+  return (
+    isRecord(value) &&
+    (value.code === undefined || typeof value.code === "string") &&
+    ["info", "warn", "action_required", "approval_required", "cleanup_required"].includes(
+      String(value.severity)
+    ) &&
+    typeof value.title === "string" &&
+    typeof value.message === "string" &&
+    typeof value.category === "string" &&
+    (value.file === undefined || typeof value.file === "string") &&
+    (value.examples === undefined ||
+      (Array.isArray(value.examples) &&
+        value.examples.every((example) => typeof example === "string"))) &&
+    (value.targetClassifications === undefined ||
+      (Array.isArray(value.targetClassifications) &&
+        value.targetClassifications.every(
+          (target) =>
+            isRecord(target) &&
+            typeof target.target === "string" &&
+            typeof target.classification === "string" &&
+            typeof target.reason === "string" &&
+            typeof target.evidence === "string"
+        )))
+  );
+}
+
+function isBaselineContext(value: unknown): value is BaselineContext {
+  return (
+    isRecord(value) &&
+    typeof value.hasBaseline === "boolean" &&
+    typeof value.preExistingFilesIgnored === "number" &&
+    typeof value.sessionFilesChanged === "number" &&
+    typeof value.includeBaseline === "boolean" &&
+    (value.baselineCreatedAt === undefined || typeof value.baselineCreatedAt === "string") &&
+    Array.isArray(value.possiblyPreExistingFiles) &&
+    value.possiblyPreExistingFiles.every((path) => typeof path === "string")
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function writeCheckCache(cwd: string, cache: IncrementalCheckCache): void {
+  ensureGleipDirectory(cwd);
+  writeFileSync(join(cwd, ".gleip", "check-cache.json"), `${JSON.stringify(cache, null, 2)}\n`);
+}
+
+function incrementalCheckSummary(
+  result: CachedCheckResult,
+  delta: FindingDelta,
+  options: { baseline: boolean; reused: boolean; forced: boolean }
+): string {
+  if (options.baseline) {
+    const findings = result.driftResult.findings.map(formatMarkdownFinding);
+
+    return [
+      "Gleip incremental check executed | baseline",
+      `Status: ${result.driftResult.status}`,
+      `Changes: ${result.driftResult.metrics.filesChanged} files, +${result.driftResult.metrics.linesAdded}/-${result.driftResult.metrics.linesDeleted}`,
+      `Findings (${findings.length}):`,
+      ...(findings.length === 0 ? ["- None"] : findings),
+      `Next: ${result.nextAction}`
+    ].join("\n");
+  }
+
+  return [
+    `Gleip incremental check ${options.reused ? "reused" : "executed"} | ${
+      options.reused ? "fingerprint unchanged" : options.forced ? "forced delta" : "delta"
+    }`,
+    `Status: ${result.driftResult.status}`,
+    ...formatDeltaGroup("Added", delta.added),
+    ...formatDeltaGroup("Updated", delta.updated),
+    ...formatDeltaGroup("Resolved", delta.resolved),
+    `Unchanged: ${delta.unchanged}`,
+    `Next: ${result.nextAction}`
+  ].join("\n");
+}
+
+function formatDeltaGroup(label: string, findings: DriftFinding[]): string[] {
+  return findings.length === 0
+    ? [`${label}: 0`]
+    : [`${label}: ${findings.length}`, ...findings.map(formatMarkdownFinding)];
+}
+
+function incrementalCheckJson(
+  result: CachedCheckResult,
+  delta: FindingDelta,
+  options: { baseline: boolean; reused: boolean; forced: boolean }
+): ReturnType<typeof statusJson> & { incremental: Record<string, unknown> } {
+  const deltaEmitted = options.baseline
+    ? 0
+    : delta.added.length + delta.updated.length + delta.resolved.length;
+  const base = statusJson(result.driftResult, result.nextAction, result.baseline);
+
+  return {
+    ...base,
+    findings: options.baseline ? base.findings : [],
+    incremental: {
+      execution: options.reused ? "reused" : "executed",
+      baseline: options.baseline,
+      forced: options.forced,
+      delta: options.baseline ? { added: [], updated: [], resolved: [], unchanged: 0 } : delta,
+      completeFindingCount: result.driftResult.findings.length,
+      efficiency: {
+        checksRequested: 1,
+        checksExecuted: options.reused ? 0 : 1,
+        checksReused: options.reused ? 1 : 0,
+        reuseRate: options.reused ? 1 : 0,
+        fullFindingsEmitted: options.baseline ? result.driftResult.findings.length : 0,
+        deltaFindingsEmitted: deltaEmitted,
+        findingsAdded: options.baseline ? 0 : delta.added.length,
+        findingsUpdated: options.baseline ? 0 : delta.updated.length,
+        findingsResolved: options.baseline ? 0 : delta.resolved.length,
+        changedFiles: result.driftResult.metrics.filesChanged,
+        validationCycles: "unavailable",
+        repeatedValidationCycles: "unavailable",
+        observedCommands: ["gleip check --incremental"],
+        repeatedObservedCommands: "unavailable"
+      }
+    }
+  };
+}
+
+function compactStatusSummary(input: {
+  session?: GleipSession | undefined;
+  task: string;
+  repositoryChanged: boolean;
+  checkNecessary: boolean;
+  driftResult: DriftResult;
+  nextAction: string;
+}): string {
+  const warningCount = input.driftResult.findings.filter(
+    (finding) => displaySeverity(finding.severity) === "warn"
+  ).length;
+  const blockingCount = input.driftResult.findings.filter((finding) => {
+    const severity = displaySeverity(finding.severity);
+    return (
+      severity === "action_required" ||
+      severity === "approval_required" ||
+      severity === "cleanup_required"
+    );
+  }).length;
+
+  return [
+    `Session: ${input.session?.sessionId ?? "none"} | Task: ${input.task}`,
+    `Repository changed: ${input.repositoryChanged ? "yes" : "no"}`,
+    `Findings: ${warningCount} warning, ${blockingCount} blocking`,
+    `Check necessary: ${input.checkNecessary ? "yes" : "no"}`,
+    `Next: ${
+      input.checkNecessary ? "run npx --no-install gleip check --incremental" : input.nextAction
+    }`
+  ].join("\n");
 }
 
 function nextActionForReport(driftResult: DriftResult): string {

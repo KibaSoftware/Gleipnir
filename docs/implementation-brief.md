@@ -6,5 +6,7 @@ Gleip generates the brief when the agent runs `npx --no-install gleip preflight 
 
 Expected scope is advisory, not exclusive permission. Agents should follow
 `.gleip/brief.md`, explain material expansion where needed, then run
-`npx --no-install gleip status` and `npx --no-install gleip report` before the
-final response.
+the narrowest existing validation while iterating, `npx --no-install gleip check
+--incremental`, `npx --no-install gleip status --compact`, and `npx --no-install
+gleip report` before the final response. Run complete required validation once for
+the final repository state and rerun it only after changes that invalidate it.

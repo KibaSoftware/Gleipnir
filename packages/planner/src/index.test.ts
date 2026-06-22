@@ -2231,11 +2231,13 @@ describe("generateImplementationBrief", () => {
     const brief = generateImplementationBrief(sampleBriefInput());
 
     expect(brief).toContain("## Before final response");
-    expect(brief).toContain("1. Run `npx --no-install gleip status`.");
-    expect(brief).toContain("2. Run relevant tests if available.");
-    expect(brief).toContain("3. Report files changed.");
-    expect(brief).toContain("4. Report tests run.");
-    expect(brief).toContain("5. Report whether Gleip status is clean");
+    expect(brief).toContain("Run the narrowest existing validation");
+    expect(brief).toContain("Do not rerun a full validation suite");
+    expect(brief).toContain("2. Run `npx --no-install gleip check --incremental`.");
+    expect(brief).toContain("3. Run `npx --no-install gleip status --compact`.");
+    expect(brief).toContain("4. Report files changed.");
+    expect(brief).toContain("5. Report tests run.");
+    expect(brief).toContain("6. Report whether Gleip status is clean");
   });
 });
 

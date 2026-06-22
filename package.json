@@ -1,6 +1,6 @@
 {
   "name": "gleip",
-  "version": "0.7.5",
+  "version": "0.8.0",
   "description": "Local-only guidance that AI coding agents use automatically.",
   "license": "Apache-2.0",
   "repository": {
@@ -63,7 +63,7 @@
     "typecheck": "pnpm -r typecheck",
     "pack:cli": "node scripts/pack-cli.mjs",
     "smoke:cli": "node scripts/smoke-cli.mjs",
-    "smoke:packed": "node scripts/smoke-packed-0.7.mjs",
+    "smoke:packed": "node scripts/smoke-packed-0.8.mjs",
     "format": "prettier --write ."
   },
   "dependencies": {

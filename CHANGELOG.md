@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.8.0]
+
+### Added
+
+- Added `gleip check --incremental` with deterministic result reuse, `--force` recomputation, complete first-run baselines, and added/updated/resolved finding deltas.
+- Added `gleip status --compact` for five-field iterative status output.
+- Added directly observable incremental JSON metrics for requested, executed, and reused checks; reuse rate; finding emission and delta counts; and changed files. Unobservable validation and external-command repetition metrics remain explicitly unavailable.
+
+### Changed
+
+- Added a canonical local fingerprint over repository HEAD and working state, active session/task, brief, baseline, scope budget, plan state, configuration, analysis flags, enabled state, and Gleip version.
+- Updated generated agent instructions to use narrow iterative validation, one complete final validation per unchanged repository state, incremental checks, and compact status.
+- Added `.gleip/check-cache.json` to recognized local runtime artifacts. Cache data contains only hashes, normalized findings, and result metadata.
+
+### Compatibility
+
+- Incremental checks and compact status are explicit opt-in modes; existing `check`, `status`, and CI behavior remains compatible.
+- Missing, corrupt, version-incompatible, or input-stale caches fall back to a complete check. The Node.js requirement remains 20 or newer.
+
+### Limitations
+
+- Gleip directly measures check execution, reuse, finding emission and deltas, and changed files. Validation cycles, repeated external commands, arbitrary agent reads, and tool calls remain unavailable because Gleip does not intercept shells or agent tools.
+- Incremental state remains repository-local. Gleip adds no network access, telemetry, or remote cache.
+
 ## [0.7.5]
 
 ### Added

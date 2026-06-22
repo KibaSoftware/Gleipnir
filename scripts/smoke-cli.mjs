@@ -54,6 +54,13 @@ const validation = run(
   repo
 );
 run("node", [cliEntry, "--cwd", repo, "status"], repo);
+const firstIncremental = JSON.parse(
+  run("node", [cliEntry, "--cwd", repo, "check", "--incremental", "--json"], repo)
+);
+const reusedIncremental = JSON.parse(
+  run("node", [cliEntry, "--cwd", repo, "check", "--incremental", "--json"], repo)
+);
+const compactStatus = run("node", [cliEntry, "--cwd", repo, "status", "--compact"], repo);
 const reportJson = run("node", [cliEntry, "--cwd", repo, "report", "--json"], repo);
 
 for (const path of [
@@ -67,6 +74,7 @@ for (const path of [
   ".gleip/brief.md",
   ".gleip/scope-budget.json",
   ".gleip/status.md",
+  ".gleip/check-cache.json",
   ".gleip/report.json",
   ".gleip/report.md"
 ]) {
@@ -86,14 +94,28 @@ if (!validation.includes("Gleip plan check aligned with declared task scope")) {
   throw new Error(`Expected aligned plan validation, received:\n${validation}`);
 }
 
-const report = JSON.parse(reportJson);
-
-if (version !== "0.7.5") {
-  throw new Error(`Expected Gleip 0.7.5, received: ${version}`);
+if (
+  firstIncremental.incremental?.execution !== "executed" ||
+  reusedIncremental.incremental?.execution !== "reused" ||
+  reusedIncremental.incremental?.efficiency?.checksReused !== 1
+) {
+  throw new Error("Expected the second identical incremental check to reuse its baseline.");
 }
 
-if (report.schemaVersion !== "1.1.0" || report.version !== "0.7.5") {
-  throw new Error(`Expected Gleip 0.7.5 report schema 1.1.0, received:\n${reportJson}`);
+if (!compactStatus.includes("Check necessary: no")) {
+  throw new Error(
+    `Expected compact status to recognize the current check, received:\n${compactStatus}`
+  );
+}
+
+const report = JSON.parse(reportJson);
+
+if (version !== "0.8.0") {
+  throw new Error(`Expected Gleip 0.8.0, received: ${version}`);
+}
+
+if (report.schemaVersion !== "1.1.0" || report.version !== "0.8.0") {
+  throw new Error(`Expected Gleip 0.8.0 report schema 1.1.0, received:\n${reportJson}`);
 }
 
 if (!report.finalResponse?.markdown?.includes("### Gleip")) {

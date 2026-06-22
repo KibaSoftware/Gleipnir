@@ -76,7 +76,7 @@ describe("createGleipCommand", () => {
   it("--version prints the package version", async () => {
     const output = (await runHelpCommand(["--version"])).join("\n");
 
-    expect(output).toBe("0.7.5");
+    expect(output).toBe("0.8.0");
   });
 
   it("command help shows important flags and stdin support", async () => {
@@ -93,10 +93,13 @@ describe("createGleipCommand", () => {
     expect(validatePlanHelp).toContain("--json");
     expect(validatePlanHelp).toContain("stdin");
     expect(statusHelp).toContain("--include-baseline");
+    expect(statusHelp).toContain("--compact");
     expect(statusHelp).toContain("--json");
     expect(reportHelp).toContain("--json");
     expect(checkHelp).toContain("--include-baseline");
     expect(checkHelp).toContain("--ci");
+    expect(checkHelp).toContain("--incremental");
+    expect(checkHelp).toContain("--force");
     expect(checkHelp).toContain("--json");
     expect(initHelp).toContain("--agent <name>");
     expect(initHelp).toContain("--all-agents");
@@ -134,7 +137,7 @@ describe("createGleipCommand", () => {
     expect(packageJson.exports["."].import).toBe("./dist/index.js");
     expect(packageJson.exports["."].types).toBe("./dist/index.d.ts");
     expect(packageJson.name).toBe("gleip");
-    expect(packageJson.version).toBe("0.7.5");
+    expect(packageJson.version).toBe("0.8.0");
     expect(packageJson.dependencies).toEqual({
       commander: "^12.0.0",
       yaml: "^2.0.0",
@@ -179,7 +182,7 @@ describe("createGleipCommand", () => {
     });
   });
 
-  it("release metadata uses version 0.7.5 across packages", () => {
+  it("release metadata uses version 0.8.0 across packages", () => {
     const packagePaths = [
       "package.json",
       "packages/cli/package.json",
@@ -195,7 +198,7 @@ describe("createGleipCommand", () => {
       const packageJson = JSON.parse(readFileSync(join(repoRoot, packagePath), "utf8")) as {
         version: string;
       };
-      expect(packageJson.version).toBe("0.7.5");
+      expect(packageJson.version).toBe("0.8.0");
     }
 
     const cliPackageJson = readFileSync(join(repoRoot, "packages", "cli", "package.json"), "utf8");
@@ -629,9 +632,11 @@ describe("createGleipCommand", () => {
     expect(agents).toContain("Read `.gleip/brief.md` and `.gleip/scope-budget.json`");
     expect(agents).toContain("npx --no-install gleip validate-plan");
     expect(agents).toContain("For a non-trivial change");
-    expect(agents).toContain("Before claiming completion, run `npx --no-install gleip check`");
     expect(agents).toContain(
-      "Run `npx --no-install gleip status` whenever Gleip's expected next action is unclear"
+      "Before claiming completion, run `npx --no-install gleip check --incremental`"
+    );
+    expect(agents).toContain(
+      "Run `npx --no-install gleip status --compact` whenever Gleip's expected next action is unclear"
     );
     expect(agents).toContain("Do not edit or commit files under `.gleip/`");
     expect(agents).toContain("Address cleanup and action-required findings");
@@ -643,7 +648,9 @@ describe("createGleipCommand", () => {
     expect(agents).toContain(
       "Gleip is configured for this repository, but I could not run it through the local package command. Do you want me to continue without Gleip guidance? y/n"
     );
-    expect(agents).toContain("Before the final response, run `npx --no-install gleip status`");
+    expect(agents).toContain(
+      "Before the final response, run `npx --no-install gleip status --compact`"
+    );
     expect(agents).toContain(
       "Before the final response, run or read `npx --no-install gleip report`"
     );
@@ -986,7 +993,7 @@ describe("createGleipCommand", () => {
     expect(report).toContain("WARN Missing .gleip.yml or GLEIP.md");
     expect(report).toContain("WARN Missing Gleip-managed agent instructions");
     expect(report).toContain("WARN Missing, incomplete, or overridden Gleip .gitignore block");
-    expect(report).toContain("OK   CLI version resolved (0.7.5)");
+    expect(report).toContain("OK   CLI version resolved (0.8.0)");
     expect(report).toContain("OK   Built-in init assets available");
     expect(report).toContain("Run: npx gleip init");
   });
@@ -2099,6 +2106,288 @@ describe("createGleipCommand", () => {
     expect(readFileSync(join(repo, ".gleip", "status.md"), "utf8")).toBe(originalStatus);
   });
 
+  it("reuses two identical incremental checks and preserves the complete CI exit code", async () => {
+    const repo = createTempRepo();
+    let analysisCalls = 0;
+    const detectScopeDrift = () => {
+      analysisCalls += 1;
+      return {
+        status: "blocked" as const,
+        findings: [
+          {
+            code: "TEST_SKIPPED",
+            severity: "blocking" as const,
+            title: "Skipped test added",
+            message: "The diff adds a skipped test.",
+            category: "tests"
+          }
+        ],
+        metrics: { filesChanged: 1, linesAdded: 1, linesDeleted: 0 },
+        summary: "Blocking finding detected."
+      };
+    };
+    await runCommand(repo, ["preflight", "Keep focused tests active"]);
+
+    const first = await runCommandResult(repo, ["check", "--incremental", "--ci"], {
+      detectScopeDrift
+    });
+    const second = await runCommandResult(repo, ["check", "--incremental", "--ci"], {
+      detectScopeDrift
+    });
+
+    expect(first.output.join("\n")).toContain("incremental check executed | baseline");
+    expect(first.output.join("\n")).toContain("[TEST_SKIPPED]");
+    expect(second.output.join("\n")).toContain("incremental check reused | fingerprint unchanged");
+    expect(second.output.join("\n")).toContain("Unchanged: 1");
+    expect(first.exitCode).toBe(1);
+    expect(second.exitCode).toBe(1);
+    expect(analysisCalls).toBe(1);
+  });
+
+  it("force-recomputes an unchanged incremental check", async () => {
+    const repo = createTempRepo();
+    let analysisCalls = 0;
+    const detectScopeDrift = () => {
+      analysisCalls += 1;
+      return {
+        status: "within_scope" as const,
+        findings: [],
+        metrics: { filesChanged: 0, linesAdded: 0, linesDeleted: 0 },
+        summary: "No changes."
+      };
+    };
+    await runCommand(repo, ["preflight", "Verify deterministic output"]);
+    await runCommand(repo, ["check", "--incremental"], { detectScopeDrift });
+    const forced = await runCommand(repo, ["check", "--incremental", "--force"], {
+      detectScopeDrift
+    });
+
+    expect(forced.join("\n")).toContain("incremental check executed | forced delta");
+    expect(analysisCalls).toBe(2);
+  });
+
+  it("executes after implementation changes and emits finding resolution deltas", async () => {
+    const repo = createTempRepo();
+    let analysisCalls = 0;
+    await runCommand(repo, ["preflight", "Keep changes inside src/feature.ts"]);
+
+    await runCommand(repo, ["check", "--incremental"], {
+      collectWorkingTreeDiff: () =>
+        diffContext({
+          changedFiles: ["src/other.ts"],
+          fileStats: [{ path: "src/other.ts", added: 1, deleted: 0, diffFingerprint: "outside" }],
+          totalLinesAdded: 1,
+          hasChanges: true
+        }),
+      detectScopeDrift: () => {
+        analysisCalls += 1;
+        return {
+          status: "warning",
+          findings: [
+            {
+              code: "SCOPE_EXPANSION_WARN",
+              severity: "warning",
+              title: "Files outside expected scope",
+              message: "src/other.ts is outside expected scope.",
+              file: "src\\other.ts",
+              category: "allowed_scope"
+            }
+          ],
+          metrics: { filesChanged: 1, linesAdded: 1, linesDeleted: 0 },
+          summary: "Scope warning."
+        };
+      }
+    });
+
+    const updated = await runCommand(repo, ["check", "--incremental"], {
+      collectWorkingTreeDiff: () =>
+        diffContext({
+          changedFiles: ["src/other.ts"],
+          fileStats: [
+            { path: "src/other.ts", added: 2, deleted: 0, diffFingerprint: "outside-updated" }
+          ],
+          totalLinesAdded: 2,
+          hasChanges: true
+        }),
+      detectScopeDrift: () => {
+        analysisCalls += 1;
+        return {
+          status: "warning",
+          findings: [
+            {
+              code: "SCOPE_EXPANSION_WARN",
+              severity: "warning",
+              title: "Files outside expected scope",
+              message: "src/other.ts remains outside expected scope with two changed lines.",
+              file: "src/other.ts",
+              category: "allowed_scope"
+            }
+          ],
+          metrics: { filesChanged: 1, linesAdded: 2, linesDeleted: 0 },
+          summary: "Updated scope warning."
+        };
+      }
+    });
+
+    const resolved = await runCommand(repo, ["check", "--incremental"], {
+      collectWorkingTreeDiff: () =>
+        diffContext({
+          changedFiles: ["src/feature.ts"],
+          fileStats: [{ path: "src/feature.ts", added: 1, deleted: 0, diffFingerprint: "inside" }],
+          totalLinesAdded: 1,
+          hasChanges: true
+        }),
+      detectScopeDrift: () => {
+        analysisCalls += 1;
+        return {
+          status: "within_scope",
+          findings: [],
+          metrics: { filesChanged: 1, linesAdded: 1, linesDeleted: 0 },
+          summary: "Within scope."
+        };
+      }
+    });
+
+    expect(updated.join("\n")).toContain("Updated: 1");
+    expect(updated.join("\n")).toContain("remains outside expected scope");
+    expect(resolved.join("\n")).toContain("incremental check executed | delta");
+    expect(resolved.join("\n")).toContain("Resolved: 1");
+    expect(resolved.join("\n")).toContain("src/other.ts remains outside expected scope");
+    expect(analysisCalls).toBe(3);
+  });
+
+  it("invalidates incremental reuse for brief, plan, and configuration changes", async () => {
+    const repo = createTempRepo();
+    let analysisCalls = 0;
+    const detectScopeDrift = () => {
+      analysisCalls += 1;
+      return {
+        status: "within_scope" as const,
+        findings: [],
+        metrics: { filesChanged: 0, linesAdded: 0, linesDeleted: 0 },
+        summary: "No changes."
+      };
+    };
+    const defaultConfig = () => ({ mode: "advisory" });
+    await runCommand(repo, ["preflight", "Update the focused implementation"]);
+    await runCommand(repo, ["check", "--incremental"], {
+      detectScopeDrift,
+      loadConfig: defaultConfig
+    });
+    await runCommand(repo, ["check", "--incremental"], {
+      detectScopeDrift,
+      loadConfig: defaultConfig
+    });
+    expect(analysisCalls).toBe(1);
+
+    writeFileSync(join(repo, ".gleip", "brief.md"), "changed brief\n");
+    await runCommand(repo, ["check", "--incremental"], {
+      detectScopeDrift,
+      loadConfig: defaultConfig
+    });
+
+    const sessionPath = join(repo, ".gleip", "session.json");
+    const session = JSON.parse(readFileSync(sessionPath, "utf8")) as Record<string, unknown>;
+    writeFileSync(
+      sessionPath,
+      `${JSON.stringify({ ...session, latestValidationAttempt: { status: "needs_approval" } }, null, 2)}\n`
+    );
+    await runCommand(repo, ["check", "--incremental"], {
+      detectScopeDrift,
+      loadConfig: defaultConfig
+    });
+    await runCommand(repo, ["check", "--incremental"], {
+      detectScopeDrift,
+      loadConfig: () => ({ mode: "strict" })
+    });
+
+    expect(analysisCalls).toBe(4);
+  });
+
+  it("falls back to a full baseline for corrupted, deleted, and version-incompatible caches", async () => {
+    const repo = createTempRepo();
+    let analysisCalls = 0;
+    const detectScopeDrift = () => {
+      analysisCalls += 1;
+      return {
+        status: "within_scope" as const,
+        findings: [],
+        metrics: { filesChanged: 0, linesAdded: 0, linesDeleted: 0 },
+        summary: "No changes."
+      };
+    };
+    const cachePath = join(repo, ".gleip", "check-cache.json");
+    await runCommand(repo, ["preflight", "Exercise cache recovery"]);
+    await runCommand(repo, ["check", "--incremental"], { detectScopeDrift });
+
+    writeFileSync(cachePath, "{broken\n");
+    const corrupted = await runCommand(repo, ["check", "--incremental"], { detectScopeDrift });
+    rmSync(cachePath);
+    const deleted = await runCommand(repo, ["check", "--incremental"], { detectScopeDrift });
+    const cache = JSON.parse(readFileSync(cachePath, "utf8")) as Record<string, unknown>;
+    writeFileSync(cachePath, `${JSON.stringify({ ...cache, gleipVersion: "0.0.0" }, null, 2)}\n`);
+    const incompatible = await runCommand(repo, ["check", "--incremental"], {
+      detectScopeDrift
+    });
+
+    expect(corrupted.join("\n")).toContain("executed | baseline");
+    expect(deleted.join("\n")).toContain("executed | baseline");
+    expect(incompatible.join("\n")).toContain("executed | baseline");
+    expect(analysisCalls).toBe(4);
+  });
+
+  it("reports directly observable incremental metrics in JSON", async () => {
+    const repo = createTempRepo();
+    await runCommand(repo, ["preflight", "Measure deterministic checks"]);
+    await runCommand(repo, ["check", "--incremental", "--json"]);
+    const output = await runCommand(repo, ["check", "--incremental", "--json"]);
+    const result = JSON.parse(output.join("\n")) as {
+      incremental: {
+        execution: string;
+        efficiency: Record<string, unknown>;
+      };
+    };
+
+    expect(result.incremental.execution).toBe("reused");
+    expect(result.incremental.efficiency).toMatchObject({
+      checksRequested: 1,
+      checksExecuted: 0,
+      checksReused: 1,
+      reuseRate: 1,
+      fullFindingsEmitted: 0,
+      deltaFindingsEmitted: 0,
+      validationCycles: "unavailable",
+      repeatedValidationCycles: "unavailable"
+    });
+  });
+
+  it("status --compact reuses current incremental state and prints only iterative fields", async () => {
+    const repo = createTempRepo();
+    let analysisCalls = 0;
+    const detectScopeDrift = () => {
+      analysisCalls += 1;
+      return {
+        status: "within_scope" as const,
+        findings: [],
+        metrics: { filesChanged: 0, linesAdded: 0, linesDeleted: 0 },
+        summary: "No changes."
+      };
+    };
+    await runCommand(repo, ["preflight", "Measure compact status"]);
+    await runCommand(repo, ["check", "--incremental"], { detectScopeDrift });
+    const output = await runCommand(repo, ["status", "--compact"], { detectScopeDrift });
+    const lines = output.join("\n").split("\n");
+
+    expect(lines).toHaveLength(5);
+    expect(lines[0]).toContain("Task: Measure compact status");
+    expect(lines[1]).toBe("Repository changed: no");
+    expect(lines[2]).toBe("Findings: 0 warning, 0 blocking");
+    expect(lines[3]).toBe("Check necessary: no");
+    expect(output.join("\n")).not.toContain("brief");
+    expect(output.join("\n")).not.toContain("plan");
+    expect(analysisCalls).toBe(1);
+  });
+
   it("check --ci exits non-zero for documented action-required findings", async () => {
     const repo = createTempRepo();
     await runCommand(repo, ["preflight", "Add CSV export to users table"]);
@@ -3083,7 +3372,7 @@ describe("createGleipCommand", () => {
     expect(output).toHaveLength(1);
     expect(output[0]?.trimStart().startsWith("{")).toBe(true);
     expect(output.join("\n")).not.toContain("Gleip report ready");
-    expect(report.version).toBe("0.7.5");
+    expect(report.version).toBe("0.8.0");
     expect(report.generatedAt).toBe("2026-05-30T00:00:00.000Z");
     expect(report.summary.filesChanged).toBe(0);
     expect(existsSync(join(repo, ".gleip", "report.json"))).toBe(true);
@@ -3577,6 +3866,10 @@ function assertGleipWorkflowInstructions(content: string): void {
   expect(content).toContain("npx --no-install gleip validate-plan");
   expect(content).toContain("npx --no-install gleip check");
   expect(content).toContain("npx --no-install gleip status");
+  expect(content).toContain("npx --no-install gleip check --incremental");
+  expect(content).toContain("npx --no-install gleip status --compact");
+  expect(content).toContain("narrowest existing validation");
+  expect(content).toContain("Do not rerun a full validation suite");
   expect(content).toContain("npx --no-install gleip report");
   expect(content).toContain("needs_clarification");
   expect(content).toContain("needs_approval");

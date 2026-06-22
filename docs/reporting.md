@@ -52,7 +52,7 @@ Output discipline and estimated output waste remain deterministic local heuristi
 
 ## Interaction Summaries
 
-Normal preflight, plan validation, status, check, and report commands emit concise 1-5 line summaries. These summaries confirm the completed phase, point to local artifacts where relevant, and state the next expected agent action. JSON mode emits only machine-readable JSON.
+Default preflight, plan validation, status, check, and report modes emit concise 1-5 line summaries. Incremental baselines and deltas add only the finding lines that must be emitted and keep unchanged findings as a count. JSON mode emits only machine-readable JSON.
 
 ## Missing Evidence
 
