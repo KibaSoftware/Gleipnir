@@ -157,12 +157,7 @@ export interface AgentPlan {
   mentionsBroadRefactor: boolean;
 }
 
-export type TaskBreadth =
-  | "local"
-  | "feature"
-  | "subsystem"
-  | "cross_cutting"
-  | "repository_wide";
+export type TaskBreadth = "local" | "feature" | "subsystem" | "cross_cutting" | "repository_wide";
 
 export type ScopeTargetTier = "direct" | "derived" | "adjacent" | "unexplained";
 
@@ -256,6 +251,21 @@ interface PlanStructure {
   hasFiles: boolean;
   hasImplementation: boolean;
   hasRiskRationale: boolean;
+  hasVerification: boolean;
+}
+
+type PlanValidationMode =
+  | "analysis"
+  | "documentation"
+  | "implementation"
+  | "investigation"
+  | "migration_configuration"
+  | "operation"
+  | "unknown";
+
+interface PlanEvidence {
+  hasApproach: boolean;
+  hasScopeTarget: boolean;
   hasVerification: boolean;
 }
 
@@ -1106,7 +1116,7 @@ export function validateAgentPlan(input: ValidateAgentPlanInput): PlanValidation
     ...(input.cwd === undefined ? {} : { cwd: input.cwd })
   });
   const findings: PlanValidationFinding[] = [];
-  const planStructure = analyzePlanStructure(parsedPlan);
+  const planStructure = analyzePlanStructure(parsedPlan, input.scopeBudget, input.taskText ?? "");
   const targetClassifications = classifyPlanTargets({
     parsedPlan,
     scopeBudget: input.scopeBudget,
@@ -1115,8 +1125,7 @@ export function validateAgentPlan(input: ValidateAgentPlanInput): PlanValidation
     ...(input.cwd === undefined ? {} : { cwd: input.cwd })
   });
   const scopeTargetsNeedingClarification = targetClassifications.filter(
-    (target) =>
-      target.classification === "adjacent" || target.classification === "unexplained"
+    (target) => target.classification === "adjacent" || target.classification === "unexplained"
   );
   const riskyFiles = parsedPlan.proposedFiles.filter(isRiskyPlanPath);
   const unexpectedRiskyFiles = riskyFiles.filter(
@@ -1138,8 +1147,10 @@ export function validateAgentPlan(input: ValidateAgentPlanInput): PlanValidation
       code: "PLAN_REQUIRED_SECTION_MISSING",
       severity: "warn",
       title: "Implementation structure missing",
-      message: "The plan does not include a recognizable implementation, changes, or approach section.",
-      recommendation: "Add a short implementation or changes section describing the intended actions."
+      message:
+        "The plan does not include a recognizable implementation, changes, or approach section.",
+      recommendation:
+        "Add a short implementation or changes section describing the intended actions."
     });
   }
 
@@ -1153,15 +1164,13 @@ export function validateAgentPlan(input: ValidateAgentPlanInput): PlanValidation
     });
   }
 
-  if (
-    parsedPlan.mentionsNewDependencies &&
-    !input.scopeBudget.hardGates.newDependenciesAllowed
-  ) {
+  if (parsedPlan.mentionsNewDependencies && !input.scopeBudget.hardGates.newDependenciesAllowed) {
     findings.push({
       code: "DEPENDENCY_CHANGE_INTENT",
       severity: "approval_required",
       title: "New dependency intent",
-      message: "The plan proposes a new dependency that requires approval under the current guidance.",
+      message:
+        "The plan proposes a new dependency that requires approval under the current guidance.",
       recommendation: "Request approval to add the dependency, or revise the plan without it.",
       evidence: parsedPlan.proposedDependencies
     });
@@ -1172,7 +1181,8 @@ export function validateAgentPlan(input: ValidateAgentPlanInput): PlanValidation
       code: "CI_CHANGE_INTENT",
       severity: "approval_required",
       title: "CI change intent",
-      message: "The plan proposes CI or workflow changes that require clarification under the current policy.",
+      message:
+        "The plan proposes CI or workflow changes that require clarification under the current policy.",
       recommendation: "Provide the requested CI scope or ask the user for approval.",
       evidence: ciEvidence(parsedPlan)
     });
@@ -1184,7 +1194,8 @@ export function validateAgentPlan(input: ValidateAgentPlanInput): PlanValidation
       severity: "action_required",
       title: "Test weakening intent",
       message: "The plan mentions skipping, deleting, disabling, or weakening tests.",
-      recommendation: "Revise the plan to preserve tests and CI. Do not weaken tests without explicit user approval."
+      recommendation:
+        "Revise the plan to preserve tests and CI. Do not weaken tests without explicit user approval."
     });
   }
 
@@ -1235,7 +1246,8 @@ export function validateAgentPlan(input: ValidateAgentPlanInput): PlanValidation
       code: "PLAN_RISKY_FILE_MENTIONED",
       severity: "warn",
       title: "Risky file category mentioned",
-      message: "The plan includes dependency, CI, config, secret, or security-sensitive files outside the declared task scope.",
+      message:
+        "The plan includes dependency, CI, config, secret, or security-sensitive files outside the declared task scope.",
       recommendation: "Confirm the named reason and verification for each risky category.",
       evidence: unexpectedRiskyFiles
     });
@@ -1267,15 +1279,19 @@ export function validateAgentPlan(input: ValidateAgentPlanInput): PlanValidation
       code: "MISSING_TEST_STRATEGY",
       severity: "warn",
       title: "Verification expectation missing",
-      message: "The scope guidance expects verification, but the plan does not mention tests, checks, a smoke run, or manual verification.",
-      recommendation: "Add the focused verification that will be run; a new test file is not required."
+      message:
+        "The scope guidance expects verification, but the plan does not include a concrete validation method.",
+      recommendation:
+        "Add the focused tests, build checks, comparison, reproduction, review, or constrained validation that will be run."
     });
     findings.push({
       code: "PLAN_NO_VERIFICATION",
       severity: "warn",
       title: "Verification structure missing",
-      message: "The scope budget requires verification, but the plan has no verification section or verification language.",
-      recommendation: "Add the tests, checks, or manual verification that will be run."
+      message:
+        "The scope budget requires verification, but the plan has no recognizable verification evidence.",
+      recommendation:
+        "Add the tests, checks, comparison, reproduction, review, or manual verification that will be run."
     });
   }
 
@@ -1286,8 +1302,10 @@ export function validateAgentPlan(input: ValidateAgentPlanInput): PlanValidation
       code: "BROAD_REFACTOR_INTENT",
       severity: severeRefactor ? "action_required" : "warn",
       title: "Broad refactor intent",
-      message: "The plan uses broad refactor wording, but the task was not classified as a refactor.",
-      recommendation: "Narrow the plan to the smallest change needed for the task, or ask for approval."
+      message:
+        "The plan uses broad refactor wording, but the task was not classified as a refactor.",
+      recommendation:
+        "Narrow the plan to the smallest change needed for the task, or ask for approval."
     });
   }
 
@@ -1303,17 +1321,20 @@ export function validateAgentPlan(input: ValidateAgentPlanInput): PlanValidation
       code: "PLAN_RISK_RATIONALE_MISSING",
       severity: "warn",
       title: "Risk or scope rationale missing",
-      message: "The plan includes risky categories or scope expansion without recognizable risks, assumptions, constraints, or scope-rationale language.",
-      recommendation: "Add the affected area, why it is needed, and how the expanded area will be verified."
+      message:
+        "The plan includes risky categories or scope expansion without recognizable risks, assumptions, constraints, or scope-rationale language.",
+      recommendation:
+        "Add the affected area, why it is needed, and how the expanded area will be verified."
     });
   }
 
-  if (isPlanVague(parsedPlan)) {
+  if (isPlanVague(parsedPlan, planStructure)) {
     findings.push({
       code: "PLAN_TOO_VAGUE",
       severity: "warn",
       title: "Vague implementation plan",
-      message: "The plan is too short or does not name concrete files, tests, dependencies, or actions.",
+      message:
+        "The plan is too short or does not name concrete files, tests, dependencies, or actions.",
       recommendation: "Provide files to inspect or change and tests to add or run."
     });
   }
@@ -1407,8 +1428,9 @@ function analyzeTaskScope(task: string, additionalContextFiles: string[] = []): 
   }
 
   for (const line of task.split(/\r?\n/u)) {
-    const onlyMatch =
-      /\b(?:(?:modify|edit|change|touch)\s+only|only\s+update)\s+(.+)$/iu.exec(line);
+    const onlyMatch = /\b(?:(?:modify|edit|change|touch)\s+only|only\s+update)\s+(.+)$/iu.exec(
+      line
+    );
 
     if (onlyMatch?.[1] === undefined) {
       continue;
@@ -1477,10 +1499,7 @@ function extractDeclaredTaskScope(task: string): DeclaredTaskScope {
   const contextPaths = new Set(extractPhraseContextPaths(task));
 
   for (const segment of splitTaskScopeSegments(task)) {
-    if (
-      !hasDeclaredScopeIntent(segment) ||
-      hasNegativeEditIntent(segment)
-    ) {
+    if (!hasDeclaredScopeIntent(segment) || hasNegativeEditIntent(segment)) {
       continue;
     }
 
@@ -1621,13 +1640,7 @@ function extractDeclaredTaskScope(task: string): DeclaredTaskScope {
       categoryText,
       "ci",
       /\b(?:ci|github actions?|workflows?|pipeline)\b/iu,
-      [
-        ".github/workflows",
-        ".circleci",
-        ".buildkite",
-        ".gitlab-ci.yml",
-        "azure-pipelines.yml"
-      ],
+      [".github/workflows", ".circleci", ".buildkite", ".gitlab-ci.yml", "azure-pipelines.yml"],
       paths,
       labels
     );
@@ -1957,9 +1970,7 @@ function hasAffirmativeEditIntent(value: string): boolean {
 }
 
 function hasNegativeEditIntent(value: string): boolean {
-  return /\b(?:do not|don't|must not|never)\s+(?:modify|update|edit|change|touch)\b/iu.test(
-    value
-  );
+  return /\b(?:do not|don't|must not|never)\s+(?:modify|update|edit|change|touch)\b/iu.test(value);
 }
 
 function isContextFileName(path: string): boolean {
@@ -1979,16 +1990,10 @@ function isGeneratedArtifact(path: string): boolean {
   const normalizedPath = normalizePath(path);
   const fileName = basename(normalizedPath).toLowerCase();
 
-  return (
-    generatedArtifactExtensions.has(extname(fileName)) ||
-    generatedArtifactNames.has(fileName)
-  );
+  return generatedArtifactExtensions.has(extname(fileName)) || generatedArtifactNames.has(fileName);
 }
 
-function isNewDependencyAllowed(
-  classification: TaskClassification,
-  task: string
-): boolean {
+function isNewDependencyAllowed(classification: TaskClassification, task: string): boolean {
   if (
     /\b(?:do not|don't|must not|without|no)\b[^.\n]{0,40}\b(?:new )?(?:dependencies|dependency additions?)\b/iu.test(
       task
@@ -2002,14 +2007,11 @@ function isNewDependencyAllowed(
       task
     ) ||
       /\b(?:upgrade|bump|replace)\b[^.\n]{0,50}/iu.test(task) ||
-      /\bupdate\s+(?:a\s+|the\s+)?(?:dependencies|dependency|library|framework)\b/iu.test(
-        task
-      )) &&
+      /\bupdate\s+(?:a\s+|the\s+)?(?:dependencies|dependency|library|framework)\b/iu.test(task)) &&
     !/\b(?:package|project|release)\s+version\b/iu.test(task);
 
   return (
-    (classification.taskType === "dependency_upgrade" &&
-      hasAffirmativeDependencyIntent) ||
+    (classification.taskType === "dependency_upgrade" && hasAffirmativeDependencyIntent) ||
     (classification.taskType === "auth_security_change" &&
       classification.likelyAllowsNewDependencies)
   );
@@ -2068,9 +2070,8 @@ function extractPlanFileMentions(
   for (const line of planText.split(/\r?\n/u)) {
     const label = sectionLabel(line);
     if (label !== undefined) {
-      inTargetSection = /^(?:files?|scope|targets?|touched files?|modules?|routes?|surfaces?)$/iu.test(
-        label
-      );
+      inTargetSection =
+        /^(?:files?|scope|targets?|touched files?|modules?|routes?|surfaces?)$/iu.test(label);
     }
 
     for (const path of extractPathTokens(line, {
@@ -2230,14 +2231,7 @@ function extractPlanDependencies(planText: string, proposedFiles: string[]): str
 }
 
 function splitDependencyTokens(value: string): string[] {
-  const ignored = new Set([
-    "and",
-    "dependency",
-    "dependencies",
-    "package",
-    "packages",
-    "update"
-  ]);
+  const ignored = new Set(["and", "dependency", "dependencies", "package", "packages", "update"]);
 
   return value
     .split(/[\s,]+/u)
@@ -2256,6 +2250,7 @@ function detectsNewDependencyIntent(planText: string): boolean {
 
 function extractPlanTests(planText: string, proposedFiles: string[]): string[] {
   const tests = new Set<string>();
+  const affirmativeText = withoutNegatedPlanClauses(planText);
 
   for (const path of proposedFiles) {
     if (isTestFile(path)) {
@@ -2284,7 +2279,7 @@ function extractPlanTests(planText: string, proposedFiles: string[]): string[] {
     /\bupdate specs?\b/iu,
     /\brun specs?\b/iu
   ]) {
-    const match = phrase.exec(planText);
+    const match = phrase.exec(affirmativeText);
 
     if (match?.[0]) {
       tests.add(match[0].toLowerCase());
@@ -2308,7 +2303,7 @@ function detectsCiIntent(planText: string, proposedFiles: string[]): boolean {
 
 function withoutNegatedPlanClauses(planText: string): string {
   return planText.replace(
-    /\b(?:do not|don't|must not|never|without)\b[^\n.;]*?(?=\bbut\b|[.;\n]|$)/giu,
+    /\b(?:do not|don't|must not|never|without|no)\b[^\n.;]*?(?=\bbut\b|[.;\n]|$)/giu,
     " "
   );
 }
@@ -2356,43 +2351,313 @@ function buildMentionedRiskyAreas(input: {
   return areas;
 }
 
-function analyzePlanStructure(parsedPlan: AgentPlan): PlanStructure {
+function collectPlanEvidence(
+  parsedPlan: AgentPlan,
+  scopeBudget: ScopeBudget,
+  taskText: string
+): PlanEvidence {
+  const affirmativeText = withoutNegatedPlanClauses(parsedPlan.rawText);
+  const clauses = splitEvidenceClauses(affirmativeText);
+  const mode = inferPlanValidationMode(parsedPlan.rawText, scopeBudget, taskText);
+
+  return {
+    hasApproach: hasActionableApproach(clauses),
+    hasScopeTarget: hasScopeTargetEvidence(parsedPlan, clauses),
+    hasVerification: hasVerificationEvidence(parsedPlan, clauses, mode)
+  };
+}
+
+function inferPlanValidationMode(
+  planText: string,
+  scopeBudget: ScopeBudget,
+  taskText: string
+): PlanValidationMode {
+  const text = `${taskText}\n${planText}`;
+
+  if (
+    /\b(?:publish|release|registry|installed cli|fixture repositor(?:y|ies)|working tree|worktree|package version|expected version)\b/iu.test(
+      text
+    )
+  ) {
+    return "operation";
+  }
+
+  if (/\b(?:documentation|docs?|guide|markdown|references?|migration guide)\b/iu.test(text)) {
+    return "documentation";
+  }
+
+  if (
+    /\b(?:request logs?|reproduce|failing request|debug|investigat|trace|malformed-input)\b/iu.test(
+      text
+    )
+  ) {
+    return "investigation";
+  }
+
+  if (
+    /\b(?:audit|read-only|financial model|source sheets?|event study|historical data|unsupported assumptions?|limitations?|independently validated)\b/iu.test(
+      text
+    )
+  ) {
+    return "analysis";
+  }
+
+  if (/\b(?:migration|configuration|config|deployment contract|production config)\b/iu.test(text)) {
+    return "migration_configuration";
+  }
+
+  const implementationTaskTypes: TaskType[] = [
+    "api_endpoint",
+    "auth_security_change",
+    "bug_fix",
+    "dependency_upgrade",
+    "infra_ci_change",
+    "migration",
+    "refactor",
+    "small_feature",
+    "test_only",
+    "ui_tweak"
+  ];
+
+  if (implementationTaskTypes.includes(scopeBudget.taskType)) {
+    return "implementation";
+  }
+
+  return "unknown";
+}
+
+function splitEvidenceClauses(text: string): string[] {
+  const normalized = text.replace(/^\s*(?:[-*]|\d+\.)\s*/gmu, "");
+
+  return normalized
+    .split(
+      /\r?\n|[.;]|\bthen\b|,\s+(?=(?:and\s+)?(?:check|compare|confirm|document|identify|inspect|record|report|reproduce|review|state|validate|verify)\b)|\band\s+(?=(?:add|build|change|check|compare|confirm|create|edit|implement|inspect|modify|publish|record|reproduce|review|revise|run|update|validate|verify)\b)/iu
+    )
+    .map((clause) => clause.trim())
+    .filter((clause) => clause.length > 0);
+}
+
+function hasActionableApproach(clauses: string[]): boolean {
+  const approachClauses = clauses.filter(hasApproachClauseEvidence);
+
+  return approachClauses.length > 0;
+}
+
+function hasApproachClauseEvidence(clause: string): boolean {
+  return (
+    /\b(?:add|build|change|compare|compile|confirm|create|document|edit|expose|fix|identify|implement|inspect|modify|perform|publish|read|reconcile|record|remove|rename|report|reproduce|review|revise|state|update|use|wire)\b/iu.test(
+      clause
+    ) && hasActionObject(clause)
+  );
+}
+
+function hasActionObject(clause: string): boolean {
+  const words = clause
+    .toLowerCase()
+    .split(/[^a-z0-9_-]+/u)
+    .filter((word) => word.length > 0);
+  const actionIndex = words.findIndex((word) =>
+    [
+      "add",
+      "build",
+      "change",
+      "check",
+      "compare",
+      "compile",
+      "confirm",
+      "create",
+      "document",
+      "edit",
+      "expose",
+      "fix",
+      "identify",
+      "implement",
+      "inspect",
+      "modify",
+      "perform",
+      "publish",
+      "read",
+      "reconcile",
+      "record",
+      "remove",
+      "rename",
+      "report",
+      "reproduce",
+      "review",
+      "revise",
+      "state",
+      "update",
+      "use",
+      "wire"
+    ].includes(word)
+  );
+
+  if (actionIndex < 0) {
+    return false;
+  }
+
+  return words
+    .slice(actionIndex + 1)
+    .some((word) => word.length > 2 && !planEvidenceStopWords.has(word));
+}
+
+const planEvidenceStopWords = new Set([
+  "a",
+  "an",
+  "and",
+  "any",
+  "as",
+  "at",
+  "be",
+  "for",
+  "if",
+  "in",
+  "is",
+  "it",
+  "of",
+  "or",
+  "that",
+  "the",
+  "their",
+  "to",
+  "where",
+  "with"
+]);
+
+function hasScopeTargetEvidence(parsedPlan: AgentPlan, clauses: string[]): boolean {
+  if (parsedPlan.proposedFiles.length > 0) {
+    return true;
+  }
+
+  return clauses.some((clause) =>
+    /\b(?:api contract|commands?|deployment contract|documented schema|failing request|financial model|fixture repositor(?:y|ies)|frontend|generated output|historical data|installed cli|internal references?|keyboard navigation|migration guide|package|parser implementation|production configuration|registry|rendered markdown|request logs?|responsive navigation|runtime behavior|source files?|source sheets?|working tree|worktree)\b/iu.test(
+      clause
+    )
+  );
+}
+
+function hasVerificationEvidence(
+  parsedPlan: AgentPlan,
+  clauses: string[],
+  mode: PlanValidationMode
+): boolean {
+  if (parsedPlan.proposedTests.length > 0) {
+    return true;
+  }
+
+  return clauses.some(
+    (clause) =>
+      hasCommonVerificationEvidence(clause) || hasModeSpecificVerificationEvidence(clause, mode)
+  );
+}
+
+function hasCommonVerificationEvidence(clause: string): boolean {
+  return (
+    /\b(?:run|execute)\b[^.\n]{0,100}\b(?:tests?|test suite|pytest|vitest|jest|specs?|lint|typecheck|build|compile|smoke|pack|cli|fixture|commands?)\b/iu.test(
+      clause
+    ) ||
+    /\b(?:build|compile|typecheck|lint|pack)\b(?:\s+(?:the\s+)?(?:application|app|frontend|package|project|release))?\b/iu.test(
+      clause
+    ) ||
+    /\bverify\b[^.\n]{0,100}\b(?:behavior|clean|contract|expected|keyboard|navigation|result|status|unchanged|version|works?)\b/iu.test(
+      clause
+    ) ||
+    /\bvalidate\b[^.\n]{0,100}\b(?:against|commands?|contract|current|expected|references?|with)\b/iu.test(
+      clause
+    ) ||
+    /\bcompare\b[^.\n]{0,100}\b(?:against|to|with)\b/iu.test(clause) ||
+    /\breconcile\b[^.\n]{0,100}\b(?:against|to|with)\b/iu.test(clause) ||
+    /\breproduce\b[^.\n]{0,100}\b(?:bug|case|error|failing|failure|malformed|request)\b/iu.test(
+      clause
+    ) ||
+    /\bconfirm\b[^.\n]{0,100}\b(?:clean|expected|exposes|registry|remains|status|unchanged|version|working tree|worktree)\b/iu.test(
+      clause
+    ) ||
+    /\bcheck\b[^.\n]{0,100}\b(?:contract|formatting|links?|references?|result|status|working tree|worktree)\b/iu.test(
+      clause
+    ) ||
+    /\binspect\b[^.\n]{0,100}\b(?:logs?|mobile|desktop|rendered|result|response|runtime behavior|output)\b/iu.test(
+      clause
+    ) ||
+    /\breview\b[^.\n]{0,100}\b(?:formatting|output|rendered|result)\b/iu.test(clause) ||
+    /\b(?:document|record|report|state)\b[^.\n]{0,120}\b(?:cannot be (?:independently |safely )?(?:confirmed|validated|verified)|limitations?|uncertainty|unsupported assumptions?)\b/iu.test(
+      clause
+    )
+  );
+}
+
+function hasModeSpecificVerificationEvidence(clause: string, mode: PlanValidationMode): boolean {
+  switch (mode) {
+    case "analysis":
+      return /\b(?:event study|evidence review|historical data|source sheets?|unsupported assumptions?)\b/iu.test(
+        clause
+      );
+    case "documentation":
+      return /\b(?:check internal references?|review rendered markdown|validate each command|link validation|formatting problems?)\b/iu.test(
+        clause
+      );
+    case "implementation":
+      return /\b(?:inspect the result|keyboard navigation|manual verification|responsive rendering|runtime verification)\b/iu.test(
+        clause
+      );
+    case "investigation":
+      return /\b(?:request logs?|reproduce the failing request|documented api contract|remaining uncertainty|trace)\b/iu.test(
+        clause
+      );
+    case "migration_configuration":
+      return /\b(?:deployment contract|production configuration|cannot be safely verified|without executing)\b/iu.test(
+        clause
+      );
+    case "operation":
+      return /\b(?:registry exposes|expected version|installed cli|fixture repositor(?:y|ies)|working tree is clean|worktree remains unchanged|health checks?|rollback)\b/iu.test(
+        clause
+      );
+    case "unknown":
+      return false;
+  }
+}
+
+function analyzePlanStructure(
+  parsedPlan: AgentPlan,
+  scopeBudget: ScopeBudget,
+  taskText: string
+): PlanStructure {
   const text = parsedPlan.rawText;
+  const affirmativeText = withoutNegatedPlanClauses(text);
+  const evidence = collectPlanEvidence(parsedPlan, scopeBudget, taskText);
   const hasFilesLabel = hasSectionLabel(
     text,
-    /(?:files?|scope|touched files?|modules?|components?)/iu
+    /^(?:files?|scope|targets?|touched files?|modules?|components?)$/iu
   );
   const hasImplementationLabel = hasSectionLabel(
     text,
-    /(?:implementation|changes?|approach|steps?|execution)/iu
+    /^(?:implementation|changes?|approach|steps?|execution)$/iu
   );
   const hasVerificationLabel = hasSectionLabel(
     text,
-    /(?:verification|tests?|checks?|validation)/iu
+    /^(?:verification|tests?|test strategy|checks?|validation)$/iu
   );
   const hasRiskLabel = hasSectionLabel(
     text,
-    /(?:risks?|assumptions?|constraints?|scope rationale|expansion rationale)/iu
+    /^(?:risks?|assumptions?|constraints?|scope rationale|expansion rationale)$/iu
   );
 
   return {
     hasFiles:
       hasFilesLabel ||
       parsedPlan.proposedFiles.length > 0 ||
+      evidence.hasScopeTarget ||
       /\b(?:module|component|package)\s+[a-z0-9_.@/-]+\b/iu.test(text),
-    hasImplementation:
-      hasImplementationLabel ||
-      /\b(?:modify|update|create|add|edit|change|implement|reuse|remove|rename|wire|expose)\b/iu.test(
-        text
-      ),
+    hasImplementation: hasImplementationLabel || evidence.hasApproach,
     hasVerification:
-      hasVerificationLabel ||
-      parsedPlan.proposedTests.length > 0 ||
-      /\b(?:verify|validation|lint|typecheck|build|pack|smoke)\b/iu.test(text),
+      hasVerificationLabel || parsedPlan.proposedTests.length > 0 || evidence.hasVerification,
     hasRiskRationale:
       hasRiskLabel ||
-      (/\b(?:because|since|required for|required to|needed to|included to)\b/iu.test(text) &&
-        /\b(?:verify|test|check|lint|typecheck|build|pack|smoke)\b/iu.test(text))
+      (/\b(?:because|since|required for|required to|needed to|included to)\b/iu.test(
+        affirmativeText
+      ) &&
+        (evidence.hasVerification ||
+          /\b(?:verify|test|check|lint|typecheck|build|pack|smoke)\b/iu.test(affirmativeText)))
   };
 }
 
@@ -2405,12 +2670,8 @@ function hasSectionLabel(text: string, concept: RegExp): boolean {
 }
 
 function sectionLabel(line: string): string | undefined {
-  const normalizedLine = line
-    .replace(/^\s*(?:#{1,6}|[-*]|\d+\.)\s*/u, "")
-    .trim();
-  const separatorMatch = /^([A-Za-z][A-Za-z0-9 _/-]{0,40})\s*[:-]\s*/u.exec(
-    normalizedLine
-  );
+  const normalizedLine = line.replace(/^\s*(?:#{1,6}|[-*]|\d+\.)\s*/u, "").trim();
+  const separatorMatch = /^([A-Za-z][A-Za-z0-9 _/-]{0,40})\s*[:-]\s*/u.exec(normalizedLine);
 
   if (separatorMatch?.[1] !== undefined) {
     return separatorMatch[1].trim().toLowerCase();
@@ -2458,7 +2719,8 @@ function validateMentionedFiles(
       code: "PLAN_MENTIONED_FILE_MISSING",
       severity: "warn",
       title: "Mentioned file does not exist",
-      message: "The plan names edit targets that do not exist and are not marked as new or created.",
+      message:
+        "The plan names edit targets that do not exist and are not marked as new or created.",
       recommendation: "Mark new files explicitly with create/add wording, or correct the paths.",
       evidence: missingFiles
     }
@@ -2524,7 +2786,8 @@ function validateDependencyRequirements(
       code: "DEPENDENCY_SUBSTITUTION_REQUIRES_APPROVAL",
       severity: "approval_required",
       title: "Dependency substitution requires approval",
-      message: "The plan substitutes an explicitly required dependency without an accepted-alternative or user-approval marker.",
+      message:
+        "The plan substitutes an explicitly required dependency without an accepted-alternative or user-approval marker.",
       recommendation: "Request approval for the named alternative or use the required dependency.",
       evidence: substitutions
     });
@@ -2614,12 +2877,7 @@ function collectDeclaredDependencies(cwd: string | undefined): Set<string> {
     }
   }
 
-  for (const manifestName of [
-    "pyproject.toml",
-    "requirements.txt",
-    "setup.cfg",
-    "setup.py"
-  ]) {
+  for (const manifestName of ["pyproject.toml", "requirements.txt", "setup.cfg", "setup.py"]) {
     const manifestPath = join(cwd, manifestName);
 
     if (!existsSync(manifestPath)) {
@@ -2629,7 +2887,11 @@ function collectDeclaredDependencies(cwd: string | undefined): Set<string> {
     const content = readFileSync(manifestPath, "utf8");
 
     for (const packageName of dependencyRegistry) {
-      if (new RegExp(`(^|[^a-z0-9_-])${escapeRegExp(packageName)}([^a-z0-9_-]|$)`, "imu").test(content)) {
+      if (
+        new RegExp(`(^|[^a-z0-9_-])${escapeRegExp(packageName)}([^a-z0-9_-]|$)`, "imu").test(
+          content
+        )
+      ) {
         dependencies.add(packageName);
       }
     }
@@ -2704,14 +2966,16 @@ function validateRiskyChangeRationales(
     }
 
     if (approvalPaths.length > 0) {
-    findings.push({
-      code: "RISKY_CHANGE_RATIONALE_REQUIRED",
-      severity: "approval_required",
-      title: "Risky change rationale required",
-      message: "The plan proposes dependency, lockfile, CI, or security-sensitive changes without a named reason.",
-      recommendation: "Name why each risky file is needed and how it will be verified, or request approval.",
-      evidence: approvalPaths
-    });
+      findings.push({
+        code: "RISKY_CHANGE_RATIONALE_REQUIRED",
+        severity: "approval_required",
+        title: "Risky change rationale required",
+        message:
+          "The plan proposes dependency, lockfile, CI, or security-sensitive changes without a named reason.",
+        recommendation:
+          "Name why each risky file is needed and how it will be verified, or request approval.",
+        evidence: approvalPaths
+      });
     }
   }
 
@@ -2720,7 +2984,8 @@ function validateRiskyChangeRationales(
       code: "RISKY_CHANGE_RATIONALE_REQUIRED",
       severity: "warn",
       title: "Config change rationale required",
-      message: "The plan proposes broad configuration changes without a specific reason and verification.",
+      message:
+        "The plan proposes broad configuration changes without a specific reason and verification.",
       recommendation: "Add a named config rationale and verification for the affected behavior.",
       evidence: missing
     });
@@ -2744,9 +3009,10 @@ function taskRequestsRiskyPath(taskText: string, path: string): boolean {
     normalizedTask.includes(normalizedPath) ||
     normalizedTask.includes(basename(normalizedPath)) ||
     (category !== undefined &&
-      new RegExp(`\\b(?:change|update|modify|add|configure)\\b[^.\\n]{0,50}\\b${escapeRegExp(category)}\\b`, "iu").test(
-        taskText
-      ))
+      new RegExp(
+        `\\b(?:change|update|modify|add|configure)\\b[^.\\n]{0,50}\\b${escapeRegExp(category)}\\b`,
+        "iu"
+      ).test(taskText))
   );
 }
 
@@ -2908,7 +3174,8 @@ function classifyPlanTargets(input: {
     return {
       target,
       classification: "unexplained",
-      reason: "No credible structural or semantic relationship to the requested objective was found.",
+      reason:
+        "No credible structural or semantic relationship to the requested objective was found.",
       evidence: operationEvidence,
       nextAction: "Remove the target from the plan or justify why it belongs to the task."
     };
@@ -2916,11 +3183,7 @@ function classifyPlanTargets(input: {
 }
 
 function isBroadTaskBreadth(breadth: TaskBreadth | undefined): boolean {
-  return (
-    breadth === "subsystem" ||
-    breadth === "cross_cutting" ||
-    breadth === "repository_wide"
-  );
+  return breadth === "subsystem" || breadth === "cross_cutting" || breadth === "repository_wide";
 }
 
 function hasObjectiveOperationEvidence(value: string, taskTerms: string[]): boolean {
@@ -3014,7 +3277,9 @@ function isLikelyTestForTarget(path: string, target: string): boolean {
     return false;
   }
 
-  const pathStem = fileStem(path).replace(/\.(?:test|spec)$/iu, "").toLowerCase();
+  const pathStem = fileStem(path)
+    .replace(/\.(?:test|spec)$/iu, "")
+    .toLowerCase();
   const targetStem = fileStem(target).toLowerCase();
 
   return pathStem === targetStem || pathStem.endsWith(`/${targetStem}`);
@@ -3088,8 +3353,7 @@ function shouldWarnForPlanFileCount(
   }
 
   return targetClassifications.some(
-    (target) =>
-      target.classification === "adjacent" || target.classification === "unexplained"
+    (target) => target.classification === "adjacent" || target.classification === "unexplained"
   );
 }
 
@@ -3136,10 +3400,22 @@ function detectProtectedSemantics(taskText: string): string[] {
   const protectedSemantics = new Set<string>();
 
   const explicitPatterns: Array<[string, RegExp]> = [
-    ["calculation", /\b(?:do not|don't|must not|without|no)\b[^.\n]{0,60}\b(?:calculation|business logic|pricing|billing|payment)\b/iu],
-    ["contract", /\b(?:do not|don't|must not|without|no)\b[^.\n]{0,60}\b(?:public contract|api contract|interface|schema)\b/iu],
-    ["persistence", /\b(?:do not|don't|must not|without|no)\b[^.\n]{0,60}\b(?:persistence|database|storage|migration|schema)\b/iu],
-    ["authentication", /\b(?:do not|don't|must not|without|no)\b[^.\n]{0,60}\b(?:auth|authentication|authorization|session|permission)\b/iu]
+    [
+      "calculation",
+      /\b(?:do not|don't|must not|without|no)\b[^.\n]{0,60}\b(?:calculation|business logic|pricing|billing|payment)\b/iu
+    ],
+    [
+      "contract",
+      /\b(?:do not|don't|must not|without|no)\b[^.\n]{0,60}\b(?:public contract|api contract|interface|schema)\b/iu
+    ],
+    [
+      "persistence",
+      /\b(?:do not|don't|must not|without|no)\b[^.\n]{0,60}\b(?:persistence|database|storage|migration|schema)\b/iu
+    ],
+    [
+      "authentication",
+      /\b(?:do not|don't|must not|without|no)\b[^.\n]{0,60}\b(?:auth|authentication|authorization|session|permission)\b/iu
+    ]
   ];
 
   for (const [semantic, pattern] of explicitPatterns) {
@@ -3205,8 +3481,7 @@ function validatePlanFilesAgainstScope(
 ): PlanValidationFinding[] {
   const classificationOutsidePaths = targetClassifications
     .filter(
-      (target) =>
-        target.classification === "adjacent" || target.classification === "unexplained"
+      (target) => target.classification === "adjacent" || target.classification === "unexplained"
     )
     .map((target) => target.target);
   const approvalRequiredFromAllTargets = parsedPlan.proposedFiles.filter((path) =>
@@ -3236,7 +3511,8 @@ function validatePlanFilesAgainstScope(
       code: "PLAN_HARD_GATE_VIOLATION",
       severity: "cleanup_required",
       title: "Plan includes a secret or env file",
-      message: "The plan includes a secret or environment file that should not be part of the change set.",
+      message:
+        "The plan includes a secret or environment file that should not be part of the change set.",
       recommendation: "Remove the file from the plan and verify it is ignored.",
       evidence: cleanupPaths
     });
@@ -3255,7 +3531,8 @@ function validatePlanFilesAgainstScope(
       code: "PLAN_HARD_GATE_VIOLATION",
       severity: "approval_required",
       title: "Plan includes an approval-required category",
-      message: "The plan includes dependency, CI, security-sensitive, or protected paths that require approval under the active guidance.",
+      message:
+        "The plan includes dependency, CI, security-sensitive, or protected paths that require approval under the active guidance.",
       recommendation: "Request approval or revise the plan to remove the approval-required paths.",
       evidence: approvalPaths
     });
@@ -3291,7 +3568,9 @@ function validatePlanFilesAgainstScope(
   });
 
   const rationales = outsideAllowedPaths.map((path) => findScopeRationale(planText, path));
-  const missingRationales = rationales.filter((rationale) => !rationale.specific && !rationale.vague);
+  const missingRationales = rationales.filter(
+    (rationale) => !rationale.specific && !rationale.vague
+  );
   const vagueRationales = rationales.filter((rationale) => rationale.vague);
 
   if (missingRationales.length > 0) {
@@ -3299,7 +3578,8 @@ function validatePlanFilesAgainstScope(
       code: "SCOPE_EXPANSION_RATIONALE_REQUIRED",
       severity: "warn",
       title: "Scope rationale required",
-      message: "The plan expands beyond expected paths without naming why each extra area is needed and how it will be verified.",
+      message:
+        "The plan expands beyond expected paths without naming why each extra area is needed and how it will be verified.",
       recommendation: "Add a specific scope rationale for each expanded file, module, or category.",
       evidence: missingRationales.map((rationale) => rationale.path)
     });
@@ -3310,8 +3590,10 @@ function validatePlanFilesAgainstScope(
       code: "SCOPE_EXPANSION_RATIONALE_VAGUE",
       severity: "warn",
       title: "Scope rationale is vague",
-      message: "The plan includes expansion wording that does not identify a concrete reason and verification for the extra area.",
-      recommendation: "Name the affected file or category, the reason it is needed, and the verification for that area.",
+      message:
+        "The plan includes expansion wording that does not identify a concrete reason and verification for the extra area.",
+      recommendation:
+        "Name the affected file or category, the reason it is needed, and the verification for that area.",
       evidence: vagueRationales.map((rationale) => rationale.path)
     });
   }
@@ -3487,11 +3769,7 @@ function pathMatchesPattern(path: string, pattern: string): boolean {
     return false;
   }
 
-  return (
-    path === pattern ||
-    path.startsWith(`${pattern}/`) ||
-    matchesGlob(pattern, path)
-  );
+  return path === pattern || path.startsWith(`${pattern}/`) || matchesGlob(pattern, path);
 }
 
 function pathsOverlap(left: string, right: string): boolean {
@@ -3517,20 +3795,21 @@ function ciEvidence(parsedPlan: AgentPlan): string[] {
   return evidence.length > 0 ? evidence : ["CI/workflow wording"];
 }
 
-function isPlanVague(parsedPlan: AgentPlan): boolean {
+function isPlanVague(parsedPlan: AgentPlan, planStructure: PlanStructure): boolean {
   const wordCount = parsedPlan.rawText.trim().split(/\s+/u).filter(Boolean).length;
   const hasConcreteSignal =
     parsedPlan.proposedFiles.length > 0 ||
     parsedPlan.proposedDependencies.length > 0 ||
     parsedPlan.proposedTests.length > 0 ||
     parsedPlan.mentionedRiskyAreas.length > 0 ||
-    /\b(?:modify|update|create|add|fix|implement|inspect|reuse|run)\b/iu.test(parsedPlan.rawText);
+    planStructure.hasFiles ||
+    planStructure.hasImplementation ||
+    planStructure.hasVerification;
   const hasConcreteTargetAndAction =
-    parsedPlan.proposedFiles.length > 0 &&
+    (parsedPlan.proposedFiles.length > 0 || planStructure.hasFiles) &&
     (parsedPlan.proposedTests.length > 0 ||
-      /\b(?:modify|update|create|add|fix|implement|inspect|reuse|run)\b/iu.test(
-        parsedPlan.rawText
-      ));
+      planStructure.hasImplementation ||
+      planStructure.hasVerification);
 
   return (wordCount < 5 && !hasConcreteTargetAndAction) || !hasConcreteSignal;
 }
@@ -3773,10 +4052,7 @@ function inferTaskBreadth(
   return "local";
 }
 
-function buildSuspiciousPaths(
-  repoContext: RepoContext,
-  taskScopeHints: TaskScopeHints
-): string[] {
+function buildSuspiciousPaths(repoContext: RepoContext, taskScopeHints: TaskScopeHints): string[] {
   return dedupe([
     ...repoContext.riskyMatchedPaths,
     ...findDangerousPaths(repoContext),
@@ -3784,10 +4060,7 @@ function buildSuspiciousPaths(
   ]).sort(comparePaths);
 }
 
-function expectedFileRange(
-  defaults: NumberRange,
-  taskScopeHints: TaskScopeHints
-): NumberRange {
+function expectedFileRange(defaults: NumberRange, taskScopeHints: TaskScopeHints): NumberRange {
   if (taskScopeHints.explicitOnlyTargets.length > 0) {
     const count = Math.max(1, taskScopeHints.explicitOnlyTargets.length);
     const focusedTestAllowance =
@@ -3807,10 +4080,7 @@ function expectedFileRange(
 
   return {
     min: Math.max(defaults.min, Math.min(6, breadthUnits)),
-    max: Math.max(
-      defaults.max,
-      breadthUnits * 3 + (taskScopeHints.hasBroadScopeSignal ? 2 : 0)
-    )
+    max: Math.max(defaults.max, breadthUnits * 3 + (taskScopeHints.hasBroadScopeSignal ? 2 : 0))
   };
 }
 
@@ -3986,7 +4256,9 @@ function buildStopConditions(
   }
 
   if (!["auth_security_change", "infra_ci_change", "migration"].includes(classification.taskType)) {
-    conditions.push("Request approval for auth, payments, infra, or migration changes; remove secrets from the change set.");
+    conditions.push(
+      "Request approval for auth, payments, infra, or migration changes; remove secrets from the change set."
+    );
   } else {
     conditions.push("Remove secrets from the change set and verify they are ignored.");
   }
@@ -4037,10 +4309,7 @@ function buildBudgetReasons(
     reasons.push(
       `Explicit modify-only constraint narrowed scope to ${taskScopeHints.explicitOnlyTargets.length} target(s).`
     );
-  } else if (
-    taskScopeHints.declaredScopeLabels.length > 0 ||
-    taskScopeHints.hasBroadScopeSignal
-  ) {
+  } else if (taskScopeHints.declaredScopeLabels.length > 0 || taskScopeHints.hasBroadScopeSignal) {
     reasons.push(
       `Declared task breadth includes ${taskScopeHints.declaredScopeLabels.length} named scope area(s).`
     );
@@ -4504,7 +4773,9 @@ function matchesGlob(pattern: string, path: string): boolean {
   const normalizedPath = normalizePath(path);
 
   if (!hasGlobSyntax(normalizedPattern)) {
-    return normalizedPath === normalizedPattern || normalizedPath.startsWith(`${normalizedPattern}/`);
+    return (
+      normalizedPath === normalizedPattern || normalizedPath.startsWith(`${normalizedPattern}/`)
+    );
   }
 
   return globToRegExp(normalizedPattern).test(normalizedPath);

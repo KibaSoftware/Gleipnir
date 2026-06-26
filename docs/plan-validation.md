@@ -77,6 +77,14 @@ language for:
 Section names are not rigid. A free-form plan such as "Update `src/foo.ts`, then run
 focused tests and typecheck" contains the required structural signals.
 
+Plan validation also uses task-sensitive deterministic evidence detection for
+approach and verification. It can recognize broader verification phrasing such as
+comparing output with a contract, reconciling totals against source data,
+reproducing a failure, reviewing rendered documentation, confirming a clean working
+tree, or reporting constraints that cannot be safely validated. This reduces
+vocabulary-sensitive false positives without claiming general semantic
+understanding.
+
 Gleip parses mentioned paths deterministically:
 
 - existing edit targets should exist

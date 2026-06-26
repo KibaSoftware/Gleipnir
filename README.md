@@ -104,7 +104,7 @@ Default workflow modes print concise 1-5 line summaries that confirm the complet
 
 ## Stable Findings and CI
 
-Gleip 0.8.0 uses guidance-oriented top-level statuses:
+Gleip 0.8.1 uses guidance-oriented top-level statuses:
 
 - `clean`: no findings
 - `advisory`: informational or warning-level drift
@@ -176,7 +176,7 @@ they are not a proxy metric and should not create extra justification work.
 
 ## Reports and Metrics
 
-Gleip 0.8.0 generates two local report artifacts:
+Gleip 0.8.1 generates two local report artifacts:
 
 - `.gleip/report.md`: concise scores, risks, findings, actions, and the recommended final-response block.
 - `.gleip/report.json`: stable machine-readable report data, warnings, evidence, summary, and efficiency estimate.
@@ -274,6 +274,6 @@ See [Local Package Testing](docs/package-testing.md) and the [Release Checklist]
 
 ## Status
 
-- Current release: `0.8.0`
+- Current release: `0.8.1`
 - License: Apache-2.0
 - Local-only developer preview

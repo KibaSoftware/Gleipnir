@@ -76,7 +76,7 @@ describe("createGleipCommand", () => {
   it("--version prints the package version", async () => {
     const output = (await runHelpCommand(["--version"])).join("\n");
 
-    expect(output).toBe("0.8.0");
+    expect(output).toBe("0.8.1");
   });
 
   it("command help shows important flags and stdin support", async () => {
@@ -137,7 +137,7 @@ describe("createGleipCommand", () => {
     expect(packageJson.exports["."].import).toBe("./dist/index.js");
     expect(packageJson.exports["."].types).toBe("./dist/index.d.ts");
     expect(packageJson.name).toBe("gleip");
-    expect(packageJson.version).toBe("0.8.0");
+    expect(packageJson.version).toBe("0.8.1");
     expect(packageJson.dependencies).toEqual({
       commander: "^12.0.0",
       yaml: "^2.0.0",
@@ -182,7 +182,7 @@ describe("createGleipCommand", () => {
     });
   });
 
-  it("release metadata uses version 0.8.0 across packages", () => {
+  it("release metadata uses version 0.8.1 across packages", () => {
     const packagePaths = [
       "package.json",
       "packages/cli/package.json",
@@ -198,7 +198,7 @@ describe("createGleipCommand", () => {
       const packageJson = JSON.parse(readFileSync(join(repoRoot, packagePath), "utf8")) as {
         version: string;
       };
-      expect(packageJson.version).toBe("0.8.0");
+      expect(packageJson.version).toBe("0.8.1");
     }
 
     const cliPackageJson = readFileSync(join(repoRoot, "packages", "cli", "package.json"), "utf8");
@@ -993,7 +993,7 @@ describe("createGleipCommand", () => {
     expect(report).toContain("WARN Missing .gleip.yml or GLEIP.md");
     expect(report).toContain("WARN Missing Gleip-managed agent instructions");
     expect(report).toContain("WARN Missing, incomplete, or overridden Gleip .gitignore block");
-    expect(report).toContain("OK   CLI version resolved (0.8.0)");
+    expect(report).toContain("OK   CLI version resolved (0.8.1)");
     expect(report).toContain("OK   Built-in init assets available");
     expect(report).toContain("Run: npx gleip init");
   });
@@ -3372,7 +3372,7 @@ describe("createGleipCommand", () => {
     expect(output).toHaveLength(1);
     expect(output[0]?.trimStart().startsWith("{")).toBe(true);
     expect(output.join("\n")).not.toContain("Gleip report ready");
-    expect(report.version).toBe("0.8.0");
+    expect(report.version).toBe("0.8.1");
     expect(report.generatedAt).toBe("2026-05-30T00:00:00.000Z");
     expect(report.summary.filesChanged).toBe(0);
     expect(existsSync(join(repo, ".gleip", "report.json"))).toBe(true);

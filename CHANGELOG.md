@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.8.1]
+
+### Fixed
+
+- Made `validate-plan` use deterministic task-sensitive evidence detection for approach and verification, reducing vocabulary-sensitive false positives for audit, investigation, documentation, operational, and constrained validation plans.
+- Broadened verification recognition beyond exact test/check/smoke wording to include comparison, reconciliation, reproduction, rendered review, status confirmation, and explicit limitation reporting.
+- Prevented negated verification wording such as "do not run tests" from satisfying the verification requirement.
+
 ## [0.8.0]
 
 ### Added

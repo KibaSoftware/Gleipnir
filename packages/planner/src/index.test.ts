@@ -1006,6 +1006,134 @@ describe("validateAgentPlan", () => {
     );
   });
 
+  it.each([
+    [
+      "read-only audit",
+      "Read the four source files and inspect their runtime behavior. Compare each finding against the observed implementation. Use the available historical data for a non-writing event study where reliable, state exact limitations where it is not, and confirm the worktree remains unchanged."
+    ],
+    [
+      "financial review",
+      "Review the financial model, reconcile calculated totals against the source sheets, identify unsupported assumptions, and report any values that cannot be independently validated."
+    ],
+    [
+      "API investigation",
+      "Inspect the request logs, reproduce the failing request where possible, compare the response with the documented API contract, and record the remaining uncertainty."
+    ],
+    [
+      "UI implementation",
+      "Update the responsive navigation, build the frontend, inspect the result at mobile and desktop widths, and verify that keyboard navigation still works."
+    ],
+    [
+      "documentation",
+      "Revise the migration guide, validate each command against the current CLI, check internal references, and review the rendered Markdown for formatting problems."
+    ],
+    [
+      "operational task",
+      "Publish the package, confirm the registry exposes the expected version, run the installed CLI against the fixture repository, and verify that the working tree is clean."
+    ],
+    [
+      "distributed evidence",
+      [
+        "1. Inspect the parser implementation.",
+        "2. Compare its output with the documented schema.",
+        "3. Reproduce malformed-input cases.",
+        "4. Record any behavior that cannot be confirmed."
+      ].join("\n")
+    ],
+    [
+      "constraint-driven alternative",
+      "Inspect the production configuration without executing it. Compare it with the documented deployment contract and report any aspects that cannot be safely verified in the current environment."
+    ]
+  ])("accepts task-appropriate approach and verification evidence for %s", (_name, planText) => {
+    const result = validateAgentPlan({
+      planText,
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["*"],
+        requiredTests: true
+      })
+    });
+
+    expect(result.status).toBe("aligned");
+    expect(result.findings).toEqual([]);
+  });
+
+  it("keeps warning when no actionable approach is present", () => {
+    const result = validateAgentPlan({
+      planText: "Complete the requested work.",
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["*"],
+        requiredTests: true
+      })
+    });
+
+    expect(result.status).toBe("needs_clarification");
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({ code: "PLAN_REQUIRED_SECTION_MISSING" })
+    );
+  });
+
+  it("keeps warning when implementation vocabulary has no verification method", () => {
+    const result = validateAgentPlan({
+      planText: "Add the new parser option and update the affected files.",
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["*"],
+        requiredTests: true
+      })
+    });
+
+    expect(result.status).toBe("needs_clarification");
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({ code: "MISSING_TEST_STRATEGY" })
+    );
+  });
+
+  it("keeps warning when review wording has no validation method", () => {
+    const result = validateAgentPlan({
+      planText: "Review the repository and provide recommendations.",
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["*"],
+        requiredTests: true
+      })
+    });
+
+    expect(result.status).toBe("needs_clarification");
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({ code: "MISSING_TEST_STRATEGY" })
+    );
+  });
+
+  it("does not accept isolated verification keywords as a strategy", () => {
+    const result = validateAgentPlan({
+      planText: "Implement the feature. Tests are important.",
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["*"],
+        requiredTests: true
+      })
+    });
+
+    expect(result.status).toBe("needs_clarification");
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({ code: "MISSING_TEST_STRATEGY" })
+    );
+  });
+
+  it("does not count negated verification as verification evidence", () => {
+    const result = validateAgentPlan({
+      planText:
+        "Implement the feature but do not run tests, builds, manual verification, or any other validation.",
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["*"],
+        requiredTests: true
+      })
+    });
+
+    expect(result.status).toBe("needs_clarification");
+    expect(result.parsedPlan.proposedTests).toEqual([]);
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({ code: "MISSING_TEST_STRATEGY" })
+    );
+  });
+
   it("does not treat a context reference as an out-of-scope edit", () => {
     const result = validateAgentPlan({
       planText: "Read FULL_CONTEXT.md for reference, then modify src/foo.ts and run tests.",
