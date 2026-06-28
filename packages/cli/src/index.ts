@@ -51,8 +51,8 @@ const LEGACY_ARGUS_WORKFLOW_SECTION_END = "<!-- ARGUS:AGENT-WORKFLOW:END -->";
 const SUPPORTED_AGENT_TARGETS = ["auto", "generic", "codex", "claude", "gemini"] as const;
 const AGENT_INSTRUCTION_TARGETS = ["generic", "claude", "gemini"] as const;
 const GLEIP_VERSION = readPackageVersion();
-const REPORT_SCHEMA_VERSION = "1.1.0";
-const CHECK_CACHE_SCHEMA_VERSION = 1;
+const REPORT_SCHEMA_VERSION = "1.2.0";
+const CHECK_CACHE_SCHEMA_VERSION = 2;
 const CI_BLOCKING_FINDING_CODES = new Set([
   "TEST_SKIPPED",
   "TEST_DELETED",
@@ -228,7 +228,14 @@ interface TaskClassification {
   reasons: string[];
   likelyRequiresTests: boolean;
   likelyAllowsNewDependencies: boolean;
+  workflowProfile?: WorkflowProfile;
 }
+
+type WorkflowProfile =
+  | "documentation_only"
+  | "local_behavior_change"
+  | "broad_change"
+  | "sensitive_change";
 
 interface DiscoverRepoContextOptions {
   classification: TaskClassification;
@@ -391,6 +398,8 @@ interface ScopeBudget {
   taskType: string;
   confidence: string;
   riskLevel: string;
+  workflowProfile?: WorkflowProfile;
+  planRequired?: boolean;
   taskBreadth?: "local" | "feature" | "subsystem" | "cross_cutting" | "repository_wide";
   expectedFilesChanged: NumberRange;
   expectedLinesAdded: NumberRange;
@@ -497,6 +506,8 @@ interface GenerateSessionReportInput {
   schemaVersion: string;
   sessionId?: string | null;
   generatedAt: string;
+  phase?: "preflight" | "implementation" | "verification" | "final";
+  repositoryFingerprint?: string;
   scopeBudget?: ScopeBudget;
   diff: GitDiffContext;
   driftResult: DriftResult;
@@ -505,6 +516,7 @@ interface GenerateSessionReportInput {
   };
   planValidation?: PlanValidationResult;
   acceptedPlanValidation?: PlanValidationResult;
+  statusContent?: string;
   missingArtifacts?: string[];
 }
 
@@ -513,6 +525,7 @@ interface SessionReport {
   schemaVersion: string;
   sessionId: string | null;
   generatedAt: string;
+  artifact?: ArtifactMetadata;
   scores: {
     scopeAdherence: number;
     planAlignment: number;
@@ -575,6 +588,16 @@ interface SessionReport {
   };
 }
 
+interface ArtifactMetadata {
+  generatedAt: string;
+  repositoryFingerprint?: string;
+  sessionId?: string | null;
+  phase: "preflight" | "implementation" | "verification" | "final";
+  sequence: number;
+  superseded: boolean;
+  currentArtifact: string;
+}
+
 interface GleipSession {
   sessionId?: string;
   classification?: TaskClassification;
@@ -617,6 +640,8 @@ interface IncrementalCheckCache {
 
 interface ScopeBudgetSummary {
   expectedFilesChanged: NumberRange;
+  workflowProfile?: WorkflowProfile;
+  planRequired?: boolean;
   softLimits: ScopeBudget["softLimits"];
   hardGates: ScopeBudget["hardGates"];
   approvalRequiredCount: number;
@@ -1116,14 +1141,23 @@ async function preflight(runtime: CommandRuntime, task: string, taskFile?: strin
     statusContent(
       initialDriftResult,
       nextActionForReport(initialDriftResult),
-      baselineContextForPreflight(baseline)
+      baselineContextForPreflight(baseline),
+      {
+        phase: "preflight",
+        generatedAt: createdAt,
+        repositoryFingerprint: fingerprintRepositoryState(baselineDiff),
+        sessionId,
+        currentArtifact: ".gleip/status.md"
+      }
     )
   );
 
   const output = [
     "Gleip preflight complete · brief and scope budget ready",
     "Artifacts: .gleip/brief.md, .gleip/scope-budget.json",
-    "Next: validate plan before editing"
+    scopeBudget.planRequired === false
+      ? "Next: make the documentation change, review the diff, then run status"
+      : "Next: validate plan before editing"
   ];
 
   const disabledNote = disabledStateNote(state, "Manual preflight still ran.");
@@ -1199,12 +1233,33 @@ async function validatePlan(
       ...result,
       validatedAt: updatedAt
     };
+    const refinedScopeBudget = isSuccessfulPlanValidationStatus(result.status)
+      ? scopeBudgetWithValidatedPlanScope(scopeBudget, validationRecord)
+      : scopeBudget;
+    const refinedClassification =
+      session.value.classification === undefined
+        ? session.value.classification
+        : {
+            ...session.value.classification,
+            taskType: refinedScopeBudget.taskType,
+            confidence: refinedScopeBudget.confidence,
+            riskLevel: refinedScopeBudget.riskLevel,
+            workflowProfile: refinedScopeBudget.workflowProfile
+          };
     ensureGleipGitignore(runtime.cwd);
+    if (isSuccessfulPlanValidationStatus(result.status)) {
+      writeFileSync(
+        join(runtime.cwd, ".gleip", "scope-budget.json"),
+        scopeBudgetContent(refinedScopeBudget)
+      );
+    }
     writeFileSync(
       sessionPath,
       `${JSON.stringify(
         {
           ...session.value,
+          ...(refinedClassification === undefined ? {} : { classification: refinedClassification }),
+          scopeBudgetSummary: summarizeScopeBudget(refinedScopeBudget),
           latestValidationAttempt: validationRecord,
           latestPlanValidation: validationRecord,
           ...(isSuccessfulPlanValidationStatus(result.status)
@@ -1408,7 +1463,13 @@ async function printStatus(
     return;
   }
 
-  const status = statusContent(driftResult, nextAction, filtered.baseline);
+  const status = statusContent(driftResult, nextAction, filtered.baseline, {
+    phase: "verification",
+    generatedAt: updatedAt,
+    repositoryFingerprint,
+    sessionId: session.sessionId ?? null,
+    currentArtifact: ".gleip/status.md"
+  });
 
   if (options.writeStatusFile !== false) {
     ensureGleipGitignore(runtime.cwd);
@@ -1428,6 +1489,13 @@ async function printStatus(
           status: driftResult.status,
           approval: driftResult.status === "needs_approval" ? "required" : "not_required",
           latestStatus: {
+            artifact: artifactMetadata({
+              phase: "verification",
+              generatedAt: updatedAt,
+              repositoryFingerprint,
+              sessionId: session.sessionId ?? null,
+              currentArtifact: ".gleip/status.md"
+            }),
             status: driftResult.status,
             summary: driftResult.summary,
             metrics: driftResult.metrics,
@@ -1446,7 +1514,17 @@ async function printStatus(
   runtime.stdout(
     formatCommandOutput(
       options.json === true
-        ? JSON.stringify(statusJson(driftResult, nextAction, filtered.baseline), null, 2)
+        ? JSON.stringify(
+            statusJson(driftResult, nextAction, filtered.baseline, {
+              phase: "verification",
+              generatedAt: updatedAt,
+              repositoryFingerprint,
+              sessionId: session.sessionId ?? null,
+              currentArtifact: ".gleip/status.md"
+            }),
+            null,
+            2
+          )
         : statusInteractionSummary(
             options.commandName ?? "status",
             driftResult,
@@ -1472,6 +1550,7 @@ async function printReport(runtime: CommandRuntime, options: ReportOptions): Pro
   const baselineResult = readJsonFile<SessionBaseline>(
     join(runtime.cwd, ".gleip", "baseline.json")
   );
+  const statusResult = readTextFile(join(runtime.cwd, ".gleip", "status.md"));
 
   if (sessionResult.value === undefined) {
     missingArtifacts.push("session.json");
@@ -1485,6 +1564,10 @@ async function printReport(runtime: CommandRuntime, options: ReportOptions): Pro
     missingArtifacts.push("baseline.json");
   }
 
+  if (statusResult === undefined) {
+    missingArtifacts.push("status.md");
+  }
+
   const config = await loadConfigForReport(runtime);
   const scopeBudget =
     scopeBudgetResult.value === undefined
@@ -1496,6 +1579,7 @@ async function printReport(runtime: CommandRuntime, options: ReportOptions): Pro
           latestSuccessfulPlanValidation(sessionResult.value)
         );
   const gitDiffContext = await runtime.collectWorkingTreeDiff({ cwd: runtime.cwd });
+  const repositoryFingerprint = fingerprintRepositoryState(gitDiffContext);
   const filtered =
     baselineResult.value === undefined
       ? {
@@ -1526,12 +1610,17 @@ async function printReport(runtime: CommandRuntime, options: ReportOptions): Pro
     schemaVersion: REPORT_SCHEMA_VERSION,
     sessionId: sessionResult.value?.sessionId ?? null,
     generatedAt,
+    phase: "final",
+    repositoryFingerprint,
     ...(scopeBudget === undefined ? {} : { scopeBudget }),
     diff: filtered.diff,
     driftResult,
     baseline: filtered.baseline,
     ...(latestAttempt === undefined ? {} : { planValidation: latestAttempt }),
     ...(acceptedValidation === undefined ? {} : { acceptedPlanValidation: acceptedValidation }),
+    ...(statusResult === undefined || !isCurrentStatusContent(statusResult, repositoryFingerprint)
+      ? {}
+      : { statusContent: statusResult }),
     missingArtifacts
   });
   const markdown = await runtime.renderSessionReportMarkdown(report);
@@ -2690,6 +2779,24 @@ function readJsonFile<T>(path: string): { value?: T; error?: string } {
   }
 }
 
+function readTextFile(path: string): string | undefined {
+  try {
+    return existsSync(path) && statSync(path).isFile() ? readFileSync(path, "utf8") : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isCurrentStatusContent(content: string, repositoryFingerprint: string): boolean {
+  const fingerprintMatch = /^- Repository fingerprint:\s*(.+)$/imu.exec(content);
+
+  if (fingerprintMatch?.[1] === undefined) {
+    return false;
+  }
+
+  return fingerprintMatch[1].trim() === repositoryFingerprint;
+}
+
 async function loadConfigForReport(runtime: CommandRuntime): Promise<GleipConfigLike | undefined> {
   try {
     return (await runtime.loadConfig(runtime.cwd)) as GleipConfigLike;
@@ -2774,13 +2881,49 @@ function createSessionId(createdAt: string): string {
   return `session-${createdAt.replace(/[^0-9]/g, "")}`;
 }
 
+function artifactMetadata(
+  input: Omit<ArtifactMetadata, "sequence" | "superseded">
+): ArtifactMetadata {
+  return {
+    ...input,
+    sequence: phaseSequence(input.phase),
+    superseded: false
+  };
+}
+
+function phaseSequence(phase: ArtifactMetadata["phase"]): number {
+  switch (phase) {
+    case "preflight":
+      return 1;
+    case "implementation":
+      return 2;
+    case "verification":
+      return 3;
+    case "final":
+      return 4;
+  }
+}
+
 function statusContent(
   driftResult: DriftResult,
   nextAction: string,
-  baseline: BaselineContext
+  baseline: BaselineContext,
+  artifact?: Omit<ArtifactMetadata, "sequence" | "superseded">
 ): string {
+  const metadata =
+    artifact === undefined
+      ? ""
+      : [
+          `- Phase: ${artifact.phase}`,
+          `- Generated: ${artifact.generatedAt}`,
+          ...(artifact.repositoryFingerprint === undefined
+            ? []
+            : [`- Repository fingerprint: ${artifact.repositoryFingerprint}`])
+        ].join("\n") + "\n";
+
   return `# Gleip Status
 
+${metadata}- Current artifact: .gleip/status.md
 - Status: ${driftResult.status}
 - Session files changed: ${driftResult.metrics.filesChanged}
 - Lines added: ${driftResult.metrics.linesAdded}
@@ -2891,15 +3034,109 @@ function scopeBudgetWithValidatedPlanScope(
     return scopeBudget;
   }
 
-  const expectedPaths = scopeBudget.expectedPaths ?? scopeBudget.allowedPaths;
+  const contextTargets = acceptedTargets.filter(isContextDocsPath);
+  const hasSourceTargets = acceptedTargets.some(isSourceLikePlanTarget);
+  const workflowProfile = refineWorkflowProfileForAcceptedTargets(scopeBudget, acceptedTargets);
 
   return {
     ...scopeBudget,
+    taskType:
+      scopeBudget.taskType === "unknown" && hasSourceTargets
+        ? "local_behavior_change"
+        : scopeBudget.taskType,
+    confidence:
+      scopeBudget.confidence === "low" && hasSourceTargets ? "high" : scopeBudget.confidence,
+    workflowProfile,
+    planRequired: workflowProfile !== "documentation_only",
+    requiredTests:
+      workflowProfile === "documentation_only"
+        ? false
+        : scopeBudget.requiredTests || hasSourceTargets,
+    verificationExpected:
+      workflowProfile === "documentation_only"
+        ? false
+        : scopeBudget.verificationExpected || scopeBudget.requiredTests || hasSourceTargets,
     allowedPaths: mergePathLists(scopeBudget.allowedPaths, acceptedTargets),
-    expectedPaths: mergePathLists(expectedPaths, acceptedTargets),
+    expectedPaths: acceptedTargets,
     explicitScope: mergePathLists(scopeBudget.explicitScope ?? [], directTargets, fallbackTargets),
-    derivedScope: mergePathLists(scopeBudget.derivedScope ?? [], derivedTargets)
+    derivedScope: mergePathLists(scopeBudget.derivedScope ?? [], derivedTargets),
+    contextDocsTouchAllowed:
+      scopeBudget.contextDocsTouchAllowed === true || contextTargets.length > 0,
+    readOnlyContextPaths: (scopeBudget.readOnlyContextPaths ?? []).filter(
+      (path) => !acceptedTargets.includes(normalizePlanPath(path))
+    )
   };
+}
+
+function refineWorkflowProfileForAcceptedTargets(
+  scopeBudget: ScopeBudget,
+  acceptedTargets: string[]
+): WorkflowProfile {
+  if (
+    scopeBudget.workflowProfile === "sensitive_change" ||
+    acceptedTargets.some(isSensitivePlanTarget)
+  ) {
+    return "sensitive_change";
+  }
+
+  if (
+    acceptedTargets.length <= 2 &&
+    acceptedTargets.length > 0 &&
+    acceptedTargets.every(isDocumentationPlanTarget)
+  ) {
+    return "documentation_only";
+  }
+
+  const sourceTargets = acceptedTargets.filter(isSourceLikePlanTarget);
+  const topLevelAreas = new Set(sourceTargets.map((path) => path.split("/").slice(0, 2).join("/")));
+
+  if (sourceTargets.length > 4 || topLevelAreas.size > 2) {
+    return "broad_change";
+  }
+
+  return "local_behavior_change";
+}
+
+function isSensitivePlanTarget(path: string): boolean {
+  const normalized = normalizePlanPath(path);
+  const fileName = normalized.split("/").at(-1)?.toLowerCase() ?? "";
+
+  return (
+    fileName === "package.json" ||
+    fileName.endsWith("lock") ||
+    fileName.endsWith(".lock") ||
+    normalized === "pnpm-lock.yaml" ||
+    normalized.startsWith(".github/workflows/") ||
+    normalized.startsWith(".circleci/") ||
+    /(^|\/)(auth|security|payments?|migrations?|infra|infrastructure|secrets?)(\/|\.|$)/iu.test(
+      normalized
+    ) ||
+    /(?:^|[.-])config\.(?:js|cjs|mjs|ts|json|yml|yaml|toml)$/iu.test(fileName)
+  );
+}
+
+function isDocumentationPlanTarget(path: string): boolean {
+  const normalized = normalizePlanPath(path).toLowerCase();
+  const fileName = normalized.split("/").at(-1) ?? "";
+
+  return (
+    normalized.startsWith("docs/") ||
+    ["readme.md", "changelog.md", "full_context.md", "project_context.md", "notes.md"].includes(
+      fileName
+    )
+  );
+}
+
+function isContextDocsPath(path: string): boolean {
+  const fileName = normalizePlanPath(path).toLowerCase().split("/").at(-1) ?? "";
+
+  return ["full_context.md", "project_context.md", "notes.md"].includes(fileName);
+}
+
+function isSourceLikePlanTarget(path: string): boolean {
+  return /\.(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|cs|rb|php|vue|svelte)$/iu.test(
+    normalizePlanPath(path)
+  );
 }
 
 function isSuccessfulPlanValidationStatus(status: PlanValidationStatus): boolean {
@@ -2933,6 +3170,10 @@ function normalizePlanPath(path: string): string {
 function summarizeScopeBudget(scopeBudget: ScopeBudget): ScopeBudgetSummary {
   return {
     expectedFilesChanged: scopeBudget.expectedFilesChanged,
+    ...(scopeBudget.workflowProfile === undefined
+      ? {}
+      : { workflowProfile: scopeBudget.workflowProfile }),
+    ...(scopeBudget.planRequired === undefined ? {} : { planRequired: scopeBudget.planRequired }),
     softLimits: scopeBudget.softLimits,
     hardGates: scopeBudget.hardGates,
     approvalRequiredCount: scopeBudget.approvalRequiredFor.length,
@@ -2996,6 +3237,8 @@ function defaultScopeBudgetForCheck(config: GleipConfigLike): ScopeBudget {
     taskType: "unknown",
     confidence: "low",
     riskLevel: "medium",
+    workflowProfile: "local_behavior_change",
+    planRequired: true,
     taskBreadth: "local",
     expectedFilesChanged: { min: 0, max: 0 },
     expectedLinesAdded: { min: 0, max: 0 },
@@ -3055,11 +3298,14 @@ function scopeBudgetFromSummary(
     String(index + 1)
   );
   const requiredTests = summary?.requiredTests ?? classification.likelyRequiresTests;
+  const workflowProfile = summary?.workflowProfile ?? classification.workflowProfile ?? "local_behavior_change";
 
   return {
     taskType: classification.taskType,
     confidence: classification.confidence,
     riskLevel: classification.riskLevel,
+    workflowProfile,
+    planRequired: summary?.planRequired ?? workflowProfile !== "documentation_only",
     taskBreadth: "local",
     expectedFilesChanged,
     expectedLinesAdded: { min: 0, max: 0 },
@@ -3229,8 +3475,10 @@ function planSeverityRank(severity: PlanValidationFinding["severity"]): number {
 function statusJson(
   driftResult: DriftResult,
   nextAction: string,
-  baseline: BaselineContext
+  baseline: BaselineContext,
+  artifact?: Omit<ArtifactMetadata, "sequence" | "superseded">
 ): {
+  artifact?: ArtifactMetadata;
   baseline: {
     hasBaseline: boolean;
     preExistingFilesIgnored: number;
@@ -3254,6 +3502,7 @@ function statusJson(
   };
 
   return {
+    ...(artifact === undefined ? {} : { artifact: artifactMetadata(artifact) }),
     status: driftResult.status,
     metrics: driftResult.metrics,
     baseline: baselineJson,

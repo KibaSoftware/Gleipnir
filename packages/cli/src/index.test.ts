@@ -76,7 +76,7 @@ describe("createGleipCommand", () => {
   it("--version prints the package version", async () => {
     const output = (await runHelpCommand(["--version"])).join("\n");
 
-    expect(output).toBe("0.8.1");
+    expect(output).toBe("0.8.2");
   });
 
   it("command help shows important flags and stdin support", async () => {
@@ -137,7 +137,7 @@ describe("createGleipCommand", () => {
     expect(packageJson.exports["."].import).toBe("./dist/index.js");
     expect(packageJson.exports["."].types).toBe("./dist/index.d.ts");
     expect(packageJson.name).toBe("gleip");
-    expect(packageJson.version).toBe("0.8.1");
+    expect(packageJson.version).toBe("0.8.2");
     expect(packageJson.dependencies).toEqual({
       commander: "^12.0.0",
       yaml: "^2.0.0",
@@ -182,7 +182,7 @@ describe("createGleipCommand", () => {
     });
   });
 
-  it("release metadata uses version 0.8.1 across packages", () => {
+  it("release metadata uses version 0.8.2 across packages", () => {
     const packagePaths = [
       "package.json",
       "packages/cli/package.json",
@@ -198,7 +198,7 @@ describe("createGleipCommand", () => {
       const packageJson = JSON.parse(readFileSync(join(repoRoot, packagePath), "utf8")) as {
         version: string;
       };
-      expect(packageJson.version).toBe("0.8.1");
+      expect(packageJson.version).toBe("0.8.2");
     }
 
     const cliPackageJson = readFileSync(join(repoRoot, "packages", "cli", "package.json"), "utf8");
@@ -993,7 +993,7 @@ describe("createGleipCommand", () => {
     expect(report).toContain("WARN Missing .gleip.yml or GLEIP.md");
     expect(report).toContain("WARN Missing Gleip-managed agent instructions");
     expect(report).toContain("WARN Missing, incomplete, or overridden Gleip .gitignore block");
-    expect(report).toContain("OK   CLI version resolved (0.8.1)");
+    expect(report).toContain("OK   CLI version resolved (0.8.2)");
     expect(report).toContain("OK   Built-in init assets available");
     expect(report).toContain("Run: npx gleip init");
   });
@@ -1344,9 +1344,10 @@ describe("createGleipCommand", () => {
     const brief = readFileSync(join(repo, ".gleip", "brief.md"), "utf8");
     expect(brief).toContain("# Gleip Implementation Brief");
     expect(brief).toContain("- Type: small_feature");
+    expect(brief).toContain("- Profile: local_behavior_change");
     expect(brief).toContain("- Risk: medium");
-    expect(brief).toContain("- Focused verification likely expected: yes");
-    expect(brief).toContain("- New dependencies likely allowed: no");
+    expect(brief).toContain("## Verification expected");
+    expect(brief).toContain("## Applicable protections");
   });
 
   it("preflight writes repo context into session.json", async () => {
@@ -1392,7 +1393,7 @@ describe("createGleipCommand", () => {
     await runCommand(repo, ["preflight", "Add CSV export to users table"]);
 
     const brief = readFileSync(join(repo, ".gleip", "brief.md"), "utf8");
-    expect(brief).toContain("## Repo context");
+    expect(brief).toContain("## Likely files");
     expect(brief).toContain("src/features/users/UserTable.tsx");
     expect(brief).toContain("src/features/users/UserTable.test.tsx");
   });
@@ -1736,10 +1737,9 @@ describe("createGleipCommand", () => {
     await runCommand(repo, ["preflight", "Add CSV export to users table"]);
 
     const brief = readFileSync(join(repo, ".gleip", "brief.md"), "utf8");
-    expect(brief).toContain("## Scope budget");
-    expect(brief).toContain("- Expected files changed: 2-6");
-    expect(brief).toContain("## Protected checks");
-    expect(brief).toContain("## Pause and clarify conditions");
+    expect(brief).toContain("## Expected scope");
+    expect(brief).toContain("## Applicable protections");
+    expect(brief).toContain("Dependency and CI changes require approval if introduced.");
   });
 
   it("preflight writes the generated implementation brief", async () => {
@@ -1749,7 +1749,7 @@ describe("createGleipCommand", () => {
 
     const brief = readFileSync(join(repo, ".gleip", "brief.md"), "utf8");
     expect(brief).toContain("# Gleip Implementation Brief");
-    expect(brief).toContain("## Working rule");
+    expect(brief).toContain("## Plan");
     expect(brief).toContain("## Before final response");
   });
 
@@ -3342,12 +3342,12 @@ describe("createGleipCommand", () => {
     expect(output.join("\n")).toContain("Gleip report ready · output discipline:");
     expect(output.join("\n")).toContain("Report: .gleip/report.md");
     expect(output.join("\n").split("\n")).toHaveLength(3);
-    expect(report.schemaVersion).toBe("1.1.0");
+    expect(report.schemaVersion).toBe("1.2.0");
     expect(report.scores.scopeAdherence).toBeGreaterThanOrEqual(0);
     expect(report.finalResponse.markdown).toContain("### Gleip");
     expect(report.finalResponse.markdown.split("\n")).toHaveLength(7);
     expect(markdown).toContain("# Gleipnir Session Report");
-    expect(markdown).toContain("Estimated token waste avoided:");
+    expect(markdown).toContain("Evidence-based token waste avoided:");
     expect(markdown).toContain("## Recommended final response");
     expect(markdown).toContain("do not paste the full report");
     for (const warning of report.warnings) {
@@ -3372,7 +3372,7 @@ describe("createGleipCommand", () => {
     expect(output).toHaveLength(1);
     expect(output[0]?.trimStart().startsWith("{")).toBe(true);
     expect(output.join("\n")).not.toContain("Gleip report ready");
-    expect(report.version).toBe("0.8.1");
+    expect(report.version).toBe("0.8.2");
     expect(report.generatedAt).toBe("2026-05-30T00:00:00.000Z");
     expect(report.summary.filesChanged).toBe(0);
     expect(existsSync(join(repo, ".gleip", "report.json"))).toBe(true);
@@ -3486,6 +3486,74 @@ describe("createGleipCommand", () => {
     expect(json.metrics.linesAdded).toBe(2);
     expect(json.findings).toEqual([]);
     expect(json.nextAction).toContain("focused verification");
+  });
+
+  it("status artifacts include phase metadata", async () => {
+    const repo = createTempRepo();
+    await runCommand(repo, ["preflight", "Update README.md"]);
+
+    const status = readFileSync(join(repo, ".gleip", "status.md"), "utf8");
+    const jsonOutput = await runCommand(repo, ["status", "--json"]);
+    const json = JSON.parse(jsonOutput.join("\n")) as {
+      artifact: { phase: string; currentArtifact: string };
+    };
+
+    expect(status).toContain("- Phase: preflight");
+    expect(json.artifact.phase).toBe("verification");
+    expect(json.artifact.currentArtifact).toBe(".gleip/status.md");
+  });
+
+  it("loads old sessions without profile metadata and writes current report metadata", async () => {
+    const repo = createTempRepo();
+    mkdirSync(join(repo, ".gleip"), { recursive: true });
+    writeRepoFile(
+      repo,
+      ".gleip/session.json",
+      JSON.stringify(
+        {
+          version: 1,
+          sessionId: "session-old",
+          task: "Fix runtime behavior",
+          classification: {
+            taskType: "bug_fix",
+            confidence: "high",
+            riskLevel: "medium",
+            reasons: [],
+            likelyRequiresTests: true,
+            likelyAllowsNewDependencies: false
+          },
+          scopeBudgetSummary: {
+            expectedFilesChanged: { min: 1, max: 4 },
+            softLimits: { maxFilesChanged: 5, maxLinesAdded: 100, maxLinesDeleted: 100 },
+            hardGates: {
+              newDependenciesAllowed: false,
+              ciChangesAllowed: false,
+              skippedTestsAllowed: false,
+              deletedTestsAllowed: false,
+              secretsAllowed: false
+            },
+            approvalRequiredCount: 0,
+            blockedWithoutApprovalCount: 0,
+            requiredTests: true,
+            stopConditionsCount: 0
+          },
+          created_at: "2026-05-30T00:00:00.000Z",
+          updated_at: "2026-05-30T00:00:00.000Z"
+        },
+        null,
+        2
+      ) + "\n"
+    );
+
+    const output = await runCommand(repo, ["report", "--json"]);
+    const report = JSON.parse(output.join("\n")) as {
+      artifact: { phase: string; currentArtifact: string };
+      sessionId: string;
+    };
+
+    expect(report.sessionId).toBe("session-old");
+    expect(report.artifact.phase).toBe("final");
+    expect(report.artifact.currentArtifact).toBe(".gleip/report.json");
   });
 
   it("stop archives the active session in the target cwd", async () => {

@@ -99,9 +99,11 @@ Generated agent instructions use these commands through `npx --no-install` so th
 
 Default workflow modes print concise 1-5 line summaries that confirm the completed phase and next action. An incremental baseline or delta adds one line per finding that must be emitted; unchanged findings remain a count. JSON modes remain machine-readable without human summary noise.
 
+Gleip 0.8.2 calibrates ceremony by workflow profile. Documentation-only tasks use a compact brief, no required plan, and content/diff verification by default. Local behavior changes use a short plan and focused verification. Broad changes keep explicit scope rationale and broader verification. Sensitive dependency, CI, auth, payment, infrastructure, migration, secret, and security-policy work keeps the complete approval and hard-gate workflow.
+
 ## Stable Findings and CI
 
-Gleip 0.8.1 emits `clean`, `advisory`, `needs_attention`, `needs_cleanup`, or
+Gleip 0.8.2 emits `clean`, `advisory`, `needs_attention`, `needs_cleanup`, or
 `needs_approval`. It never emits `blocked` as a new top-level status.
 
 Stable findings use `info`, `warn`, `action_required`, `approval_required`, and
@@ -139,7 +141,7 @@ clarity without creating extra justification work.
 
 ## Reports and Metrics
 
-Gleip 0.8.1 generates:
+Gleip 0.8.2 generates:
 
 - `.gleip/report.md`: concise scores, risks, findings, actions, and the recommended final-response block.
 - `.gleip/report.json`: stable machine-readable report data, warnings, evidence, summary, and efficiency estimate.
@@ -226,6 +228,6 @@ pnpm pack:cli
 
 ## Status
 
-- Current release: `0.8.1`
+- Current release: `0.8.2`
 - License: Apache-2.0
 - Local-only developer preview

@@ -908,6 +908,84 @@ describe("session reports", () => {
     expect(report.efficiency.breakdown.outputWasteAvoided).toBeGreaterThan(0);
   });
 
+  it("keeps review readiness below 100 when required verification evidence is missing", () => {
+    const report = generateSessionReport({
+      version: "0.8.2",
+      schemaVersion: "1.2.0",
+      generatedAt: "2026-06-09T00:00:00.000Z",
+      scopeBudget: {
+        softLimits: {
+          maxFilesChanged: 5,
+          maxLinesAdded: 100,
+          maxLinesDeleted: 100
+        },
+        allowedPaths: ["src/runtime.ts"],
+        expectedPaths: ["src/runtime.ts"],
+        requiredTests: true,
+        verificationExpected: true,
+        workflowProfile: "local_behavior_change",
+        planRequired: true
+      },
+      planValidation: {
+        status: "approved",
+        findings: [],
+        parsedPlan: {
+          rawText: "Update src/runtime.ts and run tests.",
+          proposedFiles: ["src/runtime.ts"]
+        }
+      },
+      diff: reportDiff({
+        changedFiles: ["src/runtime.ts"],
+        fileStats: [{ path: "src/runtime.ts", added: 2, deleted: 0 }],
+        totalLinesAdded: 2
+      }),
+      driftResult: {
+        status: "clean",
+        findings: []
+      },
+      statusContent: "# Gleip Status\n\n- Session files changed: 1\n"
+    });
+
+    expect(report.scores.reviewReadiness).toBeLessThan(100);
+    expect(report.warnings.map((warning) => warning.id)).toContain("output.tests-missing");
+  });
+
+  it("does not penalize documentation-only work for omitting an unnecessary plan", () => {
+    const report = generateSessionReport({
+      version: "0.8.2",
+      schemaVersion: "1.2.0",
+      generatedAt: "2026-06-09T00:00:00.000Z",
+      scopeBudget: {
+        softLimits: {
+          maxFilesChanged: 2,
+          maxLinesAdded: 120,
+          maxLinesDeleted: 120
+        },
+        allowedPaths: ["FULL_CONTEXT.md"],
+        expectedPaths: ["FULL_CONTEXT.md"],
+        requiredTests: false,
+        verificationExpected: false,
+        workflowProfile: "documentation_only",
+        planRequired: false
+      },
+      diff: reportDiff({
+        changedFiles: ["FULL_CONTEXT.md"],
+        fileStats: [{ path: "FULL_CONTEXT.md", added: 4, deleted: 1 }],
+        totalLinesAdded: 4,
+        totalLinesDeleted: 1
+      }),
+      driftResult: {
+        status: "clean",
+        findings: []
+      },
+      statusContent:
+        "# Gleip Status\n\n- Session files changed: 1\n\n## Findings\n- None\n"
+    });
+
+    expect(report.scores.planAlignment).toBe(100);
+    expect(report.warnings.map((warning) => warning.id)).not.toContain("plan.missing");
+  });
+
   it("detects repeated plan narration and excessive output deterministically", () => {
     const planLine = "Update src/report.ts and keep the final response focused on report outcomes.";
     const statusContent = [
@@ -996,9 +1074,9 @@ describe("session reports", () => {
     expect(markdown).toContain("# Gleipnir Session Report");
     expect(markdown).toContain("Scope adherence:");
     expect(markdown).toContain("Repository hygiene:");
-    expect(markdown).toContain("Estimated token waste avoided:");
+    expect(markdown).toContain("Evidence-based token waste avoided:");
     expect(markdown).toContain("## Recommended final response");
-    expect(markdown).toContain("It is not exact model billing or API usage data.");
+    expect(markdown).toContain("Token-waste reporting is deterministic and evidence-based.");
   });
 });
 

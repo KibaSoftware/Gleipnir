@@ -22,6 +22,7 @@ export interface SessionReport {
   schemaVersion: string;
   sessionId: string | null;
   generatedAt: string;
+  artifact?: ArtifactMetadata;
   scores: {
     scopeAdherence: number;
     planAlignment: number;
@@ -58,6 +59,16 @@ export interface SessionReport {
   };
 }
 
+export interface ArtifactMetadata {
+  generatedAt: string;
+  repositoryFingerprint?: string;
+  sessionId?: string | null;
+  phase: "preflight" | "implementation" | "verification" | "final";
+  sequence: number;
+  superseded: boolean;
+  currentArtifact: string;
+}
+
 export interface EfficiencyBasis {
   source: EfficiencySource;
   description: string;
@@ -86,6 +97,8 @@ export interface ReportScopeBudget {
   expectedPaths?: string[];
   requiredTests: boolean;
   verificationExpected?: boolean;
+  workflowProfile?: "documentation_only" | "local_behavior_change" | "broad_change" | "sensitive_change";
+  planRequired?: boolean;
 }
 
 export interface ReportDiff {
@@ -161,6 +174,8 @@ export interface GenerateSessionReportInput {
   schemaVersion: string;
   sessionId?: string | null;
   generatedAt: string;
+  phase?: ArtifactMetadata["phase"];
+  repositoryFingerprint?: string;
   scopeBudget?: ReportScopeBudget;
   diff: ReportDiff;
   driftResult: ReportDriftResult;
@@ -188,6 +203,29 @@ export function clampScore(score: number): number {
   return Math.max(0, Math.min(100, Math.round(score)));
 }
 
+function artifactMetadata(
+  input: Omit<ArtifactMetadata, "sequence" | "superseded">
+): ArtifactMetadata {
+  return {
+    ...input,
+    sequence: phaseSequence(input.phase),
+    superseded: false
+  };
+}
+
+function phaseSequence(phase: ArtifactMetadata["phase"]): number {
+  switch (phase) {
+    case "preflight":
+      return 1;
+    case "implementation":
+      return 2;
+    case "verification":
+      return 3;
+    case "final":
+      return 4;
+  }
+}
+
 export function generateSessionReport(input: GenerateSessionReportInput): SessionReport {
   const warnings: ReportWarning[] = [];
   const deductions: ScoreDeductions = {
@@ -197,6 +235,12 @@ export function generateSessionReport(input: GenerateSessionReportInput): Sessio
     reviewReadiness: 0
   };
   const changedFiles = input.diff.changedFiles.map(normalizePath).sort();
+  const workflowProfile = input.scopeBudget?.workflowProfile ?? "local_behavior_change";
+  const planRequired =
+    input.scopeBudget?.planRequired ??
+    (workflowProfile !== "documentation_only" && changedFiles.length > 0);
+  const verificationRequired =
+    (input.scopeBudget?.verificationExpected ?? input.scopeBudget?.requiredTests) === true;
   const acceptedPlanValidation =
     input.acceptedPlanValidation ??
     (input.planValidation !== undefined && isPlanAligned(input.planValidation.status)
@@ -247,7 +291,7 @@ export function generateSessionReport(input: GenerateSessionReportInput): Sessio
     deductions.reviewReadiness += 20;
   }
 
-  if (input.planValidation === undefined) {
+  if (input.planValidation === undefined && planRequired) {
     addWarning(warnings, {
       id: "plan.missing",
       type: "plan",
@@ -260,7 +304,7 @@ export function generateSessionReport(input: GenerateSessionReportInput): Sessio
     });
     deductions.planAlignment += 25;
     deductions.reviewReadiness += changedFiles.length > 0 ? 10 : 0;
-  } else if (!isPlanAligned(input.planValidation.status)) {
+  } else if (input.planValidation !== undefined && !isPlanAligned(input.planValidation.status)) {
     const requiresApproval =
       input.planValidation.status === "requires_approval" ||
       input.planValidation.status === "needs_approval";
@@ -349,14 +393,26 @@ export function generateSessionReport(input: GenerateSessionReportInput): Sessio
 
   deductions.reviewReadiness += riskDeduction(driftRisk);
   deductions.reviewReadiness += riskDeduction(repositoryHygieneRisk);
-  if (
-    hasStatusContent &&
-    (input.scopeBudget?.verificationExpected ?? input.scopeBudget?.requiredTests) === true &&
-    !testsMentioned
-  ) {
+  if (changedFiles.length > 0 && !changedFilesMentioned) {
+    deductions.reviewReadiness += workflowProfile === "documentation_only" ? 5 : 10;
+  }
+  if (verificationRequired && !testsMentioned) {
+    if (!warnings.some((warning) => warning.id === "output.tests-missing")) {
+      addWarning(warnings, {
+        id: "review.verification-evidence-missing",
+        type: "review_readiness",
+        severity: "medium",
+        message: "Required verification evidence is missing.",
+        reason:
+          "The active workflow profile requires verification evidence before review readiness can be complete.",
+        evidence: ["No status Tests section with concrete content was available."],
+        files: [],
+        suggestedAction: "Run or report focused verification for the changed behavior."
+      });
+    }
     deductions.reviewReadiness += 15;
   }
-  if (hasStatusContent && !risksMentioned) {
+  if (hasStatusContent && !risksMentioned && activeWarningCount(warnings) > 0) {
     deductions.reviewReadiness += 10;
   }
   deductions.reviewReadiness += Math.min(
@@ -394,6 +450,15 @@ export function generateSessionReport(input: GenerateSessionReportInput): Sessio
     schemaVersion: input.schemaVersion,
     sessionId: input.sessionId ?? null,
     generatedAt: input.generatedAt,
+    artifact: artifactMetadata({
+      phase: input.phase ?? "final",
+      generatedAt: input.generatedAt,
+      ...(input.repositoryFingerprint === undefined
+        ? {}
+        : { repositoryFingerprint: input.repositoryFingerprint }),
+      sessionId: input.sessionId ?? null,
+      currentArtifact: ".gleip/report.json"
+    }),
     scores,
     risk,
     efficiency,
@@ -445,6 +510,7 @@ export function renderSessionReportMarkdown(report: SessionReport): string {
   return `# Gleipnir Session Report
 
 Scope adherence: ${report.scores.scopeAdherence}/100
+Phase: ${report.artifact?.phase ?? "final"}
 Plan alignment: ${report.scores.planAlignment}/100
 Output discipline: ${report.scores.outputDiscipline}/100
 Review readiness: ${report.scores.reviewReadiness}/100
@@ -455,7 +521,7 @@ Test integrity: ${titleCase(report.risk.testIntegrity)}
 Repository hygiene: ${titleCase(report.risk.repositoryHygiene)}
 Over-edit risk: ${titleCase(report.risk.overEdit)}
 
-Estimated token waste avoided: ~${formatTokenEstimate(report.efficiency.estimatedTokenWasteAvoided)}
+Evidence-based token waste avoided: ${formatTokenEstimateForReport(report.efficiency.estimatedTokenWasteAvoided)}
 Confidence: ${titleCase(report.efficiency.confidence)}
 
 ## Key findings
@@ -472,7 +538,7 @@ Use only this compact block in the agent's final response; do not paste the full
 
 ${report.finalResponse.markdown}
 
-Estimated token waste avoided is a deterministic local estimate based on local artifacts and diff/context/output size. It is not exact model billing or API usage data.
+Token-waste reporting is deterministic and evidence-based. Unavailable means Gleip did not have local evidence for a positive avoided-work estimate.
 `;
 }
 
@@ -600,14 +666,11 @@ function addOutputWarnings(
     deductions.outputDiscipline += 10;
   }
 
-  if (!testsMentioned) {
+  if (!testsMentioned && (input.scopeBudget?.verificationExpected ?? input.scopeBudget?.requiredTests) === true) {
     addWarning(warnings, {
       id: "output.tests-missing",
       type: "output",
-      severity:
-        (input.scopeBudget?.verificationExpected ?? input.scopeBudget?.requiredTests) === true
-          ? "medium"
-          : "low",
+      severity: "medium",
       message: "Status output does not include explicit test evidence.",
       reason:
         "Reviewers cannot tell which validation commands ran from the available status artifact.",
@@ -618,7 +681,7 @@ function addOutputWarnings(
     deductions.outputDiscipline += 15;
   }
 
-  if (!risksMentioned) {
+  if (!risksMentioned && input.driftResult.findings.length > 0) {
     addWarning(warnings, {
       id: "output.risks-missing",
       type: "output",
@@ -689,6 +752,14 @@ function addOutputWarnings(
     });
     deductions.outputDiscipline += 10;
   }
+}
+
+function activeWarningCount(warnings: ReportWarning[]): number {
+  return warnings.filter(
+    (warning) =>
+      warning.type !== "output" &&
+      (warning.severity === "medium" || warning.severity === "high")
+  ).length;
 }
 
 function calculateEfficiency(
@@ -1087,6 +1158,10 @@ function formatTokenEstimate(tokens: number): string {
   return `${(tokens / 1000).toFixed(tokens >= 10_000 ? 0 : 1)}k`;
 }
 
+function formatTokenEstimateForReport(tokens: number): string {
+  return tokens === 0 ? "unavailable" : `~${formatTokenEstimate(tokens)}`;
+}
+
 function renderCompactFinalResponse(input: {
   scores: SessionReport["scores"];
   driftRisk: ReportRiskLevel;
@@ -1107,7 +1182,7 @@ function renderCompactFinalResponse(input: {
 - Drift risk: ${titleCase(input.driftRisk)}
 - Repository hygiene: ${titleCase(input.repositoryHygieneRisk)}
 - Output discipline: ${input.scores.outputDiscipline}/100
-- Estimated token waste avoided: ~${formatTokenEstimate(input.efficiency.estimatedTokenWasteAvoided)} (${titleCase(input.efficiency.confidence)} confidence)
+- Evidence-based token waste avoided: ${formatTokenEstimateForReport(input.efficiency.estimatedTokenWasteAvoided)} (${titleCase(input.efficiency.confidence)} confidence)
 - Unresolved warnings: ${warningSummary}`;
 }
 

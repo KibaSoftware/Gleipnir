@@ -180,6 +180,29 @@ describe("classifyTask", () => {
       riskLevel: "medium"
     });
   });
+
+  it("classifies documentation-only context updates with low ceremony", () => {
+    expect(classifyTask("Update FULL_CONTEXT.md to document the current runtime behavior.")).toMatchObject({
+      taskType: "documentation_update",
+      riskLevel: "low",
+      likelyRequiresTests: false,
+      workflowProfile: "documentation_only"
+    });
+  });
+
+  it("classifies surgical runtime behavior tasks without brittle example matching", () => {
+    expect(
+      classifyTask(
+        "Surgically optimize SMC Goblin Gaps runtime for stacked gap compounding and breakeven stop labeling."
+      )
+    ).toMatchObject({
+      taskType: "local_behavior_change",
+      confidence: "high",
+      riskLevel: "medium",
+      likelyRequiresTests: true,
+      workflowProfile: "local_behavior_change"
+    });
+  });
 });
 
 describe("extractTaskTerms", () => {
@@ -609,6 +632,34 @@ describe("createScopeBudget", () => {
     expect(budget.allowedPaths).not.toContain("FULL_CONTEXT.md");
   });
 
+  it("uses documentation-only profile for a single editable context file", () => {
+    const task = "Update FULL_CONTEXT.md to document the current runtime behavior.";
+    const budget = createScopeBudget({
+      task,
+      classification: classifyTask(task),
+      repoContext: emptyRepoContext()
+    });
+
+    expect(budget.workflowProfile).toBe("documentation_only");
+    expect(budget.riskLevel).toBe("low");
+    expect(budget.planRequired).toBe(false);
+    expect(budget.requiredTests).toBe(false);
+    expect(budget.allowedPaths).toEqual(["FULL_CONTEXT.md"]);
+    expect(budget.contextDocsTouchAllowed).toBe(true);
+    expect(budget.readOnlyContextPaths).not.toContain("FULL_CONTEXT.md");
+  });
+
+  it("does not treat policy-bearing markdown as documentation-only", () => {
+    const task = "Update AGENTS.md with the repository working policy.";
+    const budget = createScopeBudget({
+      task,
+      classification: classifyTask(task),
+      repoContext: emptyRepoContext()
+    });
+
+    expect(budget.workflowProfile).not.toBe("documentation_only");
+  });
+
   it("keeps a declared narrow bugfix to one implementation file and an optional focused test", () => {
     const task =
       "Modify only src/foo.ts to fix the null input bug. Do not change dependencies, CI, config, or unrelated modules. Add or run focused tests.";
@@ -828,6 +879,19 @@ describe("parseAgentPlan", () => {
 
     expect(plan.contextFiles).not.toContain("FULL_CONTEXT.md");
     expect(plan.proposedFiles).toContain("FULL_CONTEXT.md");
+  });
+
+  it("carries edit intent across comma-separated target lists", () => {
+    const plan = parseAgentPlan(
+      "Update src/smc/runtime.ts, tests/smc-runtime.test.ts, and FULL_CONTEXT.md. Run the focused SMC runtime test."
+    );
+
+    expect(plan.contextFiles).not.toContain("FULL_CONTEXT.md");
+    expect(plan.proposedFiles).toEqual([
+      "FULL_CONTEXT.md",
+      "src/smc/runtime.ts",
+      "tests/smc-runtime.test.ts"
+    ]);
   });
 });
 
@@ -2210,6 +2274,60 @@ describe("validateAgentPlan", () => {
     );
   });
 
+  it("accepts focused SMC runtime, test, and context-document targets without dormant policy flood", () => {
+    const task =
+      "Surgically optimize SMC Goblin Gaps runtime for stacked gap compounding and breakeven stop labeling.";
+    const repoContext = repoContextWith({
+      likelyRelevantFiles: [
+        {
+          path: "src/smc/runtime.ts",
+          score: 24,
+          reasons: ["runtime and compounding match"]
+        },
+        {
+          path: "src/goblin/dashboard.ts",
+          score: 3,
+          reasons: ["weak Goblin path match"]
+        }
+      ],
+      likelyTestFiles: [
+        {
+          path: "src/smc/runtime.test.ts",
+          score: 18,
+          reasons: ["nearby runtime test"]
+        }
+      ]
+    });
+    const scopeBudget = createScopeBudget({
+      task,
+      classification: classifyTask(task),
+      repoContext
+    });
+    const result = validateAgentPlan({
+      taskText: task,
+      planText: [
+        "Update src/smc/runtime.ts for stacked gap compounding and breakeven stop labeling.",
+        "Update src/smc/runtime.test.ts with focused runtime tests.",
+        "Update FULL_CONTEXT.md to document the runtime behavior.",
+        "Run focused runtime tests."
+      ].join("\n"),
+      scopeBudget
+    });
+
+    expect(scopeBudget.workflowProfile).toBe("local_behavior_change");
+    expect(repoContext.likelyRelevantFiles[0]?.path).toBe("src/smc/runtime.ts");
+    expect(result.status).toBe("aligned");
+    expect(result.findings.map((finding) => finding.code)).not.toEqual(
+      expect.arrayContaining(["DEPENDENCY_CHANGE_INTENT", "CI_CHANGE_INTENT"])
+    );
+    expect(result.targetClassifications).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ target: "src/smc/runtime.ts", classification: "derived" }),
+        expect.objectContaining({ target: "src/smc/runtime.test.ts", classification: "derived" })
+      ])
+    );
+  });
+
   it("keeps protected semantic boundaries enforceable even for direct files", () => {
     const scopeBudget = sampleScopeBudget({
       allowedPaths: ["src/card.tsx"],
@@ -2245,7 +2363,8 @@ describe("generateImplementationBrief", () => {
     expect(brief).toContain("- Type: small_feature");
     expect(brief).toContain("- Risk: medium");
     expect(brief).toContain("- Confidence: high");
-    expect(brief).toContain("Implement the smallest clear change that satisfies the task.");
+    expect(brief).toContain("- Profile: local_behavior_change");
+    expect(brief).toContain("Draft a short plan naming the implementation file(s)");
   });
 
   it("includes top relevant files but limits count", () => {
@@ -2257,7 +2376,7 @@ describe("generateImplementationBrief", () => {
       })
     );
 
-    const relevantSection = sectionBetween(brief, "Likely relevant files:", "Likely test files:");
+    const relevantSection = sectionBetween(brief, "Implementation:", "Tests:");
     expect(relevantSection).toContain("src/file1.ts");
     expect(relevantSection).toContain("src/file5.ts");
     expect(relevantSection).not.toContain("src/file6.ts");
@@ -2272,7 +2391,7 @@ describe("generateImplementationBrief", () => {
       })
     );
 
-    const testSection = sectionBetween(brief, "Likely test files:", "Existing pattern matches:");
+    const testSection = sectionBetween(brief, "Tests:", "## Expected scope");
     expect(testSection).toContain("src/file1.test.ts");
     expect(testSection).toContain("src/file5.test.ts");
     expect(testSection).not.toContain("src/file6.test.ts");
@@ -2281,10 +2400,6 @@ describe("generateImplementationBrief", () => {
   it("includes scope budget summary and expected scope", () => {
     const brief = generateImplementationBrief(sampleBriefInput());
 
-    expect(brief).toContain("## Scope budget");
-    expect(brief).toContain("- Expected files changed: 2-6");
-    expect(brief).toContain("- Expected lines added: 30-220");
-    expect(brief).toContain("- Soft max files: 8");
     expect(brief).toContain("## Expected scope");
     expect(brief).toContain("src/features/users/UserTable.tsx");
   });
@@ -2292,10 +2407,10 @@ describe("generateImplementationBrief", () => {
   it("includes protected checks with approval guidance", () => {
     const brief = generateImplementationBrief(sampleBriefInput());
 
-    expect(brief).toContain("## Protected checks");
-    expect(brief).toContain("- Preserve test integrity.");
-    expect(brief).toContain("New dependencies require approval");
-    expect(brief).toContain("CI changes require approval");
+    expect(brief).toContain("## Active risks");
+    expect(brief).toContain("## Applicable protections");
+    expect(brief).toContain("Dependency and CI changes require approval if introduced.");
+    expect(brief).toContain("Tests may not be skipped, deleted, or weakened.");
   });
 
   it("reflects dependencies allowed", () => {
@@ -2359,13 +2474,10 @@ describe("generateImplementationBrief", () => {
     const brief = generateImplementationBrief(sampleBriefInput());
 
     expect(brief).toContain("## Before final response");
-    expect(brief).toContain("Run the narrowest existing validation");
-    expect(brief).toContain("Do not rerun a full validation suite");
-    expect(brief).toContain("2. Run `npx --no-install gleip check --incremental`.");
-    expect(brief).toContain("3. Run `npx --no-install gleip status --compact`.");
-    expect(brief).toContain("4. Report files changed.");
-    expect(brief).toContain("5. Report tests run.");
-    expect(brief).toContain("6. Report whether Gleip status is clean");
+    expect(brief).toContain("Run focused verification");
+    expect(brief).toContain("npx --no-install gleip check --incremental");
+    expect(brief).toContain("npx --no-install gleip status --compact");
+    expect(brief).toContain("Report files changed, tests run, and residual risks.");
   });
 });
 

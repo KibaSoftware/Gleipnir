@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const tarball = join(root, "dist-pack", "gleip-0.8.1.tgz");
+const tarball = join(root, "dist-pack", "gleip-0.8.2.tgz");
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 const npxCommand = process.platform === "win32" ? "npx.cmd" : "npx";
 
@@ -140,7 +140,7 @@ writeRepoFile(
   ].join("\n")
 );
 
-assertEqual(runGleip(["--version"], repo).trim(), "0.8.1", "packed version");
+assertEqual(runGleip(["--version"], repo).trim(), "0.8.2", "packed version");
 runGleip(["init"], repo);
 runGleip(["preflight", "--file", "task.md"], repo);
 
@@ -240,7 +240,7 @@ runGleip(["check"], repo);
 runGleip(["check", "--ci"], repo);
 runGleip(["doctor"], repo);
 
-console.log(`Packed Gleip 0.8.1 smoke test passed in ${repo}`);
+console.log(`Packed Gleip 0.8.2 smoke test passed in ${repo}`);
 
 function runGleip(args, cwd) {
   return run(npxCommand, ["--no-install", "gleip", ...args], cwd);

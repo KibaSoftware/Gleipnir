@@ -5,9 +5,11 @@ import type { FindingCode, FindingSeverity } from "@gleip/core/findings";
 export const packageName = "@gleip/planner";
 
 export type TaskType =
+  | "documentation_update"
   | "copy_change"
   | "ui_tweak"
   | "bug_fix"
+  | "local_behavior_change"
   | "small_feature"
   | "api_endpoint"
   | "refactor"
@@ -22,6 +24,12 @@ export type Confidence = "low" | "medium" | "high";
 
 export type RiskLevel = "low" | "medium" | "high";
 
+export type WorkflowProfile =
+  | "documentation_only"
+  | "local_behavior_change"
+  | "broad_change"
+  | "sensitive_change";
+
 export interface TaskClassification {
   taskType: TaskType;
   confidence: Confidence;
@@ -29,6 +37,7 @@ export interface TaskClassification {
   reasons: string[];
   likelyRequiresTests: boolean;
   likelyAllowsNewDependencies: boolean;
+  workflowProfile?: WorkflowProfile;
 }
 
 export interface RepoContext {
@@ -78,6 +87,8 @@ export interface ScopeBudget {
   taskType: TaskType;
   confidence: Confidence;
   riskLevel: RiskLevel;
+  workflowProfile?: WorkflowProfile;
+  planRequired?: boolean;
   taskBreadth?: TaskBreadth;
   expectedFilesChanged: NumberRange;
   expectedLinesAdded: NumberRange;
@@ -346,6 +357,18 @@ const rules: ClassificationRule[] = [
     ]
   },
   {
+    taskType: "documentation_update",
+    confidence: "high",
+    riskLevel: "low",
+    likelyRequiresTests: false,
+    likelyAllowsNewDependencies: false,
+    patterns: [
+      /\b(?:docs?|documentation|readme|changelog|guide|context)\b/iu,
+      /\b(?:document|describe|clarify)\b/iu,
+      /\b(?:markdown|\.md)\b/iu
+    ]
+  },
+  {
     taskType: "api_endpoint",
     confidence: "high",
     riskLevel: "medium",
@@ -358,6 +381,17 @@ const rules: ClassificationRule[] = [
       /\b(?:get|post|put|patch|delete)\s+\/[\w/:.-]*/i,
       /\bcontroller\b/i,
       /\bhandler\b/i
+    ]
+  },
+  {
+    taskType: "local_behavior_change",
+    confidence: "high",
+    riskLevel: "medium",
+    likelyRequiresTests: true,
+    likelyAllowsNewDependencies: false,
+    patterns: [
+      /\b(?:adjust|optimi[sz]e|tune|correct|repair|improve)\b[^.\n]{0,80}\b(?:runtime|behavior|logic|calculation|label(?:ing)?|flow|handling)\b/iu,
+      /\b(?:runtime|behavior|logic|calculation|handler|parser|label(?:ing)?)\b[^.\n]{0,80}\b(?:adjust|optimi[sz]e|tune|correct|repair|improve)\b/iu
     ]
   },
   {
@@ -707,6 +741,14 @@ const stopwords = new Set([
 ]);
 
 const scopeBudgetDefaults: Record<TaskType, ScopeBudgetDefault> = {
+  documentation_update: {
+    expectedFilesChanged: { min: 1, max: 2 },
+    expectedLinesAdded: { min: 0, max: 80 },
+    expectedLinesDeleted: { min: 0, max: 80 },
+    softLimits: { maxFilesChanged: 2, maxLinesAdded: 120, maxLinesDeleted: 120 },
+    requiredTests: false,
+    riskLevel: "low"
+  },
   copy_change: {
     expectedFilesChanged: { min: 1, max: 2 },
     expectedLinesAdded: { min: 0, max: 30 },
@@ -728,6 +770,14 @@ const scopeBudgetDefaults: Record<TaskType, ScopeBudgetDefault> = {
     expectedLinesAdded: { min: 5, max: 160 },
     expectedLinesDeleted: { min: 0, max: 120 },
     softLimits: { maxFilesChanged: 7, maxLinesAdded: 220, maxLinesDeleted: 180 },
+    requiredTests: true,
+    riskLevel: "medium"
+  },
+  local_behavior_change: {
+    expectedFilesChanged: { min: 1, max: 4 },
+    expectedLinesAdded: { min: 0, max: 160 },
+    expectedLinesDeleted: { min: 0, max: 120 },
+    softLimits: { maxFilesChanged: 5, maxLinesAdded: 220, maxLinesDeleted: 180 },
     requiredTests: true,
     riskLevel: "medium"
   },
@@ -824,9 +874,19 @@ export function classifyTask(task: string): TaskClassification {
       continue;
     }
 
+    if (rule.taskType === "documentation_update" && !isDocumentationOnlyTask(normalizedTask)) {
+      continue;
+    }
+
     if (findMatches(rule.patterns, normalizedTask).length > 0) {
       return buildClassification(rule, normalizedTask);
     }
+  }
+
+  const semanticLocalClassification = classifyComposedLocalBehaviorTask(normalizedTask);
+
+  if (semanticLocalClassification !== undefined) {
+    return semanticLocalClassification;
   }
 
   return unknownClassification("No deterministic task signals matched.");
@@ -955,15 +1015,35 @@ export function createScopeBudget(input: CreateScopeBudgetInput): ScopeBudget {
     secretsAllowed: false
   };
   const contextDocsTouchAllowed =
-    taskScopeHints.hasBroadScopeSignal ||
-    taskScopeHints.declaredScopeLabels.some((label) =>
-      ["docs", "readme", "changelog", "context_docs"].includes(label)
-    );
+    taskScopeHints.explicitEditTargets.some(isContextDocsPath) ||
+    taskScopeHints.explicitOnlyTargets.some(isContextDocsPath) ||
+    (taskScopeHints.declaredScopeLabels.includes("context_docs") &&
+      taskScopeHints.contextFiles.length === 0);
+  const workflowProfile = deriveWorkflowProfile(input.classification, taskBreadth, taskScopeHints);
+  const planRequired = workflowProfile !== "documentation_only";
+  const effectiveAllowedPaths =
+    workflowProfile === "documentation_only"
+      ? documentationOnlyScope(taskScopeHints)
+      : allowedPaths;
+  const effectiveExplicitScope =
+    workflowProfile === "documentation_only"
+      ? effectiveAllowedPaths
+      : explicitScope;
+  const effectiveDerivedScope =
+    workflowProfile === "documentation_only" ? [] : derivedScope;
+  const effectiveRequiredTests =
+    workflowProfile === "documentation_only" ? false : requiredTests;
+  const effectiveRiskLevel =
+    workflowProfile === "documentation_only"
+      ? "low"
+      : maxRisk(defaults.riskLevel, input.classification.riskLevel);
 
   return {
     taskType: input.classification.taskType,
     confidence: input.classification.confidence,
-    riskLevel: maxRisk(defaults.riskLevel, input.classification.riskLevel),
+    riskLevel: effectiveRiskLevel,
+    workflowProfile,
+    planRequired,
     taskBreadth,
     expectedFilesChanged,
     expectedLinesAdded: defaults.expectedLinesAdded,
@@ -971,19 +1051,34 @@ export function createScopeBudget(input: CreateScopeBudgetInput): ScopeBudget {
     softLimits,
     hardGates,
     protectedChecks: hardGates,
-    allowedPaths,
-    expectedPaths: allowedPaths,
-    explicitScope,
-    derivedScope,
+    allowedPaths: effectiveAllowedPaths,
+    expectedPaths: effectiveAllowedPaths,
+    explicitScope: effectiveExplicitScope,
+    derivedScope: effectiveDerivedScope,
     suspiciousPaths,
     approvalRequiredFor,
     blockedWithoutApproval,
     approvalRequiredChanges: blockedWithoutApproval,
-    requiredTests,
-    verificationExpected: requiredTests,
-    testGuidance: testGuidanceFor(input.classification.taskType),
-    stopConditions,
-    pauseAndClarifyConditions: stopConditions,
+    requiredTests: effectiveRequiredTests,
+    verificationExpected: effectiveRequiredTests,
+    testGuidance:
+      workflowProfile === "documentation_only"
+        ? ["Review content, formatting, generated-file status, and final diff."]
+        : testGuidanceFor(input.classification.taskType),
+    stopConditions:
+      workflowProfile === "documentation_only"
+        ? [
+            "Stop if the change requires executable config, generated files, CI, dependencies, security policy, or runtime behavior edits.",
+            "Stop if the documentation update expands beyond the requested file or nearby docs."
+          ]
+        : stopConditions,
+    pauseAndClarifyConditions:
+      workflowProfile === "documentation_only"
+        ? [
+            "Stop if the change requires executable config, generated files, CI, dependencies, security policy, or runtime behavior edits.",
+            "Stop if the documentation update expands beyond the requested file or nearby docs."
+          ]
+        : stopConditions,
     contextDocsTouchAllowed,
     readOnlyContextPaths: taskScopeHints.contextFiles,
     reasons: buildBudgetReasons(input, defaults, allowedPaths, blockedWithoutApproval)
@@ -993,6 +1088,68 @@ export function createScopeBudget(input: CreateScopeBudgetInput): ScopeBudget {
 export function generateImplementationBrief(input: GenerateImplementationBriefInput): string {
   const { task, classification, repoContext, scopeBudget } = input;
 
+  if (scopeBudget.workflowProfile === "documentation_only") {
+    return `# Gleip Implementation Brief
+
+Task: ${task}
+Profile: documentation_only
+Risk: ${scopeBudget.riskLevel}
+Expected scope:
+${formatAllowedScope(scopeBudget.expectedPaths ?? scopeBudget.allowedPaths)}
+Verification: content review, formatting/generated-file check where applicable, and final diff validation
+Approval required: no
+
+Active risks:
+- None
+
+Applicable protections:
+- Dependency and CI changes require approval if introduced.
+- Tests may not be skipped, deleted, or weakened.
+- Secrets are always blocked.
+`;
+  }
+
+  if (scopeBudget.workflowProfile === "local_behavior_change") {
+    return `# Gleip Implementation Brief
+
+## Task
+${task}
+
+## Classification
+- Type: ${classification.taskType}
+- Profile: local_behavior_change
+- Risk: ${scopeBudget.riskLevel}
+- Confidence: ${classification.confidence}
+
+## Plan
+Draft a short plan naming the implementation file(s), focused verification, and any context-document touch. Validate it with \`npx --no-install gleip validate-plan "<plan>"\`.
+
+## Likely files
+Implementation:
+${formatFileMatchesForBrief(repoContext.likelyRelevantFiles, 5)}
+
+Tests:
+${formatFileMatchesForBrief(repoContext.likelyTestFiles, 5)}
+
+## Expected scope
+${formatAllowedScope(scopeBudget.expectedPaths ?? scopeBudget.allowedPaths)}
+
+## Verification expected
+${formatRequiredTests(scopeBudget)}
+
+## Active risks
+- None detected during preflight.
+
+## Applicable protections
+- Dependency and CI changes require approval if introduced.
+- Tests may not be skipped, deleted, or weakened.
+- Secrets are always blocked.
+
+## Before final response
+Run focused verification, \`npx --no-install gleip check --incremental\`, and \`npx --no-install gleip status --compact\`. Report files changed, tests run, and residual risks.
+`;
+  }
+
   return `# Gleip Implementation Brief
 
 ## Task
@@ -1000,6 +1157,7 @@ ${task}
 
 ## Classification
 - Type: ${classification.taskType}
+- Profile: ${scopeBudget.workflowProfile ?? "local_behavior_change"}
 - Risk: ${classification.riskLevel}
 - Confidence: ${classification.confidence}
 - Focused verification likely expected: ${formatYesNo(classification.likelyRequiresTests)}
@@ -1883,22 +2041,60 @@ function stripPathTokens(value: string): string {
 function extractExplicitEditTargets(text: string): string[] {
   const targets = new Set<string>();
   const phraseContextPaths = new Set(extractPhraseContextPaths(text));
+  let editListActive = false;
 
   for (const clause of splitIntentClauses(text)) {
-    if (!hasAffirmativeEditIntent(clause)) {
+    const paths: string[] = extractPathTokens(clause);
+    const hasEditIntent: boolean = hasAffirmativeEditIntent(clause);
+    const continuationPaths: string[] = editListActive
+      ? editTargetListContinuationPaths(clause)
+      : [];
+    const isContinuation: boolean = continuationPaths.length > 0;
+    const targetPaths: string[] = isContinuation && !hasEditIntent ? continuationPaths : paths;
+
+    if (!hasEditIntent && !isContinuation) {
+      editListActive = false;
       continue;
     }
 
-    for (const path of extractPathTokens(clause)) {
+    for (const path of targetPaths) {
       if (phraseContextPaths.has(path)) {
         continue;
       }
 
       targets.add(path);
     }
+
+    editListActive = targetPaths.length > 0 && !/[.!?]\s*$/u.test(clause);
   }
 
   return [...targets];
+}
+
+function editTargetListContinuationPaths(clause: string): string[] {
+  const targetSegment = leadingEditTargetSegment(clause);
+  const paths = extractPathTokens(targetSegment);
+
+  if (paths.length === 0 || hasNegativeEditIntent(clause)) {
+    return [];
+  }
+
+  const commandText = stripPathTokens(targetSegment);
+
+  return /\b(?:read|review|run|execute|verify|check|test|inspect|reference|context)\b/iu.test(
+    commandText
+  )
+    ? []
+    : paths;
+}
+
+function leadingEditTargetSegment(clause: string): string {
+  const match =
+    /^(.+?)(?:[.!?]\s+(?=(?:read|review|run|execute|verify|check|test|inspect)\b)|$)/iu.exec(
+      clause
+    );
+
+  return match?.[1] ?? clause;
 }
 
 function extractReadOnlyContextPaths(text: string): string[] {
@@ -3086,7 +3282,8 @@ function classifyPlanTargets(input: {
   const directTargets = input.parsedPlan.proposedFiles.filter(
     (path) =>
       isWithinAllowedPaths(path, explicitScope) ||
-      isAcceptedContextDocsPlanTouch(path, input.scopeBudget)
+      isAcceptedContextDocsPlanTouch(path, input.scopeBudget) ||
+      isAcceptedDocumentationPlanTouch(path, input.planText, input.taskText, input.scopeBudget)
   );
 
   return input.parsedPlan.proposedFiles.map((rawTarget) => {
@@ -3107,7 +3304,8 @@ function classifyPlanTargets(input: {
 
     if (
       isWithinAllowedPaths(target, explicitScope) ||
-      isAcceptedContextDocsPlanTouch(target, input.scopeBudget)
+      isAcceptedContextDocsPlanTouch(target, input.scopeBudget) ||
+      isAcceptedDocumentationPlanTouch(target, input.planText, input.taskText, input.scopeBudget)
     ) {
       return {
         target,
@@ -3362,6 +3560,32 @@ function isReadOnlyContextTarget(path: string, scopeBudget: ScopeBudget): boolea
 
   return (scopeBudget.readOnlyContextPaths ?? []).some(
     (contextPath) => normalizePath(contextPath) === normalizedPath
+  );
+}
+
+function isAcceptedDocumentationPlanTouch(
+  path: string,
+  planText: string,
+  taskText: string,
+  scopeBudget: ScopeBudget
+): boolean {
+  const normalizedPath = normalizePath(path);
+
+  if (
+    isReadOnlyContextTarget(normalizedPath, scopeBudget) ||
+    !isContextDocsPath(normalizedPath)
+  ) {
+    return false;
+  }
+
+  const line = findPlanLineForPath(planText, normalizedPath) ?? "";
+  const taskTerms = extractTaskTerms(taskText).filter((term) => term.length > 3);
+
+  return (
+    /\b(?:update|document|describe|clarify)\b/iu.test(line) &&
+    (taskTerms.length === 0 ||
+      taskTerms.some((term) => line.toLowerCase().includes(term)) ||
+      /\b(?:runtime|behavior|behaviour|logic)\b/iu.test(line))
   );
 }
 
@@ -3960,6 +4184,14 @@ function buildAllowedPaths(
   }
 
   for (const path of taskScopeHints.declaredPaths) {
+    if (
+      explicitTargets.length > 0 &&
+      explicitTargets.some(isNonExecutableDocumentationPath) &&
+      (path === "docs" || path === "**/docs/**")
+    ) {
+      continue;
+    }
+
     if (!isGeneratedOrContextPath(path, taskScopeHints.contextFiles)) {
       paths.add(path);
     }
@@ -3995,6 +4227,19 @@ function buildAllowedPaths(
   }
 
   return [...paths].filter((path) => path !== ".").sort(comparePaths);
+}
+
+function documentationOnlyScope(taskScopeHints: TaskScopeHints): string[] {
+  const explicitTargets = [
+    ...taskScopeHints.explicitEditTargets,
+    ...taskScopeHints.explicitOnlyTargets
+  ].filter(isNonExecutableDocumentationPath);
+  const targets =
+    explicitTargets.length > 0
+      ? explicitTargets
+      : taskScopeHints.declaredPaths.filter(isNonExecutableDocumentationPath);
+
+  return dedupe(targets).filter((path) => path !== ".").sort(comparePaths);
 }
 
 function buildExplicitScope(taskScopeHints: TaskScopeHints): string[] {
@@ -4050,6 +4295,86 @@ function inferTaskBreadth(
   }
 
   return "local";
+}
+
+function deriveWorkflowProfile(
+  classification: TaskClassification,
+  taskBreadth: TaskBreadth,
+  taskScopeHints: TaskScopeHints
+): WorkflowProfile {
+  if (
+    ["dependency_upgrade", "migration", "auth_security_change", "infra_ci_change"].includes(
+      classification.taskType
+    ) ||
+    taskScopeHints.declaredScopeLabels.some((label) =>
+      ["ci", "config", "package_metadata"].includes(label)
+    ) ||
+    taskScopeHints.explicitEditTargets.some(isSensitiveEditablePath) ||
+    taskScopeHints.explicitOnlyTargets.some(isSensitiveEditablePath)
+  ) {
+    return "sensitive_change";
+  }
+
+  const explicitEditableTargets = [
+    ...taskScopeHints.explicitEditTargets,
+    ...taskScopeHints.explicitOnlyTargets
+  ];
+  const editableTargets =
+    explicitEditableTargets.length > 0
+      ? explicitEditableTargets
+      : taskScopeHints.declaredPaths;
+
+  if (
+    (classification.workflowProfile === "documentation_only" ||
+      classification.taskType === "documentation_update") &&
+    editableTargets.length > 0 &&
+    editableTargets.every(isNonExecutableDocumentationPath)
+  ) {
+    return "documentation_only";
+  }
+
+  if (isBroadTaskBreadth(taskBreadth)) {
+    return "broad_change";
+  }
+
+  return "local_behavior_change";
+}
+
+function isSensitiveEditablePath(path: string): boolean {
+  const normalized = normalizePath(path);
+  const fileName = basename(normalized);
+
+  return (
+    isCiFile(normalized) ||
+    isDependencyFile(normalized) ||
+    lockfileNames.has(fileName) ||
+    isSecretPath(normalized) ||
+    /(^|\/)(auth|security|payments?|migrations?|infra|infrastructure)(\/|\.|$)/iu.test(
+      normalized
+    ) ||
+    broadConfigFileNames.has(fileName) ||
+    /(?:^|[.-])config\.(?:js|cjs|mjs|ts|json|yml|yaml|toml)$/iu.test(fileName)
+  );
+}
+
+function isNonExecutableDocumentationPath(path: string): boolean {
+  const normalized = normalizePath(path);
+  const fileName = basename(normalized).toLowerCase();
+
+  if (isSensitiveEditablePath(normalized)) {
+    return false;
+  }
+
+  if (["agents.md", "claude.md", "gemini.md", "codeowners"].includes(fileName)) {
+    return false;
+  }
+
+  return (
+    normalized.toLowerCase().startsWith("docs/") ||
+    ["readme.md", "changelog.md", "full_context.md", "project_context.md", "notes.md"].includes(
+      fileName
+    )
+  );
 }
 
 function buildSuspiciousPaths(repoContext: RepoContext, taskScopeHints: TaskScopeHints): string[] {
@@ -4859,7 +5184,7 @@ function dedupePatternMatches(matches: RepoPatternMatch[]): RepoPatternMatch[] {
 function isClearlyTestOnly(task: string): boolean {
   const hasTestSignal = /\b(tests?|specs?|coverage|unit test|integration test)\b/i.test(task);
   const hasImplementationJoin =
-    /\b(and|plus|with)\b\s+\b(add|create|implement|enable|support|fix|refactor)\b/i.test(task);
+    /\b(and|plus|with)\b\s+\b(add|create|implement|enable|support|fix|refactor|update)\b/i.test(task);
   const declaredScope = extractDeclaredTaskScope(task);
   const hasDeclaredNonTestScope = declaredScope.labels.some(
     (label) => label !== "tests" && label !== "smoke_tests"
@@ -4876,6 +5201,31 @@ function isClearlyTestOnly(task: string): boolean {
   );
 }
 
+function isDocumentationOnlyTask(task: string): boolean {
+  const hasDocSignal =
+    /\b(?:docs?|documentation|readme|changelog|guide|markdown|context)\b/iu.test(task) ||
+    /\.md\b/iu.test(task);
+  const hasSensitiveSignal =
+    /\b(?:dependency|dependencies|package metadata|package version|ci|workflow|pipeline|auth|security|payment|migration|schema|infrastructure|config)\b/iu.test(
+      task
+    );
+  const hasCodeSignal =
+    /\b(?:implement|fix|refactor|runtime|behavior|behaviour|logic|api|endpoint|source|tests?|compile|typecheck)\b/iu.test(
+      task
+    );
+
+  if (!hasDocSignal || hasSensitiveSignal) {
+    return false;
+  }
+
+  return (
+    !hasCodeSignal ||
+    /\b(?:document|describe|clarify)\b[^.\n]{0,80}\b(?:runtime|behavior|behaviour|logic)\b/iu.test(
+      task
+    )
+  );
+}
+
 function buildClassification(rule: ClassificationRule, task: string): TaskClassification {
   const matches = findMatches(rule.patterns, task);
 
@@ -4885,8 +5235,66 @@ function buildClassification(rule: ClassificationRule, task: string): TaskClassi
     riskLevel: rule.riskLevel,
     reasons: matches.map((match) => `Matched "${match}" task signal.`),
     likelyRequiresTests: rule.likelyRequiresTests,
-    likelyAllowsNewDependencies: rule.likelyAllowsNewDependencies
+    likelyAllowsNewDependencies: rule.likelyAllowsNewDependencies,
+    workflowProfile: workflowProfileForTaskType(rule.taskType, task)
   };
+}
+
+function classifyComposedLocalBehaviorTask(task: string): TaskClassification | undefined {
+  const actionSignals = findMatches(
+    [
+      /\bsurgical(?:ly)?\b/iu,
+      /\b(?:adjust|change|correct|fix|improve|optimi[sz]e|repair|update|tune)\b/iu
+    ],
+    task
+  );
+  const behaviorSignals = findMatches(
+    [
+      /\b(?:runtime|behavior|behaviour|logic|calculation|handling|parser|resolver|engine|label(?:ing)?|stop|gap|compounding)\b/iu
+    ],
+    task
+  );
+  const targetSignals = findMatches(
+    [
+      /\b(?:module|file|function|component|service|runtime|implementation|source)\b/iu,
+      /\b[A-Z][A-Za-z0-9]+(?:\s+[A-Z][A-Za-z0-9]+)*\b/u
+    ],
+    task
+  );
+
+  if (actionSignals.length === 0 || behaviorSignals.length === 0 || targetSignals.length === 0) {
+    return undefined;
+  }
+
+  return {
+    taskType: "local_behavior_change",
+    confidence: actionSignals.length + behaviorSignals.length + targetSignals.length >= 4 ? "high" : "medium",
+    riskLevel: "medium",
+    reasons: [
+      `Matched behavior-change action signal "${actionSignals[0]}".`,
+      `Matched implementation-behavior signal "${behaviorSignals[0]}".`,
+      `Matched target signal "${targetSignals[0]}".`
+    ],
+    likelyRequiresTests: true,
+    likelyAllowsNewDependencies: false,
+    workflowProfile: "local_behavior_change"
+  };
+}
+
+function workflowProfileForTaskType(taskType: TaskType, task: string): WorkflowProfile {
+  if (["dependency_upgrade", "migration", "auth_security_change", "infra_ci_change"].includes(taskType)) {
+    return "sensitive_change";
+  }
+
+  if (taskType === "documentation_update" || taskType === "copy_change") {
+    return "documentation_only";
+  }
+
+  if (/\b(?:spanning|across|repository-wide|repo-wide|multiple|several|cross-cutting|cross cutting)\b/iu.test(task)) {
+    return "broad_change";
+  }
+
+  return "local_behavior_change";
 }
 
 function findMatches(patterns: RegExp[], task: string): string[] {
@@ -4910,6 +5318,7 @@ function unknownClassification(reason: string): TaskClassification {
     riskLevel: "medium",
     reasons: [reason],
     likelyRequiresTests: true,
-    likelyAllowsNewDependencies: false
+    likelyAllowsNewDependencies: false,
+    workflowProfile: "local_behavior_change"
   };
 }
