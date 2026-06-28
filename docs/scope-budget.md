@@ -19,6 +19,17 @@ Gleip starts preflight by classifying the developer task before code is written.
 
 Classification is not the final authority for scope. It is an early, reviewable guess that records task type, confidence, risk level, test expectations, dependency expectations, and reasons. Later scope budget generation will combine this classification with repository context and git state before making stronger recommendations.
 
+## Workflow Profiles
+
+Gleip 0.8.2 assigns an internal workflow profile to calibrate ceremony:
+
+- `documentation_only`: one- or two-file non-executable documentation/context updates. No plan or tests are required by default; verification is content review, formatting/generated-file checks where applicable, and diff validation.
+- `local_behavior_change`: contained source behavior work in one implementation area. A short plan and focused verification are expected.
+- `broad_change`: multi-module, multi-package, cross-layer, or repository-wide work. A validated plan, scope rationale, and broader verification are expected.
+- `sensitive_change`: dependency, CI, auth/security, payment, infrastructure, migration, secret-handling, or security-policy work. Approval and hard-gate behavior is preserved.
+
+Markdown, JSON, YAML, and context-looking files are not automatically documentation-only. Generated files, executable configuration, package metadata, CI, policy-bearing agent files, and runtime-consumed files remain protected by their active category.
+
 ## Repo Context Discovery
 
 Classification is generic, so Gleip also discovers local repository context during preflight. This scan is deterministic and local-first: it walks bounded repository files, skips dependency, virtualenv, vendor, generated, cache, coverage, and build directories, ignores generated/binary artifacts, and extracts likely relevant files, likely tests, dependency files, CI files, existing patterns, and risky paths from config globs.
@@ -27,6 +38,8 @@ Repo context grounds the brief in the actual project before code changes start.
 Runtime, output, cache, coverage, and build paths are excluded from passive
 relevance discovery. A specific task-declared report, result, fixture, state file,
 or artifact can still be accepted narrowly without broadening source scope.
+
+Discovery candidates are not the same as expected scope. After a plan validates successfully, accepted plan targets become the effective expected scope for status and report checks. Original candidates can remain allowed or diagnostic evidence, but weak keyword matches do not dominate current scope.
 
 ## Preliminary Budgets
 
@@ -69,6 +82,8 @@ Explicit `modify only`, `edit only`, `change only`, `touch only`, and `only upda
 constraints narrow expected paths and expected file counts to the named targets. Files
 identified as task, specification, design, notes, reference, or other read-only
 context do not become edit targets unless the task explicitly requests editing them.
+
+`contextDocsTouchAllowed` is true only when the task or accepted plan explicitly edits a recognized context document. Read-only context files remain protected and are removed from the read-only list only when accepted as editable plan targets.
 
 Small updates to common project context files such as `FULL_CONTEXT.md`,
 `PROJECT_CONTEXT.md`, `ARCHITECTURE.md`, `AGENTS.md`, `CLAUDE.md`,

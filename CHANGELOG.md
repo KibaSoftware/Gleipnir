@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.8.2]
+
+### Changed
+
+- Added workflow profiles for documentation-only, local behavior, broad, and sensitive changes so ordinary docs and contained source work use less ceremony while sensitive work keeps approval gates.
+- Reclassified accepted plans into the current scope budget so validated targets become the effective expected scope.
+- Split discovery candidates from expected scope in normal output and kept dormant repository protections separate from active findings.
+- Added phase, repository fingerprint, session, sequence, and current-artifact metadata to status and report artifacts.
+- Made efficiency reporting evidence-based; unavailable token-savings evidence is reported as unavailable instead of as a positive claim.
+
+### Fixed
+
+- Prevented editable context documents from also being marked read-only.
+- Prevented review readiness from reaching 100 when required verification or completion evidence is missing.
+- Prevented documentation-only tasks from being penalized for skipping an unnecessary plan.
+
+### Compatibility
+
+- 0.8.0 and 0.8.1 session, cache, status, and report artifacts remain readable with compatibility fallbacks. New artifacts use the 0.8.2 schema metadata.
+
 ## [0.8.1]
 
 ### Fixed

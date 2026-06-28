@@ -17,4 +17,11 @@ strong.
 
 Scores are heuristics. They explain local review signals but do not prove correctness, test quality, security, or merge readiness.
 
+## 0.8.2 Invariants
+
+- Review readiness may be 100 only when required completion evidence is present for the active workflow profile. For local behavior changes this includes changed-file evidence, required verification evidence, accurate unresolved warnings, and final repository-state evidence.
+- Plan alignment may be 100 when a required plan validated successfully, or when the selected workflow profile explicitly does not require a plan.
+- Output discipline measures avoidable narration, repetition, compactness, and format compliance. It is not a substitute for changed-file or verification evidence.
+- Scope adherence is measured against the effective validated scope after accepted plan validation, not against the initial broad candidate list.
+
 See [reporting.md](reporting.md) for the stable report model and efficiency estimate.

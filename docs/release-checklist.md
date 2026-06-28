@@ -2,7 +2,7 @@
 
 Use this checklist for the local-only developer preview.
 
-Current release target: `0.8.1`.
+Current release target: `0.8.2`.
 
 Release focus: task-sensitive deterministic plan evidence detection, broader
 verification phrasing support, reduced vocabulary-sensitive false positives, and
@@ -35,7 +35,7 @@ patch-level release metadata updates without changing default check or CI behavi
 
 ## Packed Install
 
-- Install `dist-pack/gleip-0.8.1.tgz` into a clean external temp repo.
+- Install `dist-pack/gleip-0.8.2.tgz` into a clean external temp repo.
 - Verify:
   - `npx gleip --help`
   - `npx gleip --version`
