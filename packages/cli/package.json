@@ -1,6 +1,6 @@
 {
   "name": "gleip",
-  "version": "0.8.2",
+  "version": "0.8.4",
   "description": "Local-only guidance that AI coding agents use automatically.",
   "license": "Apache-2.0",
   "repository": {
@@ -46,7 +46,7 @@
     "local-only"
   ],
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts --clean",
+    "build": "tsup --config tsup.config.mjs",
     "dev": "tsx src/index.ts",
     "test": "vitest run",
     "lint": "eslint src --ext .ts",

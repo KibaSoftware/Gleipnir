@@ -41,8 +41,9 @@ with target classification, reason, evidence, and the required next action.
 Normal `gleip status` and `gleip check` behavior is unchanged and recomputes current
 findings. Explicit `gleip check --incremental` stores a local complete-result cache.
 It reuses that result only when one canonical fingerprint matches repository HEAD,
-staged/unstaged/untracked result inputs, session and task, brief, baseline, scope
-budget, plan state, configuration, enabled state, analysis flags, and Gleip version.
+staged/unstaged/untracked result inputs, canonical task, session, brief,
+baseline, scope budget, plan state, configuration, enabled state, analysis flags,
+and Gleip version.
 It never uses mtimes. Missing, corrupt, schema-incompatible, or version-incompatible
 cache data causes a safe complete check. Use `--force` to recompute explicitly.
 
@@ -60,7 +61,7 @@ successful `validate-plan` run remain part of both full and incremental analysis
 and latest successful accepted plan scope. It does not read `.gleip/status.md` as
 authoritative evidence; status is an output artifact that can be regenerated.
 
-Known Gleip runtime artifacts under `.gleip/`, such as session, baseline, brief,
+Known Gleip runtime artifacts under `.gleip/`, such as canonical task, session, baseline, brief,
 scope-budget, status, report, check cache, and archived session files, are excluded from task
 changed-file metrics and scope findings. Currently tracked runtime artifacts are
 still reported separately while they exist. Durable or user-authored `.gleip` files
@@ -127,6 +128,9 @@ Text output uses a concise form such as
 | `SCOPE_EXPANSION_RATIONALE_VAGUE`           | `warn`                        | Expansion rationale uses only generic wording.                         |
 | `DEPENDENCY_REQUIREMENT_CONFLICT`           | `approval_required`           | A required package is absent while new dependencies are unapproved.    |
 | `DEPENDENCY_SUBSTITUTION_REQUIRES_APPROVAL` | `approval_required`           | A required package is replaced without an approval marker.             |
+| `CANONICAL_REQUIREMENT_MISSING`             | `warn`                        | A required canonical task requirement is not addressed by the plan.    |
+| `CANONICAL_PROHIBITION_CONFLICT`            | `warn`                        | A plan conflicts with a canonical task prohibition.                    |
+| `CANONICAL_REQUIREMENT_CONFLICT`            | `warn`                        | Canonical task revisions contain a material requirement conflict.      |
 | `RISKY_CHANGE_RATIONALE_REQUIRED`           | `warn` or `approval_required` | A risky file category lacks a named reason.                            |
 | `PLAN_SCOPE_EXCEEDS_BUDGET`                 | `warn`                        | Proposed file count exceeds the soft maximum.                          |
 | `PLAN_HARD_GATE_VIOLATION`                  | `approval_required`           | A proposed path crosses a legacy protected check.                      |

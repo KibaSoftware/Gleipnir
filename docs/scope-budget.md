@@ -21,7 +21,7 @@ Classification is not the final authority for scope. It is an early, reviewable 
 
 ## Workflow Profiles
 
-Gleip 0.8.2 assigns an internal workflow profile to calibrate ceremony:
+Gleip assigns an internal workflow profile to calibrate ceremony:
 
 - `documentation_only`: one- or two-file non-executable documentation/context updates. No plan or tests are required by default; verification is content review, formatting/generated-file checks where applicable, and diff validation.
 - `local_behavior_change`: contained source behavior work in one implementation area. A short plan and focused verification are expected.
@@ -61,12 +61,25 @@ documentation use `expectedPaths`, `approvalRequiredChanges`,
 
 ## Declared Task Breadth
 
-The task contract is the primary boundary for scope drift. Gleip detects affirmative,
-explicit breadth from named files, directories, subsystems, categories, and work
-lists. Categories include source, CLI, planner, tests, docs, README, changelog,
-config, package metadata/version files, smoke coverage, and expected output areas.
-It adds only those declared areas to expected paths and scales expected file and line
-ranges by the number of named areas.
+The canonical task contract is the primary boundary for scope drift. Gleip detects
+affirmative, explicit breadth from named files, directories, subsystems,
+categories, and work lists in the canonical task and active amendments. Categories
+include source, CLI, planner, tests, docs, README, changelog, config, package
+metadata/version files, smoke coverage, and expected output areas. It adds only
+those declared areas to expected paths and scales expected file and line ranges by
+the number of named areas.
+
+Scope precedence is:
+
+1. Explicit canonical task scope.
+2. Active user amendments.
+3. Accepted plan targets.
+4. Strong repository-derived scope.
+5. Weak discovery candidates.
+
+Repository discovery may add helpful context, but it must not remove explicit
+canonical paths or constraints. The derived brief is never the source of authority
+for narrowing scope.
 
 Task size is not inferred from magic release or version words. A task spanning
 planner, CLI, tests, docs, and an output artifact may use those declared areas
@@ -97,6 +110,12 @@ expansion remains advisory because the heuristic budget can be narrow. Protected
 checks identify changes needing cleanup, focused action, or approval, such as new
 dependencies, CI changes, skipped or deleted tests, and secrets. They guide the
 next action without declaring the task invalid.
+
+For broad, subsystem, cross-cutting, and repository-wide work, changed-file count
+also scales line-count advisories. This keeps multi-surface feature work from
+being judged by a narrow local-change ceiling while preserving the same protected
+checks for dependencies, CI, secrets, migrations, auth/security, infrastructure,
+and test integrity.
 
 Gleip also records generic breadth as `local`, `feature`, `subsystem`,
 `cross_cutting`, or `repository_wide`. Breadth adjusts advisory thresholds, but it

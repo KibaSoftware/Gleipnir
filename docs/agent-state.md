@@ -2,7 +2,7 @@
 
 Gleip stores repo-local enabled/disabled state in `.gleip/state.json`.
 
-When `enabled` is `true`, coding agents should run `npx --no-install gleip preflight "<task>"` before editing code, follow the generated brief and scope budget, and run `npx --no-install gleip check --incremental` plus `npx --no-install gleip status --compact` before the final response.
+When `enabled` is `true`, coding agents should run `npx --no-install gleip preflight "<task>"` before editing code, read `.gleip/canonical-task.json` as authoritative, use the generated brief as an index, follow the scope budget, and run `npx --no-install gleip check --incremental` plus `npx --no-install gleip status --compact` before the final response.
 
 When `enabled` is `false`, coding agents should not silently proceed. They should ask:
 

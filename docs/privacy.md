@@ -14,6 +14,7 @@ Gleip does not make network calls, does not call LLM APIs, does not require an a
 - Dependency file paths
 - CI file paths
 - `.gleip/session` files
+- `.gleip/canonical-task.json`
 
 ## What Gleip Writes Locally
 
@@ -23,6 +24,7 @@ Gleip does not make network calls, does not call LLM APIs, does not require an a
 - `CLAUDE.md` Gleip-managed section
 - `GEMINI.md` Gleip-managed section
 - `.gleip/session.json`
+- `.gleip/canonical-task.json`
 - `.gleip/brief.md`
 - `.gleip/scope-budget.json`
 - `.gleip/status.md`
@@ -33,6 +35,11 @@ Gleip does not make network calls, does not call LLM APIs, does not require an a
 - `.gleip/check-cache.json`
 
 The `.gleip/` directory contains local session state and should generally be ignored.
+
+`.gleip/canonical-task.json` stores the exact task text received by Gleip, ordered
+amendments, hashes, byte/character counts, and a derived requirement ledger. It is
+repository-local and ignored with the rest of `.gleip/`. The derived brief avoids
+duplicating the full task text and is not authoritative.
 
 The incremental check cache stores only local fingerprints, normalized finding data, and result metadata. It does not duplicate source files or diff contents.
 

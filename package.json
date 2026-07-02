@@ -1,6 +1,6 @@
 {
   "name": "gleip",
-  "version": "0.8.2",
+  "version": "0.8.4",
   "description": "Local-only guidance that AI coding agents use automatically.",
   "license": "Apache-2.0",
   "repository": {
@@ -56,7 +56,7 @@
   },
   "scripts": {
     "gleip": "tsx packages/cli/src/index.ts",
-    "build": "pnpm -r build",
+    "build": "pnpm --filter @gleip/core build && pnpm --filter @gleip/config build && pnpm --filter @gleip/adapters build && pnpm --filter @gleip/github-action build && pnpm --filter @gleip/controller build && pnpm --filter @gleip/planner build && pnpm --filter ./packages/cli build",
     "clean": "node scripts/clean.mjs",
     "test": "pnpm -r test",
     "lint": "pnpm -r lint",

@@ -35,6 +35,7 @@ import {
   classifyTask as classifyBundledTask,
   createScopeBudget as createBundledScopeBudget,
   discoverRepoContext as discoverBundledRepoContext,
+  extractRequirementLedger,
   generateImplementationBrief as generateBundledImplementationBrief,
   validateAgentPlan as validateBundledAgentPlan
 } from "../../planner/src/index.js";
@@ -51,7 +52,7 @@ const LEGACY_ARGUS_WORKFLOW_SECTION_END = "<!-- ARGUS:AGENT-WORKFLOW:END -->";
 const SUPPORTED_AGENT_TARGETS = ["auto", "generic", "codex", "claude", "gemini"] as const;
 const AGENT_INSTRUCTION_TARGETS = ["generic", "claude", "gemini"] as const;
 const GLEIP_VERSION = readPackageVersion();
-const REPORT_SCHEMA_VERSION = "1.2.0";
+const REPORT_SCHEMA_VERSION = "1.3.0";
 const CHECK_CACHE_SCHEMA_VERSION = 2;
 const CI_BLOCKING_FINDING_CODES = new Set([
   "TEST_SKIPPED",
@@ -195,6 +196,7 @@ interface ValidatePlanOptions {
 }
 
 interface PreflightOptions {
+  amend?: boolean;
   file?: string;
 }
 
@@ -254,6 +256,8 @@ interface CreateScopeBudgetInput {
 
 interface GenerateImplementationBriefInput extends CreateScopeBudgetInput {
   scopeBudget: ScopeBudget;
+  canonicalTask?: CanonicalTaskReference;
+  requirementLedger?: RequirementLedger;
 }
 
 interface ValidateAgentPlanInput {
@@ -263,6 +267,7 @@ interface ValidateAgentPlanInput {
   cwd?: string;
   taskText?: string;
   contextFiles?: string[];
+  requirementLedger?: RequirementLedger;
 }
 
 interface CollectWorkingTreeDiffOptions {
@@ -497,6 +502,7 @@ interface PlanValidationResult {
   nextAction: string;
   parsedPlan: AgentPlan;
   targetClassifications?: ScopeTargetClassification[];
+  requirementCoverage?: PlanRequirementCoverage;
 }
 
 type PlanValidationRecord = PlanValidationResult & { validatedAt?: string };
@@ -518,6 +524,7 @@ interface GenerateSessionReportInput {
   acceptedPlanValidation?: PlanValidationResult;
   statusContent?: string;
   missingArtifacts?: string[];
+  requirementLedger?: RequirementLedger;
 }
 
 interface SessionReport {
@@ -558,6 +565,27 @@ interface SessionReport {
       confidence: "low" | "medium" | "high";
     }>;
   };
+  requirements: {
+    summary: {
+      total: number;
+      mandatory: number;
+      mandatorySatisfied: number;
+      mandatoryUnresolved: number;
+      prohibited: number;
+      prohibitedSatisfied: number;
+      prohibitedViolated: number;
+      advisory: number;
+    };
+    items: Array<{
+      id: string;
+      sourceText: string;
+      obligation: "required" | "prohibited" | "optional" | "suggestion" | "informational";
+      category: string;
+      status: "satisfied" | "unresolved" | "violated" | "advisory" | "not_applicable";
+      evidence: string[];
+      relatedPaths: string[];
+    }>;
+  };
   finalResponse: {
     markdown: string;
     unresolvedWarnings: number;
@@ -567,6 +595,7 @@ interface SessionReport {
     type:
       | "scope"
       | "plan"
+      | "requirement"
       | "drift"
       | "test_integrity"
       | "output"
@@ -600,6 +629,8 @@ interface ArtifactMetadata {
 
 interface GleipSession {
   sessionId?: string;
+  canonicalTask?: CanonicalTaskSessionReference;
+  requirementLedgerSummary?: RequirementLedgerSummary;
   classification?: TaskClassification;
   latestValidationAttempt?: PlanValidationRecord;
   latestSuccessfulValidation?: PlanValidationRecord;
@@ -612,6 +643,122 @@ interface GleipSession {
   task?: string;
   taskFile?: string;
   [key: string]: unknown;
+}
+
+interface CanonicalTaskReference {
+  authority: "canonical";
+  taskId: string;
+  activeRevisionId: string;
+  contentHash: string;
+  artifactPath: string;
+}
+
+interface CanonicalTaskSessionReference extends CanonicalTaskReference {
+  byteCount: number;
+  characterCount: number;
+  revisionCount: number;
+  source: "inline" | "file" | "amendment" | "compatibility_session_task" | "compatibility_brief";
+}
+
+interface CanonicalTaskArtifact {
+  schemaVersion: "1.0.0";
+  authority: "canonical";
+  immutable: true;
+  sessionId: string;
+  taskId: string;
+  activeRevisionId: string;
+  effectiveContent: string;
+  contentHash: string;
+  byteCount: number;
+  characterCount: number;
+  createdAt: string;
+  updatedAt: string;
+  revisions: CanonicalTaskRevision[];
+  requirementLedger: RequirementLedger;
+  provenance: {
+    complete: boolean;
+    source: CanonicalTaskSessionReference["source"];
+    note?: string;
+  };
+}
+
+interface CanonicalTaskRevision {
+  schemaVersion: "1.0.0";
+  authority: "canonical";
+  immutable: true;
+  sessionId: string;
+  taskId: string;
+  revisionId: string;
+  revisionNumber: number;
+  source: CanonicalTaskSessionReference["source"];
+  content: string;
+  contentHash: string;
+  byteCount: number;
+  characterCount: number;
+  createdAt: string;
+  previousRevisionId?: string;
+  status: "active" | "superseded";
+}
+
+interface RequirementLedger {
+  schemaVersion: "1.0.0";
+  authority: "derived";
+  canonicalTaskHash?: string;
+  offsetEncoding: "utf16";
+  requirements: RequirementLedgerItem[];
+  conflicts: Array<{
+    id: string;
+    requirementIds: string[];
+    reason: string;
+    severity: "advisory" | "blocking";
+  }>;
+  generatedAt?: string;
+}
+
+interface RequirementLedgerItem {
+  id: string;
+  sourceText: string;
+  canonicalRevisionId: string;
+  sourceStart: number;
+  sourceEnd: number;
+  offsetEncoding: "utf16";
+  category: string;
+  obligation: "required" | "prohibited" | "optional" | "suggestion" | "informational";
+  status: "active" | "superseded" | "ambiguous";
+  confidence: string;
+  explicit: boolean;
+  relatedPaths: string[];
+  relatedVerification?: string;
+  supersededBy?: string;
+}
+
+interface RequirementLedgerSummary {
+  schemaVersion: "1.0.0";
+  authority: "derived";
+  requirementCount: number;
+  mandatoryCount: number;
+  prohibitedCount: number;
+  optionalCount: number;
+  conflictCount: number;
+}
+
+interface PlanRequirementCoverage {
+  requirements: Array<{
+    requirementId: string;
+    status:
+      | "addressed"
+      | "partially_addressed"
+      | "explicitly_deferred"
+      | "not_applicable"
+      | "missing"
+      | "conflicting"
+      | "ambiguous";
+    reason: string;
+    evidence?: string[];
+  }>;
+  missingRequired: string[];
+  conflictingRequirements: string[];
+  deferredRequirements: string[];
 }
 
 interface FindingDelta {
@@ -740,6 +887,7 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
     .description("Create a local-only brief, scope budget, and status baseline for a task.")
     .argument("[task...]", "Task the coding agent is about to implement.")
     .option("--file <path>", "Read the full task text from a file.")
+    .option("--amend", "Append this task text as an ordered amendment to the active session.")
     .addHelpText(
       "after",
       [
@@ -758,6 +906,7 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
     .description("Alias for gleip preflight.")
     .argument("[task...]", "Task the coding agent is about to implement.")
     .option("--file <path>", "Read the full task text from a file.")
+    .option("--amend", "Append this task text as an ordered amendment to the active session.")
     .action(async (task: string[] | undefined, commandOptions: PreflightOptions) => {
       await runPreflightCommand(runtime, task ?? [], commandOptions);
     });
@@ -1055,7 +1204,9 @@ async function runPreflightCommand(
       return;
     }
 
-    await preflight(runtime, task, normalizeRepoRelativePath(runtime.cwd, taskPath));
+    await preflight(runtime, task, normalizeRepoRelativePath(runtime.cwd, taskPath), {
+      amend: options.amend === true
+    });
     return;
   }
 
@@ -1067,34 +1218,86 @@ async function runPreflightCommand(
     return;
   }
 
-  await preflight(runtime, inlineTask);
+  await preflight(runtime, inlineTask, undefined, { amend: options.amend === true });
 }
 
-async function preflight(runtime: CommandRuntime, task: string, taskFile?: string): Promise<void> {
+async function preflight(
+  runtime: CommandRuntime,
+  task: string,
+  taskFile?: string,
+  options: { amend?: boolean } = {}
+): Promise<void> {
   const state = loadGleipState(runtime.cwd);
+  const createdAt = runtime.now().toISOString();
+  const sessionPath = join(runtime.cwd, ".gleip", "session.json");
+  const existingSession =
+    options.amend === true ? readJsonFile<GleipSession>(sessionPath).value : undefined;
+
+  if (options.amend === true && existingSession === undefined) {
+    runtime.stdout(
+      '[NO_ACTIVE_SESSION] action_required: No active Gleip session found. Run `npx gleip preflight "<task>"` before using --amend.'
+    );
+    runtime.setExitCode(1);
+    return;
+  }
+
+  const sessionId =
+    options.amend === true
+      ? existingSession?.sessionId ?? createSessionId(createdAt)
+      : createSessionId(createdAt);
+  const compatibilityBrief =
+    options.amend === true ? readTextFile(join(runtime.cwd, ".gleip", "brief.md")) : undefined;
+  const existingCanonical =
+    options.amend === true
+      ? readCanonicalTaskArtifact(runtime.cwd) ??
+        canonicalTaskFromCompatibleSession(existingSession, createdAt, compatibilityBrief)
+      : undefined;
+  const canonicalTask =
+    options.amend === true && existingCanonical !== undefined
+      ? appendCanonicalTaskRevision(existingCanonical, {
+          content: task,
+          createdAt,
+          source: "amendment"
+        })
+      : createCanonicalTaskArtifact({
+          content: task,
+          createdAt,
+          sessionId,
+          source: taskFile === undefined ? "inline" : "file"
+        });
+  const effectiveTask = canonicalTask.effectiveContent;
   const config = (await runtime.loadConfig(runtime.cwd)) as GleipConfigLike;
-  const classification = await runtime.classifyTask(task);
+  const classification = await runtime.classifyTask(effectiveTask);
+  const contextFiles = Array.from(
+    new Set(
+      [
+        ...(existingSession?.taskFile === undefined ? [] : [existingSession.taskFile]),
+        ...(taskFile === undefined ? [] : [taskFile])
+      ].map(normalizePlanPath)
+    )
+  );
   const repoContext = await runtime.discoverRepoContext({
     cwd: runtime.cwd,
-    task,
-    contextFiles: taskFile === undefined ? [] : [taskFile],
+    task: effectiveTask,
+    contextFiles,
     config,
     classification
   });
   const scopeBudget = await runtime.createScopeBudget({
-    task,
+    task: effectiveTask,
     classification,
     repoContext,
     config
   });
   const implementationBrief = await runtime.generateImplementationBrief({
-    task,
+    task: effectiveTask,
     classification,
     repoContext,
     scopeBudget,
+    canonicalTask: canonicalTaskReference(canonicalTask),
+    requirementLedger: canonicalTask.requirementLedger,
     config
   });
-  const createdAt = runtime.now().toISOString();
   const baselineDiff = await runtime.collectWorkingTreeDiff({ cwd: runtime.cwd });
 
   if (!baselineDiff.isGitRepo) {
@@ -1102,21 +1305,31 @@ async function preflight(runtime: CommandRuntime, task: string, taskFile?: strin
     return;
   }
 
-  const baseline = await runtime.createSessionBaseline(baselineDiff, createdAt);
+  const existingBaseline = options.amend === true ? readBaseline(runtime.cwd) : undefined;
+  const baseline =
+    existingBaseline ?? (await runtime.createSessionBaseline(baselineDiff, createdAt));
   const initialDriftResult = emptyDriftResult();
   const brief = addBaselineNote(implementationBrief, baseline);
-  const sessionId = createSessionId(createdAt);
 
   ensureGleipGitignore(runtime.cwd);
   ensureGleipDirectory(runtime.cwd);
+  writeCanonicalTaskArtifact(runtime.cwd, canonicalTask);
   writeFileSync(
-    join(runtime.cwd, ".gleip", "session.json"),
+    sessionPath,
     `${JSON.stringify(
       {
+        ...(existingSession ?? {}),
         version: 1,
+        schemaVersion: "1.3.0",
         sessionId,
-        task,
-        ...(taskFile === undefined ? {} : { taskFile }),
+        task: effectiveTask,
+        canonicalTask: canonicalTaskSessionReference(canonicalTask),
+        requirementLedgerSummary: requirementLedgerSummary(canonicalTask.requirementLedger),
+        ...(taskFile === undefined
+          ? existingSession?.taskFile === undefined
+            ? {}
+            : { taskFile: existingSession.taskFile }
+          : { taskFile }),
         classification,
         repoContext,
         baseline: summarizeBaseline(baseline),
@@ -1130,10 +1343,12 @@ async function preflight(runtime: CommandRuntime, task: string, taskFile?: strin
       2
     )}\n`
   );
-  writeFileSync(
-    join(runtime.cwd, ".gleip", "baseline.json"),
-    `${JSON.stringify(baseline, null, 2)}\n`
-  );
+  if (existingBaseline === undefined) {
+    writeFileSync(
+      join(runtime.cwd, ".gleip", "baseline.json"),
+      `${JSON.stringify(baseline, null, 2)}\n`
+    );
+  }
   writeFileSync(join(runtime.cwd, ".gleip", "brief.md"), brief);
   writeFileSync(join(runtime.cwd, ".gleip", "scope-budget.json"), scopeBudgetContent(scopeBudget));
   writeFileSync(
@@ -1153,8 +1368,10 @@ async function preflight(runtime: CommandRuntime, task: string, taskFile?: strin
   );
 
   const output = [
-    "Gleip preflight complete · brief and scope budget ready",
-    "Artifacts: .gleip/brief.md, .gleip/scope-budget.json",
+    options.amend === true
+      ? "Gleip task amendment recorded · brief and scope budget refreshed"
+      : "Gleip preflight complete · brief and scope budget ready",
+    "Artifacts: .gleip/canonical-task.json, .gleip/brief.md, .gleip/scope-budget.json",
     scopeBudget.planRequired === false
       ? "Next: make the documentation change, review the diff, then run status"
       : "Next: validate plan before editing"
@@ -1218,12 +1435,28 @@ async function validatePlan(
 
   const config = (await runtime.loadConfig(runtime.cwd)) as GleipConfigLike;
   const session = readJsonFile<GleipSession>(sessionPath);
+  const compatibilityCanonical =
+    readCanonicalTaskArtifact(runtime.cwd) ??
+    canonicalTaskFromCompatibleSession(
+      session.value,
+      runtime.now().toISOString(),
+      readTextFile(join(runtime.cwd, ".gleip", "brief.md"))
+    );
+
+  if (compatibilityCanonical !== undefined && readCanonicalTaskArtifact(runtime.cwd) === undefined) {
+    ensureGleipGitignore(runtime.cwd);
+    writeCanonicalTaskArtifact(runtime.cwd, compatibilityCanonical);
+  }
+
   const result = await runtime.validateAgentPlan({
     planText: planInput.text,
     scopeBudget,
     config,
     cwd: runtime.cwd,
-    taskText: session.value?.task ?? "",
+    taskText: compatibilityCanonical?.effectiveContent ?? session.value?.task ?? "",
+    ...(compatibilityCanonical === undefined
+      ? {}
+      : { requirementLedger: compatibilityCanonical.requirementLedger }),
     contextFiles: planInput.planFile === undefined ? [] : [planInput.planFile]
   });
 
@@ -1258,6 +1491,15 @@ async function validatePlan(
       `${JSON.stringify(
         {
           ...session.value,
+          ...(compatibilityCanonical === undefined
+            ? {}
+            : {
+                task: compatibilityCanonical.effectiveContent,
+                canonicalTask: canonicalTaskSessionReference(compatibilityCanonical),
+                requirementLedgerSummary: requirementLedgerSummary(
+                  compatibilityCanonical.requirementLedger
+                )
+              }),
           ...(refinedClassification === undefined ? {} : { classification: refinedClassification }),
           scopeBudgetSummary: summarizeScopeBudget(refinedScopeBudget),
           latestValidationAttempt: validationRecord,
@@ -1395,7 +1637,14 @@ async function printStatus(
 
   const session = JSON.parse(readFileSync(sessionPath, "utf8")) as GleipSession;
   const updatedAt = runtime.now().toISOString();
-  const task = session.task ?? "Unknown task";
+  const canonicalTask =
+    readCanonicalTaskArtifact(runtime.cwd) ??
+    canonicalTaskFromCompatibleSession(
+      session,
+      updatedAt,
+      readTextFile(join(runtime.cwd, ".gleip", "brief.md"))
+    );
+  const task = canonicalTask?.effectiveContent ?? session.task ?? "Unknown task";
   const classification = session.classification ?? (await runtime.classifyTask(task));
   const repoContext = session.repoContext ?? emptyRepoContext();
   const scopePlanValidation = latestSuccessfulPlanValidation(session);
@@ -1478,11 +1727,21 @@ async function printStatus(
 
   if (options.updateSession !== false) {
     ensureGleipGitignore(runtime.cwd);
+    if (canonicalTask !== undefined && readCanonicalTaskArtifact(runtime.cwd) === undefined) {
+      writeCanonicalTaskArtifact(runtime.cwd, canonicalTask);
+    }
     writeFileSync(
       sessionPath,
       `${JSON.stringify(
         {
           ...session,
+          ...(canonicalTask === undefined
+            ? {}
+            : {
+                task: canonicalTask.effectiveContent,
+                canonicalTask: canonicalTaskSessionReference(canonicalTask),
+                requirementLedgerSummary: requirementLedgerSummary(canonicalTask.requirementLedger)
+              }),
           classification,
           repoContext,
           scopeBudgetSummary: summarizeScopeBudget(scopeBudget),
@@ -1551,9 +1810,20 @@ async function printReport(runtime: CommandRuntime, options: ReportOptions): Pro
     join(runtime.cwd, ".gleip", "baseline.json")
   );
   const statusResult = readTextFile(join(runtime.cwd, ".gleip", "status.md"));
+  const canonicalTask =
+    readCanonicalTaskArtifact(runtime.cwd) ??
+    canonicalTaskFromCompatibleSession(
+      sessionResult.value,
+      generatedAt,
+      readTextFile(join(runtime.cwd, ".gleip", "brief.md"))
+    );
 
   if (sessionResult.value === undefined) {
     missingArtifacts.push("session.json");
+  }
+
+  if (sessionResult.value !== undefined && canonicalTask === undefined) {
+    missingArtifacts.push("canonical-task.json");
   }
 
   if (scopeBudgetResult.value === undefined) {
@@ -1618,6 +1888,7 @@ async function printReport(runtime: CommandRuntime, options: ReportOptions): Pro
     baseline: filtered.baseline,
     ...(latestAttempt === undefined ? {} : { planValidation: latestAttempt }),
     ...(acceptedValidation === undefined ? {} : { acceptedPlanValidation: acceptedValidation }),
+    ...(canonicalTask === undefined ? {} : { requirementLedger: canonicalTask.requirementLedger }),
     ...(statusResult === undefined || !isCurrentStatusContent(statusResult, repositoryFingerprint)
       ? {}
       : { statusContent: statusResult }),
@@ -1627,6 +1898,9 @@ async function printReport(runtime: CommandRuntime, options: ReportOptions): Pro
 
   ensureGleipGitignore(runtime.cwd);
   ensureGleipDirectory(runtime.cwd);
+  if (canonicalTask !== undefined && readCanonicalTaskArtifact(runtime.cwd) === undefined) {
+    writeCanonicalTaskArtifact(runtime.cwd, canonicalTask);
+  }
   writeFileSync(join(runtime.cwd, ".gleip", "report.json"), `${JSON.stringify(report, null, 2)}\n`);
   writeFileSync(join(runtime.cwd, ".gleip", "report.md"), markdown);
 
@@ -2571,24 +2845,27 @@ function gleipSectionContent(target: AgentInstructionTarget): string {
 - If the local package command cannot be run, ask: "Gleip is configured for this repository, but I could not run it through the local package command. Do you want me to continue without Gleip guidance? y/n". Wait for confirmation.
 - Before editing code, check \`.gleip/state.json\`. If \`enabled\` is false, ask: "Gleip is currently inactive. Do you want me to continue without Gleip guidance? y/n". Wait for confirmation.
 - If enabled, run \`npx --no-install gleip preflight "<user task>"\`.
-- Read \`.gleip/brief.md\` and \`.gleip/scope-budget.json\`.
+- Read \`.gleip/canonical-task.json\` first. Treat it as the authoritative task contract.
+- Read \`.gleip/brief.md\` as a derived navigation aid and \`.gleip/scope-budget.json\` as scope guidance.
+- If the brief omits or conflicts with the canonical task, follow the canonical task.
+- Check active task revisions and amendments in \`.gleip/canonical-task.json\` before planning.
 - For a non-trivial change, draft a short implementation plan and run \`npx --no-install gleip validate-plan "<plan>"\` before implementing it.
 - Treat \`aligned\` as ready, review \`advisory\`, clarify \`needs_clarification\`, clean up \`needs_cleanup\`, and request approval for \`needs_approval\`.
 - During implementation, use the expected paths in \`.gleip/scope-budget.json\` as guidance and explain necessary expansion.
-- Keep changes minimal and scoped to the requested task.
+- Keep changes minimal and scoped to the canonical task.
 - Do not edit or commit files under \`.gleip/\` unless the user explicitly asks.
 - During iteration, run the narrowest existing validation that covers the changed area.
 - Do not rerun a full validation suite while repository state is unchanged.
-- Before final completion, run the complete required validation once. Rerun it only after changes that can invalidate the result.
+- Before final completion, verify every mandatory canonical requirement with available local evidence, then run the complete required validation once. Rerun it only after changes that can invalidate the result.
 - Before claiming completion, run \`npx --no-install gleip check --incremental\`.
 - Run \`npx --no-install gleip status --compact\` whenever Gleip's expected next action is unclear.
 - Address cleanup and action-required findings before finalizing. Request approval for approval-required changes.
 - Before the final response, run \`npx --no-install gleip status --compact\`. Report \`advisory\`, \`needs_attention\`, \`needs_cleanup\`, or \`needs_approval\` clearly.
 - Before the final response, run or read \`npx --no-install gleip report\`.
 - Treat \`.gleip/report.json\` and \`.gleip/report.md\` as the source of truth for Gleip final status.
-- Include only the generated compact block under \`Recommended final response\`; do not paste the full report.
+- Include the compact \`Recommended final response\` block when it adds useful review evidence; do not paste the full report.
 - The generated block contains scope adherence, drift risk, repository hygiene, output discipline, estimated token waste avoided, and unresolved warnings.
-- Final response must also include files changed, tests run, and risks.
+- Final response should concisely include changed files or summary, verification run, residual risks, and Gleip status when relevant.
 
 ## Gleip working standard
 
@@ -2597,12 +2874,11 @@ function gleipSectionContent(target: AgentInstructionTarget): string {
 Do not assume, hide confusion, or silently choose between ambiguous interpretations.
 
 Before implementing:
-- State assumptions explicitly.
-- If uncertain, ask before editing.
-- If multiple interpretations exist, present them instead of choosing silently.
+- State material assumptions explicitly.
+- Resolve ordinary ambiguity from local repository evidence when the risk is low.
+- Ask before editing only when requirements conflict, protected changes need approval, user decisions are missing, or safety-sensitive scope is unclear.
 - If a simpler approach exists, say so.
 - Push back when the requested approach appears overcomplicated, risky, or broader than needed.
-- If something is unclear, stop, name what is confusing, and ask.
 
 ### 2. Simplicity first
 
@@ -2647,14 +2923,15 @@ For multi-step tasks, state a brief plan in this format:
 
 - [ ] Check \`.gleip/state.json\`
 - [ ] Run \`npx --no-install gleip preflight "<task>"\`
-- [ ] Read \`.gleip/brief.md\`
+- [ ] Read \`.gleip/canonical-task.json\`
+- [ ] Use \`.gleip/brief.md\` as an index, not a replacement
 - [ ] Validate plan with \`npx --no-install gleip validate-plan\`
 - [ ] Implement within \`.gleip/scope-budget.json\`
 - [ ] Run narrow validation while iterating and complete required validation once before final completion
 - [ ] Run \`npx --no-install gleip check --incremental\`
 - [ ] Run \`npx --no-install gleip status --compact\`
 - [ ] Run or read \`npx --no-install gleip report\`
-- [ ] Include only the generated compact Gleip block, plus files changed, tests run, and risks
+- [ ] Include concise review evidence: changed files or summary, tests run, risks, and Gleip status
 ${GLEIP_SECTION_END}`;
 }
 
@@ -2733,7 +3010,7 @@ function defaultGleipReadmeContent(): string {
 
 This repository uses Gleip as a local-only guidance tool for AI coding agents. Gleip is not a permission system and performs no external review.
 
-Agents should run \`npx --no-install gleip preflight "<task>"\` before editing code, validate a short plan with \`npx --no-install gleip validate-plan "<plan>"\`, use the generated expected scope as guidance, then run \`npx --no-install gleip check --incremental\`, \`npx --no-install gleip status --compact\`, and \`npx --no-install gleip report\` before the final response.
+Agents should run \`npx --no-install gleip preflight "<task>"\` before editing code, read \`.gleip/canonical-task.json\` as the authoritative task contract, use \`.gleip/brief.md\` as a derived navigation aid, validate a short plan with \`npx --no-install gleip validate-plan "<plan>"\`, use the generated expected scope as guidance, then run \`npx --no-install gleip check --incremental\`, \`npx --no-install gleip status --compact\`, and \`npx --no-install gleip report\` before the final response.
 
 To remove Gleip from this repository, run \`npx --no-install gleip uninstall\`, then run \`npm uninstall gleip\` to remove the package dependency.
 `;
@@ -2761,6 +3038,289 @@ function readBaseline(cwd: string): SessionBaseline | undefined {
   }
 
   return JSON.parse(readFileSync(baselinePath, "utf8")) as SessionBaseline;
+}
+
+function canonicalTaskPath(cwd: string): string {
+  return join(cwd, ".gleip", "canonical-task.json");
+}
+
+function createCanonicalTaskArtifact(input: {
+  content: string;
+  createdAt: string;
+  sessionId: string;
+  source: CanonicalTaskSessionReference["source"];
+}): CanonicalTaskArtifact {
+  const taskId = `task-${shortHash(input.sessionId)}`;
+  const revision = createCanonicalTaskRevision({
+    content: input.content,
+    createdAt: input.createdAt,
+    revisionNumber: 1,
+    sessionId: input.sessionId,
+    source: input.source,
+    taskId
+  });
+
+  return canonicalTaskArtifactFromRevisions({
+    createdAt: input.createdAt,
+    provenance: { complete: true, source: input.source },
+    revisions: [revision],
+    sessionId: input.sessionId,
+    taskId,
+    updatedAt: input.createdAt
+  });
+}
+
+function appendCanonicalTaskRevision(
+  artifact: CanonicalTaskArtifact,
+  input: {
+    content: string;
+    createdAt: string;
+    source: CanonicalTaskSessionReference["source"];
+  }
+): CanonicalTaskArtifact {
+  const revision = createCanonicalTaskRevision({
+    content: input.content,
+    createdAt: input.createdAt,
+    previousRevisionId: artifact.activeRevisionId,
+    revisionNumber: artifact.revisions.length + 1,
+    sessionId: artifact.sessionId,
+    source: input.source,
+    taskId: artifact.taskId
+  });
+  const revisions = artifact.revisions.map((candidate) => ({
+    ...candidate,
+    status: "superseded" as const
+  }));
+
+  return canonicalTaskArtifactFromRevisions({
+    createdAt: artifact.createdAt,
+    provenance: artifact.provenance,
+    revisions: [...revisions, revision],
+    sessionId: artifact.sessionId,
+    taskId: artifact.taskId,
+    updatedAt: input.createdAt
+  });
+}
+
+function createCanonicalTaskRevision(input: {
+  content: string;
+  createdAt: string;
+  previousRevisionId?: string;
+  revisionNumber: number;
+  sessionId: string;
+  source: CanonicalTaskSessionReference["source"];
+  taskId: string;
+}): CanonicalTaskRevision {
+  const contentHash = hashCanonicalContent(input.content);
+
+  return {
+    schemaVersion: "1.0.0",
+    authority: "canonical",
+    immutable: true,
+    sessionId: input.sessionId,
+    taskId: input.taskId,
+    revisionId: `revision-${input.revisionNumber}-${shortHash(
+      `${input.sessionId}:${input.revisionNumber}:${contentHash}`
+    )}`,
+    revisionNumber: input.revisionNumber,
+    source: input.source,
+    content: input.content,
+    contentHash,
+    byteCount: Buffer.byteLength(input.content, "utf8"),
+    characterCount: Array.from(input.content).length,
+    createdAt: input.createdAt,
+    ...(input.previousRevisionId === undefined ? {} : { previousRevisionId: input.previousRevisionId }),
+    status: "active"
+  };
+}
+
+function canonicalTaskArtifactFromRevisions(input: {
+  createdAt: string;
+  provenance: CanonicalTaskArtifact["provenance"];
+  revisions: CanonicalTaskRevision[];
+  sessionId: string;
+  taskId: string;
+  updatedAt: string;
+}): CanonicalTaskArtifact {
+  const activeRevision = input.revisions.at(-1);
+  const effectiveContent = input.revisions.map((revision) => revision.content).join("\n\n");
+  const contentHash = hashCanonicalContent(effectiveContent);
+  const requirementLedger = extractRequirementLedger({
+    taskText: effectiveContent,
+    canonicalTaskHash: contentHash,
+    revisions: input.revisions.map((revision) => ({
+      revisionId: revision.revisionId,
+      revisionNumber: revision.revisionNumber,
+      content: revision.content
+    }))
+  }) as RequirementLedger;
+
+  return {
+    schemaVersion: "1.0.0",
+    authority: "canonical",
+    immutable: true,
+    sessionId: input.sessionId,
+    taskId: input.taskId,
+    activeRevisionId: activeRevision?.revisionId ?? "revision-0",
+    effectiveContent,
+    contentHash,
+    byteCount: Buffer.byteLength(effectiveContent, "utf8"),
+    characterCount: Array.from(effectiveContent).length,
+    createdAt: input.createdAt,
+    updatedAt: input.updatedAt,
+    revisions: input.revisions,
+    requirementLedger,
+    provenance: input.provenance
+  };
+}
+
+function readCanonicalTaskArtifact(cwd: string): CanonicalTaskArtifact | undefined {
+  const result = readJsonFile<unknown>(canonicalTaskPath(cwd));
+
+  return isValidCanonicalTaskArtifact(result.value) ? result.value : undefined;
+}
+
+function isValidCanonicalTaskArtifact(value: unknown): value is CanonicalTaskArtifact {
+  if (!isRecord(value) || !Array.isArray(value.revisions) || !isRecord(value.requirementLedger)) {
+    return false;
+  }
+
+  if (
+    value.schemaVersion !== "1.0.0" ||
+    value.authority !== "canonical" ||
+    value.immutable !== true ||
+    typeof value.sessionId !== "string" ||
+    typeof value.taskId !== "string" ||
+    typeof value.activeRevisionId !== "string" ||
+    typeof value.effectiveContent !== "string" ||
+    typeof value.contentHash !== "string"
+  ) {
+    return false;
+  }
+
+  if (hashCanonicalContent(value.effectiveContent) !== value.contentHash) {
+    return false;
+  }
+
+  return value.revisions.every(isCanonicalTaskRevision);
+}
+
+function isCanonicalTaskRevision(value: unknown): value is CanonicalTaskRevision {
+  return (
+    isRecord(value) &&
+    value.schemaVersion === "1.0.0" &&
+    value.authority === "canonical" &&
+    value.immutable === true &&
+    typeof value.revisionId === "string" &&
+    typeof value.revisionNumber === "number" &&
+    typeof value.content === "string" &&
+    typeof value.contentHash === "string" &&
+    hashCanonicalContent(value.content) === value.contentHash
+  );
+}
+
+function canonicalTaskFromCompatibleSession(
+  session: GleipSession | undefined,
+  createdAt: string,
+  fallbackBrief?: string
+): CanonicalTaskArtifact | undefined {
+  const sessionId = session?.sessionId ?? createSessionId(createdAt);
+
+  if (typeof session?.task === "string" && session.task.length > 0) {
+    return {
+      ...createCanonicalTaskArtifact({
+        content: session.task,
+        createdAt,
+        sessionId,
+        source: "compatibility_session_task"
+      }),
+      provenance: {
+        complete: true,
+        source: "compatibility_session_task",
+        note: "Created from 0.8.x session.task compatibility data."
+      }
+    };
+  }
+
+  if (fallbackBrief !== undefined && fallbackBrief.trim().length > 0) {
+    return {
+      ...createCanonicalTaskArtifact({
+        content: fallbackBrief,
+        createdAt,
+        sessionId,
+        source: "compatibility_brief"
+      }),
+      provenance: {
+        complete: false,
+        source: "compatibility_brief",
+        note: "Original task text was unavailable; derived brief was retained with incomplete provenance."
+      }
+    };
+  }
+
+  return undefined;
+}
+
+function canonicalTaskReference(artifact: CanonicalTaskArtifact): CanonicalTaskReference {
+  return {
+    authority: "canonical",
+    taskId: artifact.taskId,
+    activeRevisionId: artifact.activeRevisionId,
+    contentHash: artifact.contentHash,
+    artifactPath: ".gleip/canonical-task.json"
+  };
+}
+
+function canonicalTaskSessionReference(
+  artifact: CanonicalTaskArtifact
+): CanonicalTaskSessionReference {
+  const activeRevision = artifact.revisions.find(
+    (revision) => revision.revisionId === artifact.activeRevisionId
+  );
+
+  return {
+    ...canonicalTaskReference(artifact),
+    byteCount: artifact.byteCount,
+    characterCount: artifact.characterCount,
+    revisionCount: artifact.revisions.length,
+    source: activeRevision?.source ?? artifact.provenance.source
+  };
+}
+
+function requirementLedgerSummary(ledger: RequirementLedger): RequirementLedgerSummary {
+  const active = ledger.requirements.filter((requirement) => requirement.status === "active");
+
+  return {
+    schemaVersion: "1.0.0",
+    authority: "derived",
+    requirementCount: ledger.requirements.length,
+    mandatoryCount: active.filter((requirement) => requirement.obligation === "required").length,
+    prohibitedCount: active.filter((requirement) => requirement.obligation === "prohibited").length,
+    optionalCount: active.filter((requirement) =>
+      requirement.obligation === "optional" || requirement.obligation === "suggestion"
+    ).length,
+    conflictCount: ledger.conflicts.length
+  };
+}
+
+function writeCanonicalTaskArtifact(cwd: string, artifact: CanonicalTaskArtifact): void {
+  ensureGleipDirectory(cwd);
+  writeFileAtomic(canonicalTaskPath(cwd), `${JSON.stringify(artifact, null, 2)}\n`);
+}
+
+function writeFileAtomic(path: string, content: string): void {
+  const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
+
+  writeFileSync(tempPath, content);
+  renameSync(tempPath, path);
+}
+
+function hashCanonicalContent(content: string): string {
+  return `sha256:${createHash("sha256").update(content, "utf8").digest("hex")}`;
+}
+
+function shortHash(content: string): string {
+  return createHash("sha256").update(content, "utf8").digest("hex").slice(0, 12);
 }
 
 function readJsonFile<T>(path: string): { value?: T; error?: string } {
@@ -3028,7 +3588,13 @@ function scopeBudgetWithValidatedPlanScope(
     latestPlanValidation.targetClassifications === undefined
       ? (latestPlanValidation.parsedPlan.proposedFiles ?? []).map(normalizePlanPath)
       : [];
-  const acceptedTargets = mergePathLists(directTargets, derivedTargets, fallbackTargets);
+  const mentionTargets = crediblePlanMentionTargets(latestPlanValidation.parsedPlan);
+  const acceptedTargets = mergePathLists(
+    directTargets,
+    derivedTargets,
+    fallbackTargets,
+    mentionTargets
+  );
 
   if (acceptedTargets.length === 0) {
     return scopeBudget;
@@ -3058,7 +3624,12 @@ function scopeBudgetWithValidatedPlanScope(
         : scopeBudget.verificationExpected || scopeBudget.requiredTests || hasSourceTargets,
     allowedPaths: mergePathLists(scopeBudget.allowedPaths, acceptedTargets),
     expectedPaths: acceptedTargets,
-    explicitScope: mergePathLists(scopeBudget.explicitScope ?? [], directTargets, fallbackTargets),
+    explicitScope: mergePathLists(
+      scopeBudget.explicitScope ?? [],
+      directTargets,
+      fallbackTargets,
+      mentionTargets.filter((path) => !derivedTargets.includes(path))
+    ),
     derivedScope: mergePathLists(scopeBudget.derivedScope ?? [], derivedTargets),
     contextDocsTouchAllowed:
       scopeBudget.contextDocsTouchAllowed === true || contextTargets.length > 0,
@@ -3066,6 +3637,57 @@ function scopeBudgetWithValidatedPlanScope(
       (path) => !acceptedTargets.includes(normalizePlanPath(path))
     )
   };
+}
+
+function crediblePlanMentionTargets(parsedPlan: AgentPlan): string[] {
+  const rawText = parsedPlan.rawText;
+  const mentions = parsedPlan.fileMentions ?? [];
+  const outputFiles = parsedPlan.outputFiles ?? [];
+
+  return mergePathLists(
+    mentions
+      .filter(
+        (mention) =>
+          mention.role === "edit" ||
+          (mention.role === "output" &&
+            isEditablePlanTarget(mention.path) &&
+            hasPlanEditIntentForPath(rawText, mention.path))
+      )
+      .map((mention) => mention.path),
+    outputFiles.filter(
+      (path) => isEditablePlanTarget(path) && hasPlanEditIntentForPath(rawText, path)
+    )
+  );
+}
+
+function isEditablePlanTarget(path: string): boolean {
+  const normalized = normalizePlanPath(path).toLowerCase();
+  const fileName = normalized.split("/").at(-1) ?? "";
+
+  return (
+    isSourceLikePlanTarget(normalized) ||
+    isDocumentationPlanTarget(normalized) ||
+    normalized.includes("/tests/") ||
+    normalized.includes("__tests__/") ||
+    /\.(?:spec|test)\.[a-z0-9]+$/iu.test(fileName) ||
+    /\.(?:css|html|json|scss|toml|ya?ml)$/iu.test(fileName)
+  );
+}
+
+function hasPlanEditIntentForPath(text: string, path: string): boolean {
+  const normalizedText = normalizePlanPath(text);
+  const normalizedPath = normalizePlanPath(path);
+  const index = normalizedText.indexOf(normalizedPath);
+
+  if (index < 0) {
+    return false;
+  }
+
+  const prefix = normalizedText.slice(Math.max(0, index - 140), index);
+
+  return /\b(?:add|change|connect|edit|extend|implement|migrate|modify|patch|refactor|synchronize|touch|update|wire)\b/iu.test(
+    prefix
+  );
 }
 
 function refineWorkflowProfileForAcceptedTargets(
@@ -3613,6 +4235,8 @@ function createCheckStateFingerprint(
             sessionId: session.sessionId ?? null,
             task: session.task ?? null,
             taskFile: session.taskFile ?? null,
+            canonicalTask: session.canonicalTask ?? null,
+            requirementLedgerSummary: session.requirementLedgerSummary ?? null,
             classification: session.classification ?? null,
             repoContext: session.repoContext ?? null,
             scopeBudgetSummary: session.scopeBudgetSummary ?? null,
@@ -3623,6 +4247,7 @@ function createCheckStateFingerprint(
             createdAt: session.created_at ?? null
           },
     briefHash: hashLocalFile(join(cwd, ".gleip", "brief.md")),
+    canonicalTaskHash: hashLocalFile(join(cwd, ".gleip", "canonical-task.json")),
     baseline: input.baseline ?? null,
     scopeBudget: input.scopeBudget,
     config: input.config,

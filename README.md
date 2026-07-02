@@ -90,9 +90,10 @@ Generated agent instructions use these commands through `npx --no-install` so th
 
 | Command                                               | Agent use                                                             | Main artifacts                                                                                                   |
 | ----------------------------------------------------- | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `npx --no-install gleip preflight "<task>"`           | Classify the task and establish local scope before editing.           | `.gleip/session.json`, `.gleip/baseline.json`, `.gleip/brief.md`, `.gleip/scope-budget.json`, `.gleip/status.md` |
-| `npx --no-install gleip preflight --file task.md`     | Read a full task contract as read-only context and establish scope.   | Same preflight artifacts; full task text is stored in the local session.                                         |
-| `npx --no-install gleip validate-plan "<plan>"`       | Check a proposed implementation plan against the active scope budget. | Latest plan validation in `.gleip/session.json`                                                                  |
+| `npx --no-install gleip preflight "<task>"`           | Preserve the canonical task, classify it, and establish local scope.  | `.gleip/canonical-task.json`, `.gleip/session.json`, `.gleip/baseline.json`, `.gleip/brief.md`, `.gleip/scope-budget.json`, `.gleip/status.md` |
+| `npx --no-install gleip preflight --file task.md`     | Read a full task contract as read-only context and establish scope.   | Same preflight artifacts; exact received task text is stored in the canonical task artifact.                      |
+| `npx --no-install gleip preflight --amend "<task>"`   | Add an ordered canonical task revision without resetting the baseline. | Refreshed canonical task, requirement ledger, brief, and scope budget.                                           |
+| `npx --no-install gleip validate-plan "<plan>"`       | Check a proposed implementation plan against active canonical requirements and scope. | Latest plan validation in `.gleip/session.json`                                                     |
 | `npx --no-install gleip validate-plan --file plan.md` | Read and structurally validate a plan file as read-only context.      | Latest plan validation, including stable finding codes, in `.gleip/session.json`                                 |
 | `npx --no-install gleip check --incremental`          | Check current changes or reuse the matching complete result.          | `.gleip/check-cache.json`; complete baseline or finding delta                                                    |
 | `npx --no-install gleip status --compact`             | Print compact iterative state and the next required action.           | Five-line output; no repeated brief, plan, or unchanged finding details                                          |
@@ -102,11 +103,13 @@ Generated agent instructions use these commands through `npx --no-install` so th
 
 Default workflow modes print concise 1-5 line summaries that confirm the completed phase and next action. An incremental baseline or delta adds one line per finding that must be emitted; unchanged findings remain a count. JSON modes remain machine-readable without human summary noise.
 
-Gleip 0.8.2 calibrates ceremony by workflow profile. Documentation-only tasks use a compact brief, no required plan, and content/diff verification by default. Local behavior changes use a short plan and focused verification. Broad changes keep explicit scope rationale and broader verification. Sensitive dependency, CI, auth, payment, infrastructure, migration, secret, and security-policy work keeps the complete approval and hard-gate workflow.
+Gleip 0.8.4 preserves the exact received task in `.gleip/canonical-task.json` and treats `.gleip/brief.md` as a derived navigation aid. The canonical task and active amendments remain authoritative for scope, plan validation, final reporting, and generated agent instructions. The local requirement ledger tracks required, prohibited, optional, and informational obligations with deterministic source spans so long prompts are not silently narrowed.
+
+Gleip calibrates ceremony by workflow profile. Documentation-only tasks use a compact brief, no required plan, and content/diff verification by default. Local behavior changes use a short plan and focused verification. Broad changes keep explicit scope rationale and broader verification while scaling advisory line limits with accepted target count. Sensitive dependency, CI, auth, payment, infrastructure, migration, secret, and security-policy work keeps the complete approval and hard-gate workflow.
 
 ## Stable Findings and CI
 
-Gleip 0.8.2 uses guidance-oriented top-level statuses:
+Gleip uses guidance-oriented top-level statuses:
 
 - `clean`: no findings
 - `advisory`: informational or warning-level drift
@@ -132,8 +135,10 @@ exit code `1`.
 Plan validation checks deterministic structure only: recognizable implementation,
 files/modules, verification, and risk or scope-rationale information when relevant.
 Its statuses are `aligned`, `advisory`, `needs_clarification`, `needs_approval`, and
-`needs_cleanup`. It does not decide whether an implementation is correct, optimal,
-or semantically good.
+`needs_cleanup`. Advisory plans are accepted guidance, not failed validation. Plan
+parsing preserves explicit edit intent even when nearby rationale mentions generic
+words such as cache, report, result, fixture, state, diagnostics, or response. It
+does not decide whether an implementation is correct, optimal, or semantically good.
 
 Scope budgets adapt to declared task breadth. A narrow `modify only` bugfix remains
 tightly scoped, while an explicit multi-area task naming implementation, focused
@@ -164,6 +169,11 @@ relevance discovery. They are not globally forbidden: a specifically declared
 report, result, fixture, state file, or artifact is accepted narrowly and does not
 open source implementation scope.
 
+Generated artifacts remain separate from implementation targets only when output
+intent is explicit, such as an output section, a generation verb applied to the
+path, or a known output location. Source, test, type, documentation, and config
+files named with edit intent remain planned edit targets.
+
 Verification is expected for behavior changes, but it does not always require a
 new test file. Focused existing tests, smoke tests, typechecks, compile checks, CLI
 dry runs, or appropriate manual verification can satisfy the plan structure.
@@ -178,14 +188,14 @@ they are not a proxy metric and should not create extra justification work.
 
 ## Reports and Metrics
 
-Gleip 0.8.2 generates two local report artifacts:
+Gleip 0.8.4 generates two local report artifacts:
 
 - `.gleip/report.md`: concise scores, risks, findings, actions, and the recommended final-response block.
 - `.gleip/report.json`: stable machine-readable report data, warnings, evidence, summary, and efficiency estimate.
 
-The report includes deterministic local scores for scope adherence, plan alignment, output discipline, and review readiness. It also reports task drift, repository hygiene, test-integrity, and over-edit risk. Repository hygiene covers tracked Gleip runtime/state files without mislabeling them as implementation drift. These heuristics surface review evidence; they do not prove semantic correctness.
+The report includes deterministic local scores for scope adherence, plan alignment, output discipline, and review readiness. It also reports task drift, repository hygiene, test-integrity, over-edit risk, and canonical requirement completion. Repository hygiene covers tracked Gleip runtime/state files without mislabeling them as implementation drift. Accepted plan targets and credible edit mentions are merged into final plan-alignment checks so older compatible artifacts with ambiguous parser buckets do not become false unplanned-file warnings. These heuristics surface review evidence; they do not prove semantic correctness.
 
-Before responding, agents treat the report as the source of truth and include only its compact `Recommended final response` block, not the full report. The block contains scope adherence, drift risk, repository hygiene, output discipline, estimated token waste avoided, and unresolved warnings.
+Before responding, agents treat the report as the source of truth and may include its compact `Recommended final response` block when it adds useful review evidence. They do not paste the full report. The block contains scope adherence, drift risk, repository hygiene, output discipline, canonical requirement completion, estimated token waste avoided, and unresolved warnings.
 
 **Estimated output/token waste avoided is a deterministic local estimate. It is not exact model billing or API usage data.**
 
@@ -216,6 +226,7 @@ The `.gitignore` block added by `gleip init` ignores `.gleip/`. This local-only 
 
 - `state.json`
 - `session.json`
+- `canonical-task.json`
 - `baseline.json`
 - `brief.md`
 - `scope-budget.json`
@@ -276,6 +287,6 @@ See [Local Package Testing](docs/package-testing.md) and the [Release Checklist]
 
 ## Status
 
-- Current release: `0.8.2`
+- Current release: `0.8.4`
 - License: Apache-2.0
 - Local-only developer preview

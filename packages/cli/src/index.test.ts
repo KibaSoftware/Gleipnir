@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -76,7 +77,7 @@ describe("createGleipCommand", () => {
   it("--version prints the package version", async () => {
     const output = (await runHelpCommand(["--version"])).join("\n");
 
-    expect(output).toBe("0.8.2");
+    expect(output).toBe("0.8.4");
   });
 
   it("command help shows important flags and stdin support", async () => {
@@ -137,7 +138,7 @@ describe("createGleipCommand", () => {
     expect(packageJson.exports["."].import).toBe("./dist/index.js");
     expect(packageJson.exports["."].types).toBe("./dist/index.d.ts");
     expect(packageJson.name).toBe("gleip");
-    expect(packageJson.version).toBe("0.8.2");
+    expect(packageJson.version).toBe("0.8.4");
     expect(packageJson.dependencies).toEqual({
       commander: "^12.0.0",
       yaml: "^2.0.0",
@@ -182,7 +183,7 @@ describe("createGleipCommand", () => {
     });
   });
 
-  it("release metadata uses version 0.8.2 across packages", () => {
+  it("release metadata uses version 0.8.4 across packages", () => {
     const packagePaths = [
       "package.json",
       "packages/cli/package.json",
@@ -198,7 +199,7 @@ describe("createGleipCommand", () => {
       const packageJson = JSON.parse(readFileSync(join(repoRoot, packagePath), "utf8")) as {
         version: string;
       };
-      expect(packageJson.version).toBe("0.8.2");
+      expect(packageJson.version).toBe("0.8.4");
     }
 
     const cliPackageJson = readFileSync(join(repoRoot, "packages", "cli", "package.json"), "utf8");
@@ -363,6 +364,7 @@ describe("createGleipCommand", () => {
       ".gleip/state.json",
       ".gleip/session.json",
       ".gleip/baseline.json",
+      ".gleip/canonical-task.json",
       ".gleip/brief.md",
       ".gleip/scope-budget.json",
       ".gleip/status.md",
@@ -629,7 +631,8 @@ describe("createGleipCommand", () => {
     expect(agents).toContain("local guidance");
     expect(agents).toContain("check `.gleip/state.json`");
     expect(agents).toContain('run `npx --no-install gleip preflight "<user task>"`');
-    expect(agents).toContain("Read `.gleip/brief.md` and `.gleip/scope-budget.json`");
+    expect(agents).toContain("Read `.gleip/canonical-task.json` first");
+    expect(agents).toContain("Read `.gleip/brief.md` as a derived navigation aid");
     expect(agents).toContain("npx --no-install gleip validate-plan");
     expect(agents).toContain("For a non-trivial change");
     expect(agents).toContain(
@@ -640,7 +643,7 @@ describe("createGleipCommand", () => {
     );
     expect(agents).toContain("Do not edit or commit files under `.gleip/`");
     expect(agents).toContain("Address cleanup and action-required findings");
-    expect(agents).toContain("Keep changes minimal and scoped to the requested task");
+    expect(agents).toContain("Keep changes minimal and scoped to the canonical task");
     expect(agents).toContain("needs_clarification");
     expect(agents).toContain("needs_approval");
     expect(agents).toContain("Gleip is currently inactive");
@@ -993,7 +996,7 @@ describe("createGleipCommand", () => {
     expect(report).toContain("WARN Missing .gleip.yml or GLEIP.md");
     expect(report).toContain("WARN Missing Gleip-managed agent instructions");
     expect(report).toContain("WARN Missing, incomplete, or overridden Gleip .gitignore block");
-    expect(report).toContain("OK   CLI version resolved (0.8.2)");
+    expect(report).toContain("OK   CLI version resolved (0.8.4)");
     expect(report).toContain("OK   Built-in init assets available");
     expect(report).toContain("Run: npx gleip init");
   });
@@ -1175,11 +1178,14 @@ describe("createGleipCommand", () => {
     await runCommand(processCwd, ["--cwd", targetCwd, "preflight", "add a parser"]);
 
     expect(existsSync(join(targetCwd, ".gleip", "session.json"))).toBe(true);
+    expect(existsSync(join(targetCwd, ".gleip", "canonical-task.json"))).toBe(true);
     expect(existsSync(join(targetCwd, ".gleip", "brief.md"))).toBe(true);
     expect(existsSync(join(targetCwd, ".gleip", "scope-budget.json"))).toBe(true);
     expect(existsSync(join(targetCwd, ".gleip", "status.md"))).toBe(true);
     expect(existsSync(join(processCwd, ".gleip"))).toBe(false);
-    expect(readFileSync(join(targetCwd, ".gleip", "brief.md"), "utf8")).toContain("add a parser");
+    expect(readFileSync(join(targetCwd, ".gleip", "canonical-task.json"), "utf8")).toContain(
+      "add a parser"
+    );
   });
 
   it("preflight reads and persists the full task from --file", async () => {
@@ -1216,7 +1222,76 @@ describe("createGleipCommand", () => {
     );
     expect(budget.allowedPaths).toEqual(["src/foo.ts"]);
     expect(budget.expectedFilesChanged).toEqual({ min: 1, max: 1 });
-    expect(readFileSync(join(repo, ".gleip", "brief.md"), "utf8")).toContain(taskText);
+    const canonicalTask = JSON.parse(
+      readFileSync(join(repo, ".gleip", "canonical-task.json"), "utf8")
+    ) as {
+      authority: string;
+      byteCount: number;
+      characterCount: number;
+      contentHash: string;
+      effectiveContent: string;
+      requirementLedger: { requirements: Array<{ sourceText: string }> };
+      revisions: Array<{ content: string; source: string }>;
+    };
+    const brief = readFileSync(join(repo, ".gleip", "brief.md"), "utf8");
+
+    expect(canonicalTask.authority).toBe("canonical");
+    expect(canonicalTask.effectiveContent).toBe(taskText);
+    expect(canonicalTask.revisions).toHaveLength(1);
+    expect(canonicalTask.revisions[0]).toMatchObject({ content: taskText, source: "file" });
+    expect(canonicalTask.byteCount).toBe(Buffer.byteLength(taskText, "utf8"));
+    expect(canonicalTask.characterCount).toBe(Array.from(taskText).length);
+    expect(canonicalTask.contentHash).toBe(
+      `sha256:${createHash("sha256").update(taskText, "utf8").digest("hex")}`
+    );
+    expect(canonicalTask.requirementLedger.requirements.length).toBeGreaterThan(0);
+    expect(brief).toContain("This brief is derived from the canonical user task.");
+    expect(brief).not.toContain(taskText);
+  });
+
+  it("preflight --amend preserves ordered canonical task revisions without resetting baseline", async () => {
+    const repo = createTempRepo();
+
+    await runCommand(repo, ["preflight", "Must update src/runtime.ts."], {
+      collectWorkingTreeDiff: () =>
+        diffContext({
+          changedFiles: ["README.md"],
+          fileStats: [{ path: "README.md", added: 1, deleted: 0 }],
+          totalLinesAdded: 1
+        })
+    });
+    const baselineBefore = readFileSync(join(repo, ".gleip", "baseline.json"), "utf8");
+
+    const output = await runCommand(repo, [
+      "preflight",
+      "--amend",
+      "Must preserve Windows compatibility."
+    ]);
+    const canonicalTask = JSON.parse(
+      readFileSync(join(repo, ".gleip", "canonical-task.json"), "utf8")
+    ) as {
+      effectiveContent: string;
+      revisions: Array<{ content: string; previousRevisionId?: string; source: string }>;
+      requirementLedger: { requirements: Array<{ sourceText: string }> };
+    };
+
+    expect(output.join("\n")).toContain("Gleip task amendment recorded");
+    expect(canonicalTask.revisions).toHaveLength(2);
+    expect(canonicalTask.revisions[0]?.content).toBe("Must update src/runtime.ts.");
+    expect(canonicalTask.revisions[1]).toMatchObject({
+      content: "Must preserve Windows compatibility.",
+      source: "amendment"
+    });
+    expect(canonicalTask.revisions[1]?.previousRevisionId).toBeDefined();
+    expect(canonicalTask.effectiveContent).toContain("Must update src/runtime.ts.");
+    expect(canonicalTask.effectiveContent).toContain("Must preserve Windows compatibility.");
+    expect(canonicalTask.requirementLedger.requirements.map((item) => item.sourceText)).toEqual(
+      expect.arrayContaining([
+        "Must update src/runtime.ts.",
+        "Must preserve Windows compatibility."
+      ])
+    );
+    expect(readFileSync(join(repo, ".gleip", "baseline.json"), "utf8")).toBe(baselineBefore);
   });
 
   it("preflight rejects inline task text combined with --file", async () => {
@@ -1243,11 +1318,13 @@ describe("createGleipCommand", () => {
     await runCommand(repo, ["preflight", "Modify only src/foo.ts"]);
 
     const session = JSON.parse(readFileSync(join(repo, ".gleip", "session.json"), "utf8")) as {
+      canonicalTask?: { authority: string };
       task: string;
       taskFile?: string;
     };
     expect(session.task).toBe("Modify only src/foo.ts");
     expect(session.taskFile).toBeUndefined();
+    expect(session.canonicalTask?.authority).toBe("canonical");
   });
 
   it("preflight still runs when disabled and prints a concise note", async () => {
@@ -1269,7 +1346,9 @@ describe("createGleipCommand", () => {
     const preflightOutput = output.join("\n");
 
     expect(preflightOutput).toContain("Gleip preflight complete · brief and scope budget ready");
-    expect(preflightOutput).toContain("Artifacts: .gleip/brief.md, .gleip/scope-budget.json");
+    expect(preflightOutput).toContain(
+      "Artifacts: .gleip/canonical-task.json, .gleip/brief.md, .gleip/scope-budget.json"
+    );
     expect(preflightOutput).toContain("Next: validate plan before editing");
     expect(preflightOutput.split("\n")).toHaveLength(3);
   });
@@ -1772,7 +1851,7 @@ describe("createGleipCommand", () => {
     const output = await runCommand(repo, [
       "validate-plan",
       [
-        "Modify src/features/users/UserTable.tsx",
+        "Modify src/features/users/UserTable.tsx to add CSV export to the users table",
         "Add tests in src/features/users/UserTable.test.tsx"
       ].join("\n")
     ]);
@@ -1818,7 +1897,7 @@ describe("createGleipCommand", () => {
       "validate-plan",
       "--json",
       [
-        "Modify src/features/users/UserTable.tsx",
+        "Modify src/features/users/UserTable.tsx to add CSV export to the users table",
         "Add tests in src/features/users/UserTable.test.tsx"
       ].join("\n")
     ]);
@@ -1843,7 +1922,7 @@ describe("createGleipCommand", () => {
 
     await runCommand(repo, [
       "validate-plan",
-      "Modify src/features/users/UserTable.tsx and add tests in src/features/users/UserTable.test.tsx"
+      "Modify src/features/users/UserTable.tsx to add CSV export to the users table and add tests in src/features/users/UserTable.test.tsx"
     ]);
 
     const session = JSON.parse(readFileSync(join(repo, ".gleip", "session.json"), "utf8")) as {
@@ -1864,7 +1943,7 @@ describe("createGleipCommand", () => {
       repo,
       "plan.md",
       [
-        "- Modify src/features/users/UserTable.tsx",
+        "- Modify src/features/users/UserTable.tsx to add CSV export to the users table",
         "- Add tests in src/features/users/UserTable.test.tsx"
       ].join("\n")
     );
@@ -3342,12 +3421,14 @@ describe("createGleipCommand", () => {
     expect(output.join("\n")).toContain("Gleip report ready · output discipline:");
     expect(output.join("\n")).toContain("Report: .gleip/report.md");
     expect(output.join("\n").split("\n")).toHaveLength(3);
-    expect(report.schemaVersion).toBe("1.2.0");
+    expect(report.schemaVersion).toBe("1.3.0");
     expect(report.scores.scopeAdherence).toBeGreaterThanOrEqual(0);
     expect(report.finalResponse.markdown).toContain("### Gleip");
-    expect(report.finalResponse.markdown.split("\n")).toHaveLength(7);
+    expect(report.finalResponse.markdown).toContain("Canonical requirements:");
+    expect(report.finalResponse.markdown.split("\n")).toHaveLength(8);
     expect(markdown).toContain("# Gleipnir Session Report");
     expect(markdown).toContain("Evidence-based token waste avoided:");
+    expect(markdown).toContain("## Canonical requirements");
     expect(markdown).toContain("## Recommended final response");
     expect(markdown).toContain("do not paste the full report");
     for (const warning of report.warnings) {
@@ -3372,7 +3453,7 @@ describe("createGleipCommand", () => {
     expect(output).toHaveLength(1);
     expect(output[0]?.trimStart().startsWith("{")).toBe(true);
     expect(output.join("\n")).not.toContain("Gleip report ready");
-    expect(report.version).toBe("0.8.2");
+    expect(report.version).toBe("0.8.4");
     expect(report.generatedAt).toBe("2026-05-30T00:00:00.000Z");
     expect(report.summary.filesChanged).toBe(0);
     expect(existsSync(join(repo, ".gleip", "report.json"))).toBe(true);
@@ -3952,7 +4033,7 @@ function assertGleipWorkflowInstructions(content: string): void {
   expect(content).toContain("Validate plan with `npx --no-install gleip validate-plan`");
   expect(content).toContain("Do not edit or commit files under `.gleip/`");
   expect(content).toContain("Address cleanup and action-required findings");
-  expect(content).toContain("Keep changes minimal and scoped to the requested task");
+  expect(content).toContain("Keep changes minimal and scoped to the canonical task");
   expect(content).toContain("scope adherence, drift risk, repository hygiene, output discipline");
   expect(content).toContain("estimated token waste avoided");
   expect(content).toContain("## Gleip working standard");

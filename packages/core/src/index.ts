@@ -64,6 +64,7 @@ export const EPHEMERAL_GLEIP_ARTIFACTS = [
   ".gleip/state.json",
   ".gleip/session.json",
   ".gleip/baseline.json",
+  ".gleip/canonical-task.json",
   ".gleip/brief.md",
   ".gleip/scope-budget.json",
   ".gleip/status.md",

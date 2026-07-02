@@ -8,6 +8,8 @@ import {
   classifyTask,
   createScopeBudget,
   discoverRepoContext,
+  analyzeBriefCoverage,
+  extractRequirementLedger,
   extractTaskTerms,
   generateImplementationBrief,
   packageName,
@@ -892,6 +894,205 @@ describe("parseAgentPlan", () => {
       "src/smc/runtime.ts",
       "tests/smc-runtime.test.ts"
     ]);
+  });
+
+  it("keeps explicit edit targets from becoming output artifacts when clauses mention cache or reports", () => {
+    const plan = parseAgentPlan(
+      [
+        "1. Edit src/analysis/engine.ts to add grouped scoring and update cache-key isolation.",
+        "2. Edit src/api/repository.ts and src/api/handler.ts to pass the selected strategy and validate the response model.",
+        "3. Edit src/api/contracts.ts and ui/lib/types.ts to add optional diagnostic fields.",
+        "4. Edit tests/analysis-engine.test.ts and docs/context.md, then run focused tests and final checks."
+      ].join("\n")
+    );
+
+    expect(plan.proposedFiles).toEqual([
+      "docs/context.md",
+      "src/analysis/engine.ts",
+      "src/api/contracts.ts",
+      "src/api/handler.ts",
+      "src/api/repository.ts",
+      "tests/analysis-engine.test.ts",
+      "ui/lib/types.ts"
+    ]);
+    expect(plan.outputFiles).toEqual([]);
+  });
+
+  it("keeps genuine generated output artifacts separate from editable source targets", () => {
+    const plan = parseAgentPlan(
+      [
+        "1. Update src/export/report.ts to generate artifacts/summary.json.",
+        "2. Emit coverage/results.xml during the verification command.",
+        "3. Write generated/api-schema.json from the contract build."
+      ].join("\n")
+    );
+
+    expect(plan.proposedFiles).toEqual(["src/export/report.ts"]);
+    expect(plan.outputFiles).toEqual([
+      "artifacts/summary.json",
+      "coverage/results.xml",
+      "generated/api-schema.json"
+    ]);
+  });
+
+  it("does not turn conceptual slash terms in implementation clauses into file paths", () => {
+    const plan = parseAgentPlan(
+      [
+        "Edit src/analysis/engine.ts for opt-in baseline/strategy_v1 selection and grouped scoring.",
+        "Edit src/api/contracts.ts for optional diagnostics/analog fields.",
+        "Run focused tests."
+      ].join("\n")
+    );
+
+    expect(plan.proposedFiles).toEqual(["src/analysis/engine.ts", "src/api/contracts.ts"]);
+    const parsedTargets = JSON.stringify({
+      proposedFiles: plan.proposedFiles,
+      contextFiles: plan.contextFiles,
+      outputFiles: plan.outputFiles,
+      fileMentions: plan.fileMentions
+    });
+
+    expect(parsedTargets).not.toContain("baseline/strategy_v1");
+    expect(parsedTargets).not.toContain("diagnostics/analog");
+  });
+});
+
+describe("canonical requirement ledger", () => {
+  it("extracts mandatory and prohibited requirements from a long task without losing late requirements", () => {
+    const middlePadding = "Background context. ".repeat(250);
+    const task = [
+      "# Requirements",
+      "- Must update src/runtime.ts.",
+      middlePadding,
+      "## Acceptance criteria",
+      "- Preserve Windows compatibility.",
+      "More context. ".repeat(220),
+      "## Must not",
+      "- Add dependencies.",
+      "## Release instructions",
+      "- Run package smoke tests before completion."
+    ].join("\n");
+    const ledger = extractRequirementLedger({ taskText: task, canonicalTaskHash: "sha256:test" });
+
+    expect(task.length).toBeGreaterThan(8000);
+    expect(ledger.canonicalTaskHash).toBe("sha256:test");
+    expect(ledger.offsetEncoding).toBe("utf16");
+    expect(ledger.requirements.map((requirement) => requirement.sourceText)).toEqual(
+      expect.arrayContaining([
+        "Must update src/runtime.ts.",
+        "Preserve Windows compatibility.",
+        "Add dependencies.",
+        "Run package smoke tests before completion."
+      ])
+    );
+    expect(
+      ledger.requirements.find((requirement) => requirement.sourceText === "Add dependencies.")
+        ?.obligation
+    ).toBe("prohibited");
+  });
+
+  it("detects brief omissions without treating the brief as canonical", () => {
+    const ledger = extractRequirementLedger(
+      [
+        "Requirements:",
+        "- Must update src/runtime.ts.",
+        "- Must preserve Windows compatibility.",
+        "- Must update docs/compatibility.md."
+      ].join("\n")
+    );
+    const coverage = analyzeBriefCoverage("Update src/runtime.ts.", ledger);
+
+    expect(coverage.coverageStatus).toBe("omissions_visible");
+    expect(coverage.omittedRequirementCount).toBeGreaterThanOrEqual(1);
+  });
+
+  it("blocks an aligned plan when a mandatory canonical requirement is missing", () => {
+    const ledger = extractRequirementLedger(
+      [
+        "Requirements:",
+        "- Must update src/runtime.ts.",
+        "- Must preserve Windows compatibility."
+      ].join("\n")
+    );
+    const result = validateAgentPlan({
+      planText: "Update src/runtime.ts and run tests.",
+      requirementLedger: ledger,
+      scopeBudget: sampleScopeBudget({
+        allowedPaths: ["src/runtime.ts"],
+        requiredTests: true
+      })
+    });
+
+    expect(result.status).toBe("needs_clarification");
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({
+        code: "CANONICAL_REQUIREMENT_MISSING",
+        title: "Mandatory canonical requirement missing"
+      })
+    );
+    expect(result.requirementCoverage?.missingRequired.length).toBeGreaterThan(0);
+  });
+
+  it("treats prohibited dependency requirements as canonical conflicts", () => {
+    const ledger = extractRequirementLedger("Do not add dependencies.");
+    const result = validateAgentPlan({
+      planText: "Add zod dependency and update package.json.",
+      requirementLedger: ledger,
+      scopeBudget: sampleScopeBudget({
+        requiredTests: false,
+        hardGates: sampleHardGates({ newDependenciesAllowed: true })
+      })
+    });
+
+    expect(result.status).toBe("needs_clarification");
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({
+        code: "CANONICAL_PROHIBITION_CONFLICT"
+      })
+    );
+  });
+
+  it("preserves amendments and marks explicit supersession", () => {
+    const ledger = extractRequirementLedger({
+      taskText: "",
+      revisions: [
+        {
+          revisionId: "rev-1",
+          revisionNumber: 1,
+          content: "Must output JSON."
+        },
+        {
+          revisionId: "rev-2",
+          revisionNumber: 2,
+          content: "Replace the output format with CSV instead."
+        }
+      ]
+    });
+
+    expect(ledger.requirements[0]).toMatchObject({
+      canonicalRevisionId: "rev-1",
+      status: "superseded",
+      supersededBy: "REQ-002"
+    });
+    expect(ledger.requirements[1]).toMatchObject({
+      canonicalRevisionId: "rev-2",
+      status: "active"
+    });
+  });
+
+  it("keeps optional suggestions advisory and source spans exact with Unicode text", () => {
+    const task = "Requirements:\n- Must preserve café output.\nOptional:\n- Could add extra charts.";
+    const ledger = extractRequirementLedger(task);
+    const required = ledger.requirements.find((requirement) =>
+      requirement.sourceText.includes("café")
+    );
+    const optional = ledger.requirements.find((requirement) =>
+      requirement.sourceText.includes("extra charts")
+    );
+
+    expect(required).toBeDefined();
+    expect(task.slice(required?.sourceStart, required?.sourceEnd)).toBe("- Must preserve café output.");
+    expect(optional?.obligation).toBe("optional");
   });
 });
 
@@ -2359,7 +2560,9 @@ describe("generateImplementationBrief", () => {
     const brief = generateImplementationBrief(sampleBriefInput());
 
     expect(brief).toContain("# Gleip Implementation Brief");
-    expect(brief).toContain("## Task\nAdd CSV export to users table");
+    expect(brief).toContain("## Task\nTask preview: Add CSV export to users table");
+    expect(brief).toContain("## Authority");
+    expect(brief).toContain("This brief is derived from the canonical user task.");
     expect(brief).toContain("- Type: small_feature");
     expect(brief).toContain("- Risk: medium");
     expect(brief).toContain("- Confidence: high");

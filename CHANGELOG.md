@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.8.4]
+
+### Added
+
+- Added `.gleip/canonical-task.json` as the local authoritative task artifact with exact received content, stable SHA-256 hashes, byte and character counts, ordered revisions, and amendment history.
+- Added a derived requirement ledger with source-span traceability, obligation levels, generic categories, brief coverage analysis, and plan-to-requirement validation.
+- Added final report requirement completion counts and warnings for unresolved mandatory requirements or prohibited requirement conflicts.
+
+### Changed
+
+- Marked implementation briefs as derived navigation aids that reference the canonical task instead of replacing or duplicating it.
+- Updated generated agent instructions to read the canonical task first, use the brief as an index, check amendments, and verify mandatory canonical requirements before completion.
+- Updated review-readiness and plan-alignment scoring so unresolved mandatory canonical requirements prevent perfect readiness while optional and ambiguous requirements remain advisory.
+
+### Compatibility
+
+- Existing 0.8.x sessions load safely. When possible, Gleip creates a compatibility canonical revision from the original session task; if only an old brief is available, provenance is marked incomplete.
+- No compression, provider integration, network access, telemetry, or project-specific production logic was added.
+
+## [0.8.3]
+
+### Fixed
+
+- Preserved explicit edit intent when plan clauses also mention generic output-like words such as cache, report, result, fixture, state, diagnostics, or response.
+- Kept genuine generated artifacts in output scope only when direct output-generation evidence is present.
+- Prevented slash-separated conceptual terms in implementation rationale from becoming edit targets.
+- Used normalized credible plan mentions in final report plan-alignment checks, including compatible recovery for older artifacts that misbucketed editable files as outputs.
+- Treated advisory plan validation as accepted guidance consistently across CLI scope refinement and final reports.
+- Made the release build deterministic from clean generated outputs and kept internal workspace code bundled into the published CLI.
+
+### Changed
+
+- Broad and subsystem drift checks now scale line-count advisories with changed target count instead of applying a narrow feature ceiling.
+- Final reports recognize verification evidence from common validation/check wording and command-result lines, not only a `Tests` heading.
+- Report scope checks merge accepted planned targets with expected paths before declaring files outside budget.
+- Efficiency reporting no longer makes positive scope-savings claims from discovery-only outside-scope evidence.
+
+### Compatibility
+
+- No CLI command, exit-code, or schema break was introduced. Existing 0.8.x artifacts remain readable.
+- Dependency, CI, secret, local-artifact, and test-integrity gates remain strict.
+
 ## [0.8.2]
 
 ### Changed

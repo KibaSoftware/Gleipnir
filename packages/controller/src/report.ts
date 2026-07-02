@@ -4,6 +4,7 @@ export type TestIntegrity = "unknown" | "pass" | "warning" | "fail";
 export type ReportWarningType =
   | "scope"
   | "plan"
+  | "requirement"
   | "drift"
   | "test_integrity"
   | "output"
@@ -16,6 +17,18 @@ export type EfficiencySource =
   | "rejected_plan_item"
   | "scope_budget_reduction"
   | "output_discipline";
+export type ReportRequirementObligation =
+  | "required"
+  | "prohibited"
+  | "optional"
+  | "suggestion"
+  | "informational";
+export type ReportRequirementStatus =
+  | "satisfied"
+  | "unresolved"
+  | "violated"
+  | "advisory"
+  | "not_applicable";
 
 export interface SessionReport {
   version: string;
@@ -45,6 +58,7 @@ export interface SessionReport {
     };
     basis: EfficiencyBasis[];
   };
+  requirements: ReportRequirementCompletion;
   finalResponse: {
     markdown: string;
     unresolvedWarnings: number;
@@ -85,6 +99,30 @@ export interface ReportWarning {
   evidence: string[];
   files: string[];
   suggestedAction: string | null;
+}
+
+export interface ReportRequirementCompletion {
+  summary: {
+    total: number;
+    mandatory: number;
+    mandatorySatisfied: number;
+    mandatoryUnresolved: number;
+    prohibited: number;
+    prohibitedSatisfied: number;
+    prohibitedViolated: number;
+    advisory: number;
+  };
+  items: ReportRequirementCompletionItem[];
+}
+
+export interface ReportRequirementCompletionItem {
+  id: string;
+  sourceText: string;
+  obligation: ReportRequirementObligation;
+  category: string;
+  status: ReportRequirementStatus;
+  evidence: string[];
+  relatedPaths: string[];
 }
 
 export interface ReportScopeBudget {
@@ -166,7 +204,41 @@ export interface ReportPlanValidation {
   parsedPlan: {
     rawText: string;
     proposedFiles: string[];
+    contextFiles?: string[];
+    outputFiles?: string[];
+    fileMentions?: Array<{
+      path: string;
+      role: "edit" | "context" | "output";
+      markedNew?: boolean;
+    }>;
   };
+  targetClassifications?: Array<{
+    target: string;
+    classification: "direct" | "derived" | "adjacent" | "unexplained";
+    reason?: string;
+    evidence?: string;
+  }>;
+}
+
+export interface ReportRequirementLedger {
+  schemaVersion: string;
+  authority: string;
+  requirements: ReportRequirementLedgerItem[];
+  conflicts?: Array<{
+    id?: string;
+    requirementIds?: string[];
+    summary?: string;
+  }>;
+}
+
+export interface ReportRequirementLedgerItem {
+  id: string;
+  sourceText: string;
+  category?: string;
+  obligation: ReportRequirementObligation;
+  status: "active" | "superseded" | "ambiguous";
+  relatedPaths?: string[];
+  relatedVerification?: string;
 }
 
 export interface GenerateSessionReportInput {
@@ -185,6 +257,7 @@ export interface GenerateSessionReportInput {
   planValidation?: ReportPlanValidation;
   acceptedPlanValidation?: ReportPlanValidation;
   statusContent?: string;
+  requirementLedger?: ReportRequirementLedger;
   missingArtifacts?: string[];
 }
 
@@ -246,25 +319,25 @@ export function generateSessionReport(input: GenerateSessionReportInput): Sessio
     (input.planValidation !== undefined && isPlanAligned(input.planValidation.status)
       ? input.planValidation
       : undefined);
-  const plannedFiles = acceptedPlanValidation?.parsedPlan.proposedFiles.map(normalizePath) ?? [];
+  const plannedFiles = plannedFilesForReport(acceptedPlanValidation);
+  const effectiveExpectedFiles = mergePathLists(
+    input.scopeBudget?.expectedPaths ?? input.scopeBudget?.allowedPaths ?? [],
+    plannedFiles
+  );
   const unplannedFiles =
     input.planValidation === undefined
       ? []
       : changedFiles.filter((path) => !plannedFiles.some((planned) => pathsOverlap(path, planned)));
   const outsideScopeFiles =
-    input.scopeBudget === undefined ||
-    (input.scopeBudget.expectedPaths ?? input.scopeBudget.allowedPaths).length === 0
+    input.scopeBudget === undefined || effectiveExpectedFiles.length === 0
       ? []
       : changedFiles.filter(
-          (path) =>
-            !(input.scopeBudget!.expectedPaths ?? input.scopeBudget!.allowedPaths).some(
-              (expected) => pathsOverlap(path, expected)
-            )
+          (path) => !effectiveExpectedFiles.some((expected) => pathsOverlap(path, expected))
         );
   const statusContent = input.statusContent ?? "";
   const hasStatusContent = input.statusContent !== undefined && input.statusContent.trim() !== "";
   const changedFilesMentioned = hasChangedFilesEvidence(statusContent);
-  const testsMentioned = hasEvidenceSection(statusContent, "tests");
+  const testsMentioned = hasVerificationEvidence(statusContent);
   const risksMentioned = hasEvidenceSection(statusContent, "risks?");
   const repeatedOutput = repeatedNarration(statusContent);
   const repeatedPlanOutput = repeatedPlanNarration(
@@ -273,6 +346,7 @@ export function generateSessionReport(input: GenerateSessionReportInput): Sessio
   );
   const unrelatedSuggestions = findUnrelatedSuggestions(statusContent);
   const excessiveOutputCharacters = excessiveOutputCharacterCount(statusContent);
+  const requirementReport = evaluateRequirementCompletion(input, changedFiles, plannedFiles);
 
   addMissingArtifactWarnings(input.missingArtifacts ?? [], warnings, deductions);
 
@@ -365,6 +439,7 @@ export function generateSessionReport(input: GenerateSessionReportInput): Sessio
 
   addDriftWarnings(input.driftResult, warnings, deductions);
   addBaselineAttributionWarning(input.baseline, warnings);
+  addRequirementWarnings(requirementReport, warnings, deductions);
   addOutputWarnings(
     input,
     changedFilesMentioned,
@@ -420,6 +495,7 @@ export function generateSessionReport(input: GenerateSessionReportInput): Sessio
     warnings.filter((warning) => warning.severity === "medium" || warning.severity === "high")
       .length * 5
   );
+  enforceRequirementReadinessInvariant(requirementReport, deductions);
 
   const efficiency = calculateEfficiency(
     input,
@@ -462,11 +538,13 @@ export function generateSessionReport(input: GenerateSessionReportInput): Sessio
     scores,
     risk,
     efficiency,
+    requirements: requirementReport,
     finalResponse: {
       markdown: renderCompactFinalResponse({
         scores,
         driftRisk,
         repositoryHygieneRisk,
+        requirements: requirementReport,
         efficiency,
         unresolvedWarnings: orderedWarnings.filter(
           (warning) => warning.severity === "medium" || warning.severity === "high"
@@ -490,6 +568,7 @@ export function renderSessionReportMarkdown(report: SessionReport): string {
     report.warnings.length === 0
       ? ["- No evidence-backed warnings."]
       : report.warnings.slice(0, 5).map((warning) => `- ${warning.message}`);
+  const requirementLines = requirementSummaryLines(report.requirements);
   const warningLines =
     report.warnings.length === 0
       ? ["- None."]
@@ -527,6 +606,9 @@ Confidence: ${titleCase(report.efficiency.confidence)}
 ## Key findings
 ${findings.join("\n")}
 
+## Canonical requirements
+${requirementLines.join("\n")}
+
 ## Evidence-backed warnings
 ${warningLines.join("\n")}
 
@@ -540,6 +622,306 @@ ${report.finalResponse.markdown}
 
 Token-waste reporting is deterministic and evidence-based. Unavailable means Gleip did not have local evidence for a positive avoided-work estimate.
 `;
+}
+
+function requirementSummaryLines(report: ReportRequirementCompletion): string[] {
+  if (report.summary.total === 0) {
+    return ["- No canonical requirement ledger was available."];
+  }
+
+  const unresolved = report.items
+    .filter((item) => item.obligation === "required" && item.status === "unresolved")
+    .slice(0, 5)
+    .map((item) => `- Unresolved ${item.id}: ${item.sourceText}`);
+  const violated = report.items
+    .filter((item) => item.obligation === "prohibited" && item.status === "violated")
+    .slice(0, 5)
+    .map((item) => `- Prohibited conflict ${item.id}: ${item.sourceText}`);
+
+  return [
+    `- Mandatory: ${report.summary.mandatorySatisfied}/${report.summary.mandatory} satisfied; ${report.summary.mandatoryUnresolved} unresolved.`,
+    `- Prohibited: ${report.summary.prohibitedSatisfied}/${report.summary.prohibited} respected; ${report.summary.prohibitedViolated} conflict(s).`,
+    `- Advisory: ${report.summary.advisory}.`,
+    ...unresolved,
+    ...violated
+  ];
+}
+
+function evaluateRequirementCompletion(
+  input: GenerateSessionReportInput,
+  changedFiles: string[],
+  plannedFiles: string[]
+): ReportRequirementCompletion {
+  const requirements = input.requirementLedger?.requirements ?? [];
+
+  if (requirements.length === 0) {
+    return emptyRequirementCompletion();
+  }
+
+  const items = requirements
+    .filter((requirement) => requirement.status !== "superseded")
+    .map((requirement) =>
+      evaluateRequirementItem(input, requirement, changedFiles, plannedFiles)
+    );
+  const mandatory = items.filter((item) => item.obligation === "required");
+  const prohibited = items.filter((item) => item.obligation === "prohibited");
+
+  return {
+    summary: {
+      total: items.length,
+      mandatory: mandatory.length,
+      mandatorySatisfied: mandatory.filter((item) => item.status === "satisfied").length,
+      mandatoryUnresolved: mandatory.filter((item) => item.status === "unresolved").length,
+      prohibited: prohibited.length,
+      prohibitedSatisfied: prohibited.filter((item) => item.status === "satisfied").length,
+      prohibitedViolated: prohibited.filter((item) => item.status === "violated").length,
+      advisory: items.filter((item) => item.status === "advisory").length
+    },
+    items
+  };
+}
+
+function emptyRequirementCompletion(): ReportRequirementCompletion {
+  return {
+    summary: {
+      total: 0,
+      mandatory: 0,
+      mandatorySatisfied: 0,
+      mandatoryUnresolved: 0,
+      prohibited: 0,
+      prohibitedSatisfied: 0,
+      prohibitedViolated: 0,
+      advisory: 0
+    },
+    items: []
+  };
+}
+
+function evaluateRequirementItem(
+  input: GenerateSessionReportInput,
+  requirement: ReportRequirementLedgerItem,
+  changedFiles: string[],
+  plannedFiles: string[]
+): ReportRequirementCompletionItem {
+  const relatedPaths = mergePathLists(
+    requirement.relatedPaths ?? [],
+    extractPathsFromText(requirement.sourceText)
+  );
+
+  if (requirement.status === "ambiguous") {
+    return {
+      id: requirement.id,
+      sourceText: requirement.sourceText,
+      obligation: requirement.obligation,
+      category: requirement.category ?? "unknown",
+      status: "advisory",
+      evidence: ["Requirement extraction marked this item ambiguous."],
+      relatedPaths
+    };
+  }
+
+  if (requirement.obligation === "required") {
+    const evidence = requirementEvidence(input, requirement, relatedPaths, changedFiles, plannedFiles);
+
+    return {
+      id: requirement.id,
+      sourceText: requirement.sourceText,
+      obligation: requirement.obligation,
+      category: requirement.category ?? "unknown",
+      status: evidence.length === 0 ? "unresolved" : "satisfied",
+      evidence:
+        evidence.length === 0
+          ? ["No local changed-file, plan, or verification evidence satisfied this requirement."]
+          : evidence,
+      relatedPaths
+    };
+  }
+
+  if (requirement.obligation === "prohibited") {
+    const violationEvidence = prohibitedRequirementEvidence(input, requirement, changedFiles, plannedFiles);
+
+    return {
+      id: requirement.id,
+      sourceText: requirement.sourceText,
+      obligation: requirement.obligation,
+      category: requirement.category ?? "unknown",
+      status: violationEvidence.length === 0 ? "satisfied" : "violated",
+      evidence:
+        violationEvidence.length === 0
+          ? ["No local evidence of the prohibited action was found."]
+          : violationEvidence,
+      relatedPaths
+    };
+  }
+
+  return {
+    id: requirement.id,
+    sourceText: requirement.sourceText,
+    obligation: requirement.obligation,
+    category: requirement.category ?? "unknown",
+    status: "advisory",
+    evidence: ["Optional or informational requirement; not scored as mandatory."],
+    relatedPaths
+  };
+}
+
+function requirementEvidence(
+  input: GenerateSessionReportInput,
+  requirement: ReportRequirementLedgerItem,
+  relatedPaths: string[],
+  changedFiles: string[],
+  plannedFiles: string[]
+): string[] {
+  const evidence: string[] = [];
+  const category = requirement.category ?? "unknown";
+  const statusContent = input.statusContent ?? "";
+  const planText = acceptedPlanText(input);
+  const changedRelated = changedFiles.filter((path) =>
+    relatedPaths.some((relatedPath) => pathsOverlap(path, relatedPath))
+  );
+  const plannedRelated = plannedFiles.filter((path) =>
+    relatedPaths.some((relatedPath) => pathsOverlap(path, relatedPath))
+  );
+  const changedPlanned = changedFiles.filter((path) =>
+    plannedFiles.some((plannedPath) => pathsOverlap(path, plannedPath))
+  );
+
+  if (changedRelated.length > 0) {
+    evidence.push(`Changed related path(s): ${changedRelated.slice(0, 3).join(", ")}.`);
+  }
+
+  if (plannedRelated.length > 0 && changedPlanned.length > 0) {
+    evidence.push(
+      `Validated plan and final diff overlap on related path(s): ${plannedRelated
+        .slice(0, 3)
+        .join(", ")}.`
+    );
+  }
+
+  if (isVerificationRequirement(requirement) && hasVerificationEvidence(statusContent)) {
+    evidence.push("Verification evidence was reported in local status content.");
+  }
+
+  if (category === "documentation" && changedFiles.some(isDocumentationPath)) {
+    evidence.push("Documentation file changes are present.");
+  }
+
+  if ((category === "release" || category === "packaging") && changedFiles.some(isReleasePath)) {
+    evidence.push("Release or packaging metadata changes are present.");
+  }
+
+  if (category === "dependency" && changedFiles.some(isDependencyPath)) {
+    evidence.push("Dependency metadata changes are present.");
+  }
+
+  if (
+    hasRequirementKeywordEvidence(requirement.sourceText, planText) &&
+    changedPlanned.length > 0
+  ) {
+    evidence.push("Accepted plan text covers the requirement and planned files changed.");
+  }
+
+  if (
+    categoryAllowsStatusEvidence(category) &&
+    hasRequirementKeywordEvidence(requirement.sourceText, statusContent)
+  ) {
+    evidence.push("Local status content covers the process or output requirement.");
+  }
+
+  if (
+    input.diff.rawDiff.length > 0 &&
+    hasRequirementKeywordEvidence(requirement.sourceText, input.diff.rawDiff)
+  ) {
+    evidence.push("Final diff content contains requirement-specific terms.");
+  }
+
+  return uniqueStrings(evidence);
+}
+
+function prohibitedRequirementEvidence(
+  input: GenerateSessionReportInput,
+  requirement: ReportRequirementLedgerItem,
+  changedFiles: string[],
+  plannedFiles: string[]
+): string[] {
+  const evidence: string[] = [];
+  const text = requirement.sourceText.toLowerCase();
+  const planAndDiffText = [acceptedPlanText(input), input.diff.rawDiff, plannedFiles.join("\n")]
+    .join("\n")
+    .toLowerCase();
+
+  if (/\bdependenc|package|lockfile|install\b/u.test(text) && hasDependencyConflict(input, changedFiles)) {
+    evidence.push("Dependency or lockfile change conflicts with a canonical prohibition.");
+  }
+
+  if (/\bci\b|continuous integration|workflow/u.test(text) && hasCiConflict(input, changedFiles)) {
+    evidence.push("CI workflow change conflicts with a canonical prohibition.");
+  }
+
+  if (/\btests?\b|skip|delete|weaken/u.test(text) && hasTestConflict(input)) {
+    evidence.push("Test weakening finding conflicts with a canonical prohibition.");
+  }
+
+  if (hasProhibitedActionEvidence(requirement.sourceText, planAndDiffText)) {
+    evidence.push("Plan or diff evidence contains terms matching the prohibited action.");
+  }
+
+  return uniqueStrings(evidence);
+}
+
+function addRequirementWarnings(
+  report: ReportRequirementCompletion,
+  warnings: ReportWarning[],
+  deductions: ScoreDeductions
+): void {
+  const unresolved = report.items.filter(
+    (item) => item.obligation === "required" && item.status === "unresolved"
+  );
+  const violated = report.items.filter(
+    (item) => item.obligation === "prohibited" && item.status === "violated"
+  );
+
+  if (unresolved.length > 0) {
+    addWarning(warnings, {
+      id: "requirement.unresolved",
+      type: "requirement",
+      severity: "medium",
+      message: `${unresolved.length} mandatory canonical requirement(s) lack completion evidence.`,
+      reason:
+        "Review readiness cannot be complete while required canonical task obligations are unresolved.",
+      evidence: unresolved.map((item) => `${item.id}: ${item.sourceText}`),
+      files: unresolved.flatMap((item) => item.relatedPaths),
+      suggestedAction:
+        "Implement, verify, or explicitly resolve the listed canonical requirements before finalizing."
+    });
+    deductions.planAlignment += Math.min(30, unresolved.length * 10);
+    deductions.reviewReadiness += Math.min(35, unresolved.length * 12);
+  }
+
+  if (violated.length > 0) {
+    addWarning(warnings, {
+      id: "requirement.prohibited-conflict",
+      type: "requirement",
+      severity: "high",
+      message: `${violated.length} prohibited canonical requirement(s) appear violated.`,
+      reason: "The final local evidence conflicts with a canonical task prohibition.",
+      evidence: violated.flatMap((item) => [`${item.id}: ${item.sourceText}`, ...item.evidence]),
+      files: violated.flatMap((item) => item.relatedPaths),
+      suggestedAction: "Remove the prohibited change or get explicit user approval before finalizing."
+    });
+    deductions.scopeAdherence += Math.min(45, violated.length * 15);
+    deductions.planAlignment += Math.min(45, violated.length * 15);
+    deductions.reviewReadiness += Math.min(50, violated.length * 25);
+  }
+}
+
+function enforceRequirementReadinessInvariant(
+  report: ReportRequirementCompletion,
+  deductions: ScoreDeductions
+): void {
+  if (report.summary.mandatoryUnresolved > 0 || report.summary.prohibitedViolated > 0) {
+    deductions.reviewReadiness = Math.max(deductions.reviewReadiness, 15);
+  }
 }
 
 function addMissingArtifactWarnings(
@@ -774,7 +1156,11 @@ function calculateEfficiency(
   const contextWasteAvoided = 0;
   let outputWasteAvoided = 0;
 
-  if (outsideScopeFiles.length > 0 && input.diff.rawDiff.length > 0) {
+  if (
+    outsideScopeFiles.length > 0 &&
+    input.diff.rawDiff.length > 0 &&
+    hasAcceptedScopeEvidence(input)
+  ) {
     const characterCount = diffCharactersForFiles(input.diff.rawDiff, outsideScopeFiles);
     const estimatedTokens = estimateTokens(characterCount);
 
@@ -839,6 +1225,12 @@ function calculateEfficiency(
     },
     basis
   };
+}
+
+function hasAcceptedScopeEvidence(input: GenerateSessionReportInput): boolean {
+  const validation = input.acceptedPlanValidation ?? input.planValidation;
+
+  return validation !== undefined && isPlanAligned(validation.status);
 }
 
 function testIntegrityFor(input: GenerateSessionReportInput): TestIntegrity {
@@ -1046,6 +1438,186 @@ function hasEvidenceSection(content: string, headingPattern: string): boolean {
   return normalized.length > 0;
 }
 
+function hasVerificationEvidence(content: string): boolean {
+  if (
+    hasEvidenceSection(content, "tests") ||
+    hasEvidenceSection(content, "verification") ||
+    hasEvidenceSection(content, "validation") ||
+    hasEvidenceSection(content, "checks")
+  ) {
+    return true;
+  }
+
+  return /\b(?:bun|cargo\s+test|dotnet\s+test|eslint|go\s+test|jest|mocha|npm|pnpm|pytest|ruff|tsc|vitest|yarn)\b[^\n]*(?:0|ok|pass(?:ed)?|success(?:ful)?)/iu.test(
+    content
+  );
+}
+
+function acceptedPlanText(input: GenerateSessionReportInput): string {
+  const validation =
+    input.acceptedPlanValidation ??
+    (input.planValidation !== undefined && isPlanAligned(input.planValidation.status)
+      ? input.planValidation
+      : undefined);
+
+  return validation?.parsedPlan.rawText ?? "";
+}
+
+function extractPathsFromText(text: string): string[] {
+  const matches = text.match(
+    /(?:^|[\s(["'`])((?:[\w.-]+\/)+[\w.@-]+\.[a-z0-9]+|[\w.@-]+\.(?:cjs|cs|go|java|js|jsx|json|kt|md|mjs|php|py|rb|rs|scss|svelte|toml|ts|tsx|vue|ya?ml))/giu
+  );
+
+  return (
+    matches
+      ?.map((match) => match.trim().replace(/^[(["'`]+|[)"'`,.]+$/g, ""))
+      .map(normalizePath) ?? []
+  );
+}
+
+function isVerificationRequirement(requirement: ReportRequirementLedgerItem): boolean {
+  return (
+    requirement.category === "verification" ||
+    requirement.relatedVerification !== undefined ||
+    /\b(test|verify|validation|check|typecheck|lint|smoke)\b/iu.test(requirement.sourceText)
+  );
+}
+
+function categoryAllowsStatusEvidence(category: string): boolean {
+  return ["output", "process", "release", "scope", "safety", "privacy", "security"].includes(
+    category
+  );
+}
+
+function hasRequirementKeywordEvidence(requirementText: string, evidenceText: string): boolean {
+  const keywords = requirementKeywords(requirementText);
+
+  if (keywords.length === 0 || evidenceText.trim().length === 0) {
+    return false;
+  }
+
+  const normalizedEvidence = evidenceText.toLowerCase();
+  const matched = keywords.filter((keyword) => normalizedEvidence.includes(keyword));
+  const threshold = Math.min(3, Math.max(1, keywords.length >= 3 ? 2 : keywords.length));
+
+  return matched.length >= threshold;
+}
+
+function requirementKeywords(text: string): string[] {
+  const stopWords = new Set([
+    "add",
+    "also",
+    "and",
+    "are",
+    "canonical",
+    "change",
+    "changes",
+    "must",
+    "need",
+    "needs",
+    "not",
+    "only",
+    "required",
+    "shall",
+    "should",
+    "task",
+    "that",
+    "the",
+    "this",
+    "update",
+    "with",
+    "without"
+  ]);
+
+  return uniqueStrings(
+    text
+      .toLowerCase()
+      .match(/[a-z0-9][a-z0-9_-]{2,}/gu)
+      ?.filter((word) => !stopWords.has(word) && word.length >= 3) ?? []
+  ).slice(0, 8);
+}
+
+function hasDependencyConflict(input: GenerateSessionReportInput, changedFiles: string[]): boolean {
+  return (
+    changedFiles.some(isDependencyPath) ||
+    input.driftResult.findings.some((finding) => finding.category === "dependencies")
+  );
+}
+
+function hasCiConflict(input: GenerateSessionReportInput, changedFiles: string[]): boolean {
+  return (
+    changedFiles.some(isCiPath) ||
+    input.driftResult.findings.some((finding) => finding.category === "ci")
+  );
+}
+
+function hasTestConflict(input: GenerateSessionReportInput): boolean {
+  return input.driftResult.findings.some((finding) => finding.category === "tests");
+}
+
+function hasProhibitedActionEvidence(requirementText: string, evidenceText: string): boolean {
+  if (evidenceText.trim().length === 0 || !hasRequirementKeywordEvidence(requirementText, evidenceText)) {
+    return false;
+  }
+
+  return /\b(add|added|change|changed|connect|enable|enabled|implement|implemented|install|installed|modify|modified|remove|removed|skip|skipped|weaken|weakened)\b/iu.test(
+    evidenceText
+  );
+}
+
+function isReleasePath(path: string): boolean {
+  const normalized = normalizePath(path).toLowerCase();
+  const fileName = normalized.split("/").at(-1) ?? "";
+
+  return (
+    normalized.startsWith("docs/") ||
+    normalized.startsWith("scripts/") ||
+    ["changelog.md", "package.json", "readme.md"].includes(fileName)
+  );
+}
+
+function isDependencyPath(path: string): boolean {
+  const fileName = normalizePath(path).split("/").at(-1)?.toLowerCase() ?? "";
+
+  return [
+    "bun.lockb",
+    "cargo.lock",
+    "cargo.toml",
+    "composer.json",
+    "composer.lock",
+    "gemfile",
+    "gemfile.lock",
+    "go.mod",
+    "go.sum",
+    "package-lock.json",
+    "package.json",
+    "pnpm-lock.yaml",
+    "poetry.lock",
+    "pyproject.toml",
+    "requirements.txt",
+    "yarn.lock"
+  ].includes(fileName);
+}
+
+function isCiPath(path: string): boolean {
+  const normalized = normalizePath(path).toLowerCase();
+
+  return (
+    normalized.startsWith(".github/workflows/") ||
+    normalized.startsWith(".circleci/") ||
+    normalized.startsWith(".buildkite/") ||
+    normalized === ".gitlab-ci.yml" ||
+    normalized === "azure-pipelines.yml" ||
+    normalized === "buildkite.yml" ||
+    normalized === "circle.yml" ||
+    normalized === "jenkinsfile"
+  );
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(new Set(values.filter((value) => value.trim().length > 0))).sort();
+}
+
 function diffCharactersForFiles(rawDiff: string, files: string[]): number {
   const included = new Set(files.map(normalizePath));
   let currentPath: string | undefined;
@@ -1077,6 +1649,107 @@ function pathsOverlap(left: string, right: string): boolean {
     normalizedLeft === normalizedRight ||
     normalizedLeft.startsWith(`${normalizedRight}/`) ||
     normalizedRight.startsWith(`${normalizedLeft}/`)
+  );
+}
+
+function plannedFilesForReport(validation: ReportPlanValidation | undefined): string[] {
+  if (validation === undefined) {
+    return [];
+  }
+
+  const rawText = validation.parsedPlan.rawText;
+  const planned = [
+    ...validation.parsedPlan.proposedFiles,
+    ...(validation.parsedPlan.fileMentions ?? [])
+      .filter(
+        (mention) =>
+          mention.role === "edit" ||
+          (mention.role === "output" &&
+            isCredibleEditablePlanPath(mention.path) &&
+            hasEditIntentForPath(rawText, mention.path))
+      )
+      .map((mention) => mention.path),
+    ...(validation.parsedPlan.outputFiles ?? []).filter(
+      (path) => isCredibleEditablePlanPath(path) && hasEditIntentForPath(rawText, path)
+    ),
+    ...(validation.targetClassifications ?? [])
+      .filter(
+        (target) =>
+          target.classification === "direct" || target.classification === "derived"
+      )
+      .map((target) => target.target)
+  ];
+
+  return mergePathLists(planned);
+}
+
+function mergePathLists(...pathLists: string[][]): string[] {
+  return Array.from(
+    new Set(
+      pathLists
+        .flat()
+        .map(normalizePath)
+        .filter((path) => path.length > 0)
+    )
+  ).sort();
+}
+
+function isCredibleEditablePlanPath(path: string): boolean {
+  const normalized = normalizePath(path).toLowerCase();
+  const fileName = normalized.split("/").at(-1) ?? "";
+
+  return (
+    isSourceLikePath(normalized) ||
+    isTestPath(normalized) ||
+    isDocumentationPath(normalized) ||
+    /\.(?:css|html|json|scss|toml|ya?ml)$/iu.test(fileName)
+  );
+}
+
+function isSourceLikePath(path: string): boolean {
+  return /\.(?:cjs|cs|go|java|js|jsx|kt|mjs|php|py|rb|rs|svelte|ts|tsx|vue)$/iu.test(path);
+}
+
+function isTestPath(path: string): boolean {
+  return (
+    path.includes("/tests/") ||
+    path.includes("/test/") ||
+    path.includes("__tests__/") ||
+    /\.(?:spec|test)\.[a-z0-9]+$/iu.test(path)
+  );
+}
+
+function isDocumentationPath(path: string): boolean {
+  const fileName = path.split("/").at(-1) ?? "";
+
+  return (
+    path.startsWith("docs/") ||
+    [
+      "agents.md",
+      "architecture.md",
+      "changelog.md",
+      "contributing.md",
+      "full_context.md",
+      "notes.md",
+      "project_context.md",
+      "readme.md"
+    ].includes(fileName)
+  );
+}
+
+function hasEditIntentForPath(text: string, path: string): boolean {
+  const normalizedText = normalizePath(text);
+  const normalizedPath = normalizePath(path);
+  const index = normalizedText.indexOf(normalizedPath);
+
+  if (index < 0) {
+    return false;
+  }
+
+  const prefix = normalizedText.slice(Math.max(0, index - 140), index);
+
+  return /\b(?:add|change|connect|edit|extend|implement|migrate|modify|patch|refactor|synchronize|touch|update|wire)\b/iu.test(
+    prefix
   );
 }
 
@@ -1166,6 +1839,7 @@ function renderCompactFinalResponse(input: {
   scores: SessionReport["scores"];
   driftRisk: ReportRiskLevel;
   repositoryHygieneRisk: ReportRiskLevel;
+  requirements: ReportRequirementCompletion;
   efficiency: SessionReport["efficiency"];
   unresolvedWarnings: ReportWarning[];
 }): string {
@@ -1182,8 +1856,17 @@ function renderCompactFinalResponse(input: {
 - Drift risk: ${titleCase(input.driftRisk)}
 - Repository hygiene: ${titleCase(input.repositoryHygieneRisk)}
 - Output discipline: ${input.scores.outputDiscipline}/100
+- Canonical requirements: ${formatCompactRequirementSummary(input.requirements)}
 - Evidence-based token waste avoided: ${formatTokenEstimateForReport(input.efficiency.estimatedTokenWasteAvoided)} (${titleCase(input.efficiency.confidence)} confidence)
 - Unresolved warnings: ${warningSummary}`;
+}
+
+function formatCompactRequirementSummary(report: ReportRequirementCompletion): string {
+  if (report.summary.total === 0) {
+    return "unavailable";
+  }
+
+  return `${report.summary.mandatorySatisfied}/${report.summary.mandatory} mandatory satisfied; ${report.summary.prohibitedViolated} prohibited conflict(s)`;
 }
 
 function outputDisciplineNote(report: SessionReport): string {
@@ -1200,5 +1883,5 @@ function outputDisciplineNote(report: SessionReport): string {
 }
 
 function isPlanAligned(status: ReportPlanValidation["status"]): boolean {
-  return status === "aligned" || status === "approved";
+  return status === "aligned" || status === "advisory" || status === "approved";
 }

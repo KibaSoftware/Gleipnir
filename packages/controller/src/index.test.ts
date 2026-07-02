@@ -11,6 +11,7 @@ import {
   renderSessionReportMarkdown,
   type GitDiffContextLike,
   type ReportDiff,
+  type ReportRequirementLedger,
   type ScopeBudgetLike
 } from "./index.js";
 
@@ -71,6 +72,31 @@ describe("detectScopeDrift", () => {
     expect(result.status).toBe("advisory");
     expect(result.status).not.toBe("needs_cleanup");
     expect(result.findings.map((finding) => finding.title)).toContain(
+      "Added lines exceed scope budget"
+    );
+  });
+
+  it("scales line-count advisories for broad accepted work", () => {
+    const changedFiles = Array.from({ length: 8 }, (_, index) => `src/area${index + 1}.ts`);
+    const result = detectScopeDrift({
+      scopeBudget: budget({
+        taskBreadth: "subsystem",
+        allowedPaths: changedFiles,
+        expectedPaths: changedFiles,
+        softLimits: { maxFilesChanged: 16, maxLinesAdded: 600, maxLinesDeleted: 360 }
+      }),
+      gitDiffContext: diff({
+        changedFiles,
+        fileStats: changedFiles.map((path, index) => ({
+          path,
+          added: index === 0 ? 110 : 110,
+          deleted: 0
+        })),
+        totalLinesAdded: 880
+      })
+    });
+
+    expect(result.findings.map((finding) => finding.title)).not.toContain(
       "Added lines exceed scope budget"
     );
   });
@@ -733,6 +759,42 @@ describe("session reports", () => {
     expect(report.efficiency.breakdown.scopeWasteAvoided).toBeGreaterThan(0);
   });
 
+  it("does not claim scope savings from discovery-only outside-scope evidence", () => {
+    const report = generateSessionReport({
+      version: "0.8.3",
+      schemaVersion: "1.2.0",
+      sessionId: "session-1",
+      generatedAt: "2026-06-09T00:00:00.000Z",
+      scopeBudget: {
+        softLimits: {
+          maxFilesChanged: 5,
+          maxLinesAdded: 100,
+          maxLinesDeleted: 100
+        },
+        allowedPaths: ["src/discovered.ts"],
+        expectedPaths: ["src/discovered.ts"],
+        requiredTests: true
+      },
+      diff: reportDiff({
+        changedFiles: ["src/adjacent.ts"],
+        fileStats: [{ path: "src/adjacent.ts", added: 1, deleted: 0 }],
+        rawDiff:
+          "diff --git a/src/adjacent.ts b/src/adjacent.ts\n--- a/src/adjacent.ts\n+++ b/src/adjacent.ts\n+change\n",
+        totalLinesAdded: 1
+      }),
+      driftResult: {
+        status: "advisory",
+        findings: []
+      },
+      statusContent:
+        "# Gleip Status\n\n## Tests\n- pnpm test: pass\n\n## Risks\n- None identified.\n"
+    });
+
+    expect(report.warnings.map((warning) => warning.id)).toContain("scope.outside-budget");
+    expect(report.efficiency.breakdown.scopeWasteAvoided).toBe(0);
+    expect(report.efficiency.basis.map((item) => item.source)).not.toContain("avoided_diff");
+  });
+
   it("uses accepted plan validation for unplanned-file analysis", () => {
     const report = generateSessionReport({
       version: "0.7.5",
@@ -787,6 +849,71 @@ describe("session reports", () => {
     expect(report.warnings.find((warning) => warning.id === "plan.guidance")?.reason).toContain(
       "accepted implementation scope"
     );
+  });
+
+  it("uses credible edit mentions when old artifacts misbucket planned files as output", () => {
+    const report = generateSessionReport({
+      version: "0.8.3",
+      schemaVersion: "1.2.0",
+      sessionId: "session-1",
+      generatedAt: "2026-06-09T00:00:00.000Z",
+      scopeBudget: {
+        softLimits: {
+          maxFilesChanged: 8,
+          maxLinesAdded: 200,
+          maxLinesDeleted: 100
+        },
+        allowedPaths: ["src/analysis/engine.ts"],
+        expectedPaths: ["src/analysis/engine.ts"],
+        requiredTests: true,
+        verificationExpected: true
+      },
+      acceptedPlanValidation: {
+        status: "advisory",
+        findings: [],
+        parsedPlan: {
+          rawText:
+            "Edit src/analysis/engine.ts and src/api/contracts.ts to update cache-key isolation, then run focused tests.",
+          proposedFiles: ["src/analysis/engine.ts"],
+          outputFiles: ["src/api/contracts.ts"],
+          fileMentions: [
+            { path: "src/analysis/engine.ts", role: "edit", markedNew: false },
+            { path: "src/api/contracts.ts", role: "output", markedNew: false }
+          ]
+        }
+      },
+      planValidation: {
+        status: "advisory",
+        findings: [],
+        parsedPlan: {
+          rawText:
+            "Edit src/analysis/engine.ts and src/api/contracts.ts to update cache-key isolation, then run focused tests.",
+          proposedFiles: ["src/analysis/engine.ts"],
+          outputFiles: ["src/api/contracts.ts"],
+          fileMentions: [
+            { path: "src/analysis/engine.ts", role: "edit", markedNew: false },
+            { path: "src/api/contracts.ts", role: "output", markedNew: false }
+          ]
+        }
+      },
+      diff: reportDiff({
+        changedFiles: ["src/api/contracts.ts"],
+        fileStats: [{ path: "src/api/contracts.ts", added: 3, deleted: 0 }],
+        totalLinesAdded: 3
+      }),
+      driftResult: {
+        status: "clean",
+        findings: []
+      },
+      statusContent:
+        "# Gleip Status\n\n- Session files changed: 1\n\nValidation: pnpm vitest passed\n\n## Risks\n- None identified.\n"
+    });
+
+    expect(report.summary.unplannedFiles).toBe(0);
+    expect(report.summary.testsMentioned).toBe(true);
+    expect(report.warnings.map((warning) => warning.id)).not.toContain("plan.unplanned-files");
+    expect(report.warnings.map((warning) => warning.id)).not.toContain("scope.outside-budget");
+    expect(report.warnings.map((warning) => warning.id)).not.toContain("plan.guidance");
   });
 
   it("reports dirty baseline attribution without changing drift risk", () => {
@@ -1039,6 +1166,176 @@ describe("session reports", () => {
     expect(first.warnings.map((warning) => warning.id)).toContain("output.excessive-verbosity");
   });
 
+  it("keeps review readiness below 100 when mandatory canonical requirements lack evidence", () => {
+    const report = generateSessionReport({
+      version: "0.8.4",
+      schemaVersion: "1.3.0",
+      generatedAt: "2026-06-09T00:00:00.000Z",
+      diff: reportDiff(),
+      driftResult: {
+        status: "clean",
+        findings: []
+      },
+      requirementLedger: requirementLedger([
+        {
+          id: "req-1",
+          sourceText: "Must add CSV export to the users table.",
+          obligation: "required",
+          category: "behavior",
+          status: "active",
+          relatedPaths: ["src/features/users/UserTable.tsx"]
+        }
+      ])
+    });
+
+    expect(report.requirements.summary.mandatory).toBe(1);
+    expect(report.requirements.summary.mandatoryUnresolved).toBe(1);
+    expect(report.scores.reviewReadiness).toBeLessThan(100);
+    expect(report.scores.planAlignment).toBeLessThan(100);
+    expect(report.warnings.map((warning) => warning.id)).toContain("requirement.unresolved");
+    expect(report.finalResponse.markdown).toContain("0/1 mandatory satisfied");
+  });
+
+  it("marks mandatory requirements complete from local changed-path and verification evidence", () => {
+    const report = generateSessionReport({
+      version: "0.8.4",
+      schemaVersion: "1.3.0",
+      generatedAt: "2026-06-09T00:00:00.000Z",
+      scopeBudget: {
+        softLimits: {
+          maxFilesChanged: 5,
+          maxLinesAdded: 100,
+          maxLinesDeleted: 100
+        },
+        allowedPaths: ["src/features/users/UserTable.tsx"],
+        expectedPaths: ["src/features/users/UserTable.tsx"],
+        requiredTests: true,
+        verificationExpected: true,
+        planRequired: true
+      },
+      acceptedPlanValidation: {
+        status: "aligned",
+        findings: [],
+        parsedPlan: {
+          rawText: "Update src/features/users/UserTable.tsx and run focused tests.",
+          proposedFiles: ["src/features/users/UserTable.tsx"]
+        }
+      },
+      planValidation: {
+        status: "aligned",
+        findings: [],
+        parsedPlan: {
+          rawText: "Update src/features/users/UserTable.tsx and run focused tests.",
+          proposedFiles: ["src/features/users/UserTable.tsx"]
+        }
+      },
+      diff: reportDiff({
+        changedFiles: ["src/features/users/UserTable.tsx"],
+        fileStats: [{ path: "src/features/users/UserTable.tsx", added: 4, deleted: 0 }],
+        totalLinesAdded: 4
+      }),
+      driftResult: {
+        status: "clean",
+        findings: []
+      },
+      statusContent:
+        "# Gleip Status\n\n- Session files changed: 1\n\n## Tests\n- pnpm test: pass\n\n## Risks\n- None identified.\n",
+      requirementLedger: requirementLedger([
+        {
+          id: "req-1",
+          sourceText: "Must add CSV export to the users table.",
+          obligation: "required",
+          category: "behavior",
+          status: "active",
+          relatedPaths: ["src/features/users/UserTable.tsx"]
+        },
+        {
+          id: "req-2",
+          sourceText: "Run focused tests.",
+          obligation: "required",
+          category: "verification",
+          status: "active",
+          relatedVerification: "pnpm test"
+        }
+      ])
+    });
+
+    expect(report.requirements.summary.mandatorySatisfied).toBe(2);
+    expect(report.requirements.summary.mandatoryUnresolved).toBe(0);
+    expect(report.warnings.map((warning) => warning.id)).not.toContain("requirement.unresolved");
+  });
+
+  it("reports prohibited canonical requirement conflicts", () => {
+    const report = generateSessionReport({
+      version: "0.8.4",
+      schemaVersion: "1.3.0",
+      generatedAt: "2026-06-09T00:00:00.000Z",
+      diff: reportDiff({
+        changedFiles: ["package.json"],
+        fileStats: [{ path: "package.json", added: 1, deleted: 0 }],
+        totalLinesAdded: 1
+      }),
+      driftResult: {
+        status: "needs_approval",
+        findings: [
+          {
+            code: "DEPENDENCY_FILE_CHANGED",
+            severity: "approval_required",
+            title: "Dependency files changed",
+            message: "package.json changed and requires approval.",
+            examples: ["package.json"],
+            category: "dependencies"
+          }
+        ]
+      },
+      requirementLedger: requirementLedger([
+        {
+          id: "req-1",
+          sourceText: "Do not add dependencies.",
+          obligation: "prohibited",
+          category: "dependency",
+          status: "active"
+        }
+      ])
+    });
+
+    expect(report.requirements.summary.prohibitedViolated).toBe(1);
+    expect(report.scores.reviewReadiness).toBeLessThan(100);
+    expect(report.warnings).toContainEqual(
+      expect.objectContaining({
+        id: "requirement.prohibited-conflict",
+        severity: "high"
+      })
+    );
+  });
+
+  it("keeps optional canonical requirements advisory and unpenalized", () => {
+    const report = generateSessionReport({
+      version: "0.8.4",
+      schemaVersion: "1.3.0",
+      generatedAt: "2026-06-09T00:00:00.000Z",
+      diff: reportDiff(),
+      driftResult: {
+        status: "clean",
+        findings: []
+      },
+      requirementLedger: requirementLedger([
+        {
+          id: "req-1",
+          sourceText: "Consider adding extra documentation.",
+          obligation: "optional",
+          category: "documentation",
+          status: "active"
+        }
+      ])
+    });
+
+    expect(report.requirements.summary.advisory).toBe(1);
+    expect(report.scores.planAlignment).toBe(100);
+    expect(report.scores.reviewReadiness).toBe(100);
+    expect(report.warnings.map((warning) => warning.id)).not.toContain("requirement.unresolved");
+  });
+
   it("generates a compact final response block", () => {
     const report = generateSessionReport({
       version: "0.3.0",
@@ -1054,7 +1351,8 @@ describe("session reports", () => {
     expect(report.finalResponse.markdown).toContain("### Gleip");
     expect(report.finalResponse.markdown).toContain("Scope adherence:");
     expect(report.finalResponse.markdown).toContain("Output discipline:");
-    expect(report.finalResponse.markdown.split("\n")).toHaveLength(7);
+    expect(report.finalResponse.markdown).toContain("Canonical requirements:");
+    expect(report.finalResponse.markdown.split("\n")).toHaveLength(8);
   });
 
   it("renders a concise markdown report", () => {
@@ -1075,6 +1373,7 @@ describe("session reports", () => {
     expect(markdown).toContain("Scope adherence:");
     expect(markdown).toContain("Repository hygiene:");
     expect(markdown).toContain("Evidence-based token waste avoided:");
+    expect(markdown).toContain("## Canonical requirements");
     expect(markdown).toContain("## Recommended final response");
     expect(markdown).toContain("Token-waste reporting is deterministic and evidence-based.");
   });
@@ -1123,6 +1422,17 @@ function reportDiff(overrides: Partial<ReportDiff> = {}): ReportDiff {
     totalLinesDeleted: 0,
     isGitRepo: true,
     ...overrides
+  };
+}
+
+function requirementLedger(
+  requirements: ReportRequirementLedger["requirements"]
+): ReportRequirementLedger {
+  return {
+    schemaVersion: "1.0.0",
+    authority: "derived",
+    requirements,
+    conflicts: []
   };
 }
 

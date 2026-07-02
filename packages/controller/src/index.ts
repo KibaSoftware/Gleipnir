@@ -18,6 +18,12 @@ export type {
   ReportDriftFinding,
   ReportDriftResult,
   ReportPlanValidation,
+  ReportRequirementCompletion,
+  ReportRequirementCompletionItem,
+  ReportRequirementLedger,
+  ReportRequirementLedgerItem,
+  ReportRequirementObligation,
+  ReportRequirementStatus,
   ReportRiskLevel,
   ReportScopeBudget,
   ReportWarning,
@@ -296,6 +302,13 @@ function addSoftLimitFindings(
   scopeBudget: ScopeBudgetLike,
   metrics: { filesChanged: number; linesAdded: number; linesDeleted: number }
 ): void {
+  const effectiveMaxLinesAdded = isBroadTaskBreadth(scopeBudget.taskBreadth)
+    ? Math.max(scopeBudget.softLimits.maxLinesAdded, metrics.filesChanged * 120)
+    : scopeBudget.softLimits.maxLinesAdded;
+  const effectiveMaxLinesDeleted = isBroadTaskBreadth(scopeBudget.taskBreadth)
+    ? Math.max(scopeBudget.softLimits.maxLinesDeleted, metrics.filesChanged * 80)
+    : scopeBudget.softLimits.maxLinesDeleted;
+
   if (
     metrics.filesChanged > scopeBudget.softLimits.maxFilesChanged &&
     !isBroadTaskBreadth(scopeBudget.taskBreadth)
@@ -311,23 +324,23 @@ function addSoftLimitFindings(
     });
   }
 
-  if (metrics.linesAdded > scopeBudget.softLimits.maxLinesAdded) {
+  if (metrics.linesAdded > effectiveMaxLinesAdded) {
     findings.push({
       code: "SCOPE_LIMIT_EXCEEDED",
       severity: "warn",
       title: "Added lines exceed scope budget",
-      message: `${metrics.linesAdded} lines added; soft limit is ${scopeBudget.softLimits.maxLinesAdded}.`,
+      message: `${metrics.linesAdded} lines added; soft limit is ${effectiveMaxLinesAdded}.`,
       recommendation: "Check whether the implementation can be narrowed.",
       category: "soft_limit"
     });
   }
 
-  if (metrics.linesDeleted > scopeBudget.softLimits.maxLinesDeleted) {
+  if (metrics.linesDeleted > effectiveMaxLinesDeleted) {
     findings.push({
       code: "SCOPE_LIMIT_EXCEEDED",
       severity: "warn",
       title: "Deleted lines exceed scope budget",
-      message: `${metrics.linesDeleted} lines deleted; soft limit is ${scopeBudget.softLimits.maxLinesDeleted}.`,
+      message: `${metrics.linesDeleted} lines deleted; soft limit is ${effectiveMaxLinesDeleted}.`,
       recommendation: "Check whether deleted behavior is intentional and scoped.",
       category: "soft_limit"
     });

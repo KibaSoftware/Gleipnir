@@ -26,6 +26,8 @@ before 1.0 because noisy findings train agents and reviewers to ignore the signa
 - Scope rationale checks require named scope, a reason, and verification, but do not
   judge whether the rationale is true.
 - Expected paths describe likely declared scope; they are not an exclusive permission list.
+- The canonical task and active amendments outrank the derived brief and repository discovery.
+- Required and prohibited canonical requirements affect plan validation and review readiness; optional and ambiguous items remain advisory.
 - Dependency, CI, protected config, and security-sensitive changes require approval,
   attention, or cleanup rather than task denial.
 - Tracked `.gleip/` session artifacts are cleanup-required.

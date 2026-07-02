@@ -147,12 +147,16 @@ describe("collectWorkingTreeDiff", () => {
   it("reports tracked Gleip sidecar artifacts separately", () => {
     const repo = createCommittedRepo();
     writeRepoFile(repo, ".gleip/session.json", "{}\n");
-    git(repo, ["add", "-f", ".gleip/session.json"]);
+    writeRepoFile(repo, ".gleip/canonical-task.json", "{}\n");
+    git(repo, ["add", "-f", ".gleip/session.json", ".gleip/canonical-task.json"]);
 
     const diff = collectWorkingTreeDiff({ cwd: repo });
 
     expect(diff.changedFiles).toEqual([]);
-    expect(diff.trackedLocalArtifacts).toEqual([".gleip/session.json"]);
+    expect(diff.trackedLocalArtifacts).toEqual([
+      ".gleip/canonical-task.json",
+      ".gleip/session.json"
+    ]);
   });
 
   it("drops the tracked artifact report after the artifact is removed", () => {

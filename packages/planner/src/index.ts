@@ -151,6 +151,8 @@ export interface GenerateImplementationBriefInput {
   repoContext: RepoContext;
   scopeBudget: ScopeBudget;
   config?: ScopeBudgetConfig;
+  canonicalTask?: CanonicalTaskReference;
+  requirementLedger?: RequirementLedger;
 }
 
 export interface AgentPlan {
@@ -209,6 +211,7 @@ export interface PlanValidationResult {
   nextAction: string;
   parsedPlan: AgentPlan;
   targetClassifications?: ScopeTargetClassification[];
+  requirementCoverage?: PlanRequirementCoverage;
 }
 
 export interface ValidateAgentPlanInput {
@@ -218,6 +221,129 @@ export interface ValidateAgentPlanInput {
   cwd?: string;
   taskText?: string;
   contextFiles?: string[];
+  requirementLedger?: RequirementLedger;
+}
+
+export type RequirementObligation = "required" | "prohibited" | "optional" | "suggestion" | "informational";
+
+export type RequirementCategory =
+  | "architecture"
+  | "behavior"
+  | "CI"
+  | "compatibility"
+  | "dependency"
+  | "documentation"
+  | "migration"
+  | "output"
+  | "packaging"
+  | "performance"
+  | "platform"
+  | "privacy"
+  | "process"
+  | "release"
+  | "scope"
+  | "security"
+  | "safety"
+  | "unknown"
+  | "verification";
+
+export interface CanonicalTaskReference {
+  authority: "canonical";
+  taskId: string;
+  activeRevisionId: string;
+  contentHash: string;
+  artifactPath: string;
+}
+
+export interface RequirementSourceRevision {
+  revisionId: string;
+  revisionNumber: number;
+  content: string;
+}
+
+export interface RequirementLedgerInput {
+  taskText: string;
+  canonicalTaskHash?: string;
+  revisions?: RequirementSourceRevision[];
+}
+
+export interface RequirementLedger {
+  schemaVersion: "1.0.0";
+  authority: "derived";
+  canonicalTaskHash?: string;
+  offsetEncoding: "utf16";
+  requirements: TaskRequirement[];
+  conflicts: RequirementConflict[];
+  generatedAt?: string;
+}
+
+export interface TaskRequirement {
+  id: string;
+  sourceText: string;
+  canonicalRevisionId: string;
+  sourceStart: number;
+  sourceEnd: number;
+  offsetEncoding: "utf16";
+  category: RequirementCategory;
+  obligation: RequirementObligation;
+  status: "active" | "superseded" | "ambiguous";
+  confidence: Confidence;
+  explicit: boolean;
+  relatedPaths: string[];
+  relatedVerification?: string;
+  supersededBy?: string;
+}
+
+export interface RequirementConflict {
+  id: string;
+  requirementIds: string[];
+  reason: string;
+  severity: "advisory" | "blocking";
+}
+
+export type BriefRequirementCoverageStatus =
+  | "represented"
+  | "partially_represented"
+  | "referenced"
+  | "omitted"
+  | "ambiguous";
+
+export interface BriefRequirementCoverage {
+  requirementId: string;
+  status: BriefRequirementCoverageStatus;
+  reason: string;
+}
+
+export interface BriefCoverageAnalysis {
+  authority: "derived";
+  canonicalTaskHash?: string;
+  coverageStatus: "complete" | "omissions_visible" | "ambiguous";
+  omittedRequirementCount: number;
+  ambiguousRequirementCount: number;
+  requirements: BriefRequirementCoverage[];
+}
+
+export type PlanRequirementCoverageStatus =
+  | "addressed"
+  | "partially_addressed"
+  | "explicitly_deferred"
+  | "not_applicable"
+  | "missing"
+  | "conflicting"
+  | "ambiguous";
+
+export interface PlanRequirementCoverageItem {
+  requirementId: string;
+  status: PlanRequirementCoverageStatus;
+  reason: string;
+  evidence?: string[];
+}
+
+export interface PlanRequirementCoverage {
+  requirements: PlanRequirementCoverageItem[];
+  missingRequired: string[];
+  conflictingRequirements: string[];
+  deferredRequirements: string[];
 }
 
 interface ClassificationRule {
@@ -570,7 +696,8 @@ const contentExtensions = new Set([
   ".json",
   ".yml",
   ".yaml",
-  ".toml"
+  ".toml",
+  ".xml"
 ]);
 
 const binaryExtensions = new Set([
@@ -666,14 +793,20 @@ const expectedOutputDirectories = new Set([
   "coverage",
   "dist",
   "examples",
+  "fixtures",
   "generated",
   "logs",
   "out",
   "output",
   "outputs",
   "reports",
+  "results",
   "runs",
-  "samples"
+  "samples",
+  "snapshots",
+  "state",
+  "temp",
+  "tmp"
 ]);
 
 const dependencyRegistry = [
@@ -1085,13 +1218,106 @@ export function createScopeBudget(input: CreateScopeBudgetInput): ScopeBudget {
   };
 }
 
+export function extractRequirementLedger(input: RequirementLedgerInput | string): RequirementLedger {
+  const source =
+    typeof input === "string"
+      ? { taskText: input }
+      : input.revisions !== undefined && input.revisions.length > 0
+        ? input
+        : { ...input, revisions: [{ revisionId: "revision-1", revisionNumber: 1, content: input.taskText }] };
+  const revisions =
+    source.revisions ?? [{ revisionId: "revision-1", revisionNumber: 1, content: source.taskText }];
+  const requirements: TaskRequirement[] = [];
+
+  for (const revision of revisions.sort((left, right) => left.revisionNumber - right.revisionNumber)) {
+    for (const candidate of extractRequirementCandidates(revision)) {
+      requirements.push({
+        ...candidate,
+        id: `REQ-${String(requirements.length + 1).padStart(3, "0")}`
+      });
+    }
+  }
+
+  applyExplicitSupersession(requirements);
+  const conflicts = detectRequirementConflicts(requirements);
+
+  return {
+    schemaVersion: "1.0.0",
+    authority: "derived",
+    ...(typeof input === "string" || input.canonicalTaskHash === undefined
+      ? {}
+      : { canonicalTaskHash: input.canonicalTaskHash }),
+    offsetEncoding: "utf16",
+    requirements,
+    conflicts
+  };
+}
+
+export function analyzeBriefCoverage(
+  briefText: string,
+  ledger: RequirementLedger
+): BriefCoverageAnalysis {
+  const coverage = activeMandatoryRequirements(ledger).map((requirement) => {
+    const status = briefCoverageStatus(briefText, requirement);
+
+    return {
+      requirementId: requirement.id,
+      status,
+      reason: briefCoverageReason(status, requirement)
+    };
+  });
+  const omittedRequirementCount = coverage.filter((item) => item.status === "omitted").length;
+  const ambiguousRequirementCount = coverage.filter((item) => item.status === "ambiguous").length;
+
+  return {
+    authority: "derived",
+    ...(ledger.canonicalTaskHash === undefined ? {} : { canonicalTaskHash: ledger.canonicalTaskHash }),
+    coverageStatus:
+      omittedRequirementCount > 0
+        ? "omissions_visible"
+        : ambiguousRequirementCount > 0
+          ? "ambiguous"
+          : "complete",
+    omittedRequirementCount,
+    ambiguousRequirementCount,
+    requirements: coverage
+  };
+}
+
+export function analyzePlanRequirementCoverage(
+  planText: string,
+  parsedPlan: AgentPlan,
+  ledger: RequirementLedger,
+  planStructure?: PlanStructure
+): PlanRequirementCoverage {
+  const structure = planStructure ?? inferPlanStructureForCoverage(planText, parsedPlan);
+  const items = activeMandatoryRequirements(ledger).map((requirement) =>
+    planRequirementCoverageItem(planText, parsedPlan, requirement, structure)
+  );
+
+  return {
+    requirements: items,
+    missingRequired: items
+      .filter((item) => item.status === "missing")
+      .map((item) => item.requirementId),
+    conflictingRequirements: items
+      .filter((item) => item.status === "conflicting")
+      .map((item) => item.requirementId),
+    deferredRequirements: items
+      .filter((item) => item.status === "explicitly_deferred")
+      .map((item) => item.requirementId)
+  };
+}
+
 export function generateImplementationBrief(input: GenerateImplementationBriefInput): string {
   const { task, classification, repoContext, scopeBudget } = input;
+  const taskReference = formatTaskReference(task, input.canonicalTask);
 
   if (scopeBudget.workflowProfile === "documentation_only") {
-    return `# Gleip Implementation Brief
+    return withBriefAuthority(
+      `# Gleip Implementation Brief
 
-Task: ${task}
+${taskReference}
 Profile: documentation_only
 Risk: ${scopeBudget.riskLevel}
 Expected scope:
@@ -1106,14 +1332,17 @@ Applicable protections:
 - Dependency and CI changes require approval if introduced.
 - Tests may not be skipped, deleted, or weakened.
 - Secrets are always blocked.
-`;
+`,
+      input
+    );
   }
 
   if (scopeBudget.workflowProfile === "local_behavior_change") {
-    return `# Gleip Implementation Brief
+    return withBriefAuthority(
+      `# Gleip Implementation Brief
 
 ## Task
-${task}
+${taskReference}
 
 ## Classification
 - Type: ${classification.taskType}
@@ -1147,13 +1376,16 @@ ${formatRequiredTests(scopeBudget)}
 
 ## Before final response
 Run focused verification, \`npx --no-install gleip check --incremental\`, and \`npx --no-install gleip status --compact\`. Report files changed, tests run, and residual risks.
-`;
+`,
+      input
+    );
   }
 
-  return `# Gleip Implementation Brief
+  return withBriefAuthority(
+    `# Gleip Implementation Brief
 
 ## Task
-${task}
+${taskReference}
 
 ## Classification
 - Type: ${classification.taskType}
@@ -1229,7 +1461,726 @@ ${formatStringListForBrief(scopeBudget.stopConditions, 8)}
 4. Report files changed.
 5. Report tests run.
 6. Report whether Gleip status is clean, advisory, needs_attention, needs_cleanup, or needs_approval.
-`;
+`,
+    input
+  );
+}
+
+function extractRequirementCandidates(
+  revision: RequirementSourceRevision
+): Array<Omit<TaskRequirement, "id">> {
+  const requirements: Array<Omit<TaskRequirement, "id">> = [];
+  let sectionContext: RequirementObligation | undefined;
+  let sectionCategory: RequirementCategory | undefined;
+
+  for (const line of sourceLines(revision.content)) {
+    const trimmed = line.text.trim();
+
+    if (trimmed.length === 0) {
+      continue;
+    }
+
+    const heading = requirementSectionHeading(trimmed);
+
+    if (heading !== undefined) {
+      sectionContext = heading.obligation;
+      sectionCategory = heading.category;
+      continue;
+    }
+
+    const sourceText = stripMarkdownListMarker(trimmed);
+    const obligation = classifyRequirementObligation(sourceText, sectionContext);
+
+    if (obligation === "informational" && !hasRequirementSignal(sourceText)) {
+      continue;
+    }
+
+    const sourceStart = line.start + line.text.indexOf(trimmed);
+    const explicit = hasExplicitRequirementSignal(sourceText) || sectionContext !== undefined;
+    const category = sectionCategory ?? classifyRequirementCategory(sourceText);
+    const relatedVerification = relatedVerificationText(sourceText);
+
+    requirements.push({
+      sourceText,
+      canonicalRevisionId: revision.revisionId,
+      sourceStart,
+      sourceEnd: sourceStart + trimmed.length,
+      offsetEncoding: "utf16",
+      category,
+      obligation,
+      status: obligation === "informational" ? "ambiguous" : "active",
+      confidence: explicit ? "high" : obligation === "informational" ? "low" : "medium",
+      explicit,
+      relatedPaths: extractPathTokens(sourceText).sort(comparePaths),
+      ...(relatedVerification === undefined ? {} : { relatedVerification })
+    });
+  }
+
+  return requirements;
+}
+
+function sourceLines(content: string): Array<{ text: string; start: number }> {
+  const lines: Array<{ text: string; start: number }> = [];
+  const pattern = /([^\r\n]*)(?:\r\n|\r|\n|$)/gu;
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(content)) !== null) {
+    const text = match[1] ?? "";
+
+    if (text.length > 0 || match.index < content.length) {
+      lines.push({ text, start: match.index });
+    }
+
+    if (match[0] === "") {
+      break;
+    }
+  }
+
+  return lines;
+}
+
+function requirementSectionHeading(
+  line: string
+): { obligation: RequirementObligation; category?: RequirementCategory } | undefined {
+  const looksLikeHeading =
+    /^#{1,6}\s/u.test(line) ||
+    /:\s*$/u.test(line) ||
+    (!/[.!?]\s*$/u.test(line) && line.length <= 80);
+
+  if (!looksLikeHeading) {
+    return undefined;
+  }
+
+  const normalized = line.replace(/^#{1,6}\s*/u, "").replace(/:$/u, "").trim().toLowerCase();
+
+  if (/\b(?:must not|do not|never|exclusions?|prohibited|out of scope)\b/u.test(normalized)) {
+    return { obligation: "prohibited", category: "scope" };
+  }
+
+  if (/\b(?:acceptance criteria|requirements?|required|constraints?|expected result|before completion)\b/u.test(normalized)) {
+    return { obligation: "required" };
+  }
+
+  if (/\b(?:verification|tests?|validation|checks?)\b/u.test(normalized)) {
+    return { obligation: "required", category: "verification" };
+  }
+
+  if (/\b(?:release instructions?|release checklist|packaging)\b/u.test(normalized)) {
+    return { obligation: "required", category: "release" };
+  }
+
+  if (/\b(?:optional|suggestions?|nice to have|could consider)\b/u.test(normalized)) {
+    return { obligation: "optional" };
+  }
+
+  return undefined;
+}
+
+function stripMarkdownListMarker(value: string): string {
+  return value.replace(/^\s*(?:[-*+]|\d+\.)\s*/u, "").trim();
+}
+
+function classifyRequirementObligation(
+  text: string,
+  sectionContext: RequirementObligation | undefined
+): RequirementObligation {
+  if (/\b(?:must not|do not|don't|never|prohibit(?:ed)?|no)\b/iu.test(text)) {
+    return "prohibited";
+  }
+
+  if (sectionContext === "prohibited") {
+    return "prohibited";
+  }
+
+  if (/\b(?:optional|may|could|nice to have)\b/iu.test(text)) {
+    return "optional";
+  }
+
+  if (sectionContext === "optional" || sectionContext === "suggestion") {
+    return sectionContext;
+  }
+
+  if (/\b(?:should|recommended|consider)\b/iu.test(text)) {
+    return "suggestion";
+  }
+
+  if (
+    /\b(?:must|required|requires?|ensure|acceptance criteria|before completion|expected result|implement|update|fix|add|preserve|support|verify|validate|run|prepare|document|replace|supersede)\b/iu.test(
+      text
+    )
+  ) {
+    return "required";
+  }
+
+  return sectionContext ?? "informational";
+}
+
+function hasRequirementSignal(text: string): boolean {
+  return (
+    hasExplicitRequirementSignal(text) ||
+    /\b(?:acceptance criteria|expected result|before completion|release instructions?|replace|supersede)\b/iu.test(
+      text
+    )
+  );
+}
+
+function hasExplicitRequirementSignal(text: string): boolean {
+  return /\b(?:must|must not|do not|don't|never|required|requires?|optional|should|recommended|consider|ensure|before completion|expected result)\b/iu.test(
+    text
+  );
+}
+
+function classifyRequirementCategory(text: string): RequirementCategory {
+  const normalized = text.toLowerCase();
+
+  if (/\b(?:test|tests|verify|verification|validate|validation|lint|typecheck|build|smoke)\b/u.test(normalized)) {
+    return "verification";
+  }
+
+  if (/\b(?:docs?|documentation|readme|changelog|context file)\b/u.test(normalized)) {
+    return "documentation";
+  }
+
+  if (/\b(?:release|version|tag|publish|pack|tarball|npm)\b/u.test(normalized)) {
+    return "release";
+  }
+
+  if (/\b(?:package|packaging|archive|install|bundle)\b/u.test(normalized)) {
+    return "packaging";
+  }
+
+  if (/\b(?:dependency|dependencies|lockfile|package manager)\b/u.test(normalized)) {
+    return "dependency";
+  }
+
+  if (/\b(?:ci|workflow|github actions?|pipeline)\b/u.test(normalized)) {
+    return "CI";
+  }
+
+  if (/\b(?:windows|macos|linux|cross-platform|path semantics|unicode|utf-?8)\b/u.test(normalized)) {
+    return "platform";
+  }
+
+  if (/\b(?:local-only|telemetry|network|remote|privacy|provider|api call)\b/u.test(normalized)) {
+    return "privacy";
+  }
+
+  if (/\b(?:secret|security|auth|authentication|permission|safety)\b/u.test(normalized)) {
+    return "security";
+  }
+
+  if (/\b(?:scope|file|path|touch|edit|modify|change set|diff)\b/u.test(normalized)) {
+    return "scope";
+  }
+
+  if (/\b(?:report|final response|output|artifact|brief)\b/u.test(normalized)) {
+    return "output";
+  }
+
+  if (/\b(?:migration|migrate|schema)\b/u.test(normalized)) {
+    return "migration";
+  }
+
+  if (/\b(?:architecture|abstraction|boundary|design)\b/u.test(normalized)) {
+    return "architecture";
+  }
+
+  if (/\b(?:performance|efficient|token|wasted work)\b/u.test(normalized)) {
+    return "performance";
+  }
+
+  if (/\b(?:process|workflow|before|after|step)\b/u.test(normalized)) {
+    return "process";
+  }
+
+  if (/\b(?:behavior|feature|bug|fix|implement|support)\b/u.test(normalized)) {
+    return "behavior";
+  }
+
+  return "unknown";
+}
+
+function relatedVerificationText(text: string): string | undefined {
+  return /\b(?:test|tests|verify|verification|validate|validation|lint|typecheck|build|smoke)\b/iu.test(
+    text
+  )
+    ? text
+    : undefined;
+}
+
+function applyExplicitSupersession(requirements: TaskRequirement[]): void {
+  for (const requirement of requirements) {
+    if (
+      !/\b(?:replace|replaces|supersede|supersedes|instead of|no longer|now use|change .* from .* to)\b/iu.test(
+        requirement.sourceText
+      )
+    ) {
+      continue;
+    }
+
+    for (const candidate of requirements) {
+      if (
+        candidate.id === requirement.id ||
+        candidate.status !== "active" ||
+        candidate.canonicalRevisionId === requirement.canonicalRevisionId
+      ) {
+        continue;
+      }
+
+      if (
+        candidate.category === requirement.category ||
+        pathsIntersect(candidate.relatedPaths, requirement.relatedPaths)
+      ) {
+        candidate.status = "superseded";
+        candidate.supersededBy = requirement.id;
+      }
+    }
+  }
+}
+
+function detectRequirementConflicts(requirements: TaskRequirement[]): RequirementConflict[] {
+  const conflicts: RequirementConflict[] = [];
+  const active = requirements.filter(
+    (requirement) =>
+      requirement.status === "active" &&
+      (requirement.obligation === "required" || requirement.obligation === "prohibited")
+  );
+
+  for (let index = 0; index < active.length; index += 1) {
+    for (let nextIndex = index + 1; nextIndex < active.length; nextIndex += 1) {
+      const left = active[index];
+      const right = active[nextIndex];
+
+      if (left === undefined || right === undefined || left.obligation === right.obligation) {
+        continue;
+      }
+
+      if (!requirementsConflict(left, right)) {
+        continue;
+      }
+
+      conflicts.push({
+        id: `REQ-CONFLICT-${String(conflicts.length + 1).padStart(3, "0")}`,
+        requirementIds: [left.id, right.id].sort(),
+        reason: "Required and prohibited canonical requirements overlap.",
+        severity: pathsIntersect(left.relatedPaths, right.relatedPaths) ? "blocking" : "advisory"
+      });
+    }
+  }
+
+  return conflicts;
+}
+
+function requirementsConflict(left: TaskRequirement, right: TaskRequirement): boolean {
+  if (pathsIntersect(left.relatedPaths, right.relatedPaths)) {
+    return true;
+  }
+
+  return left.category === right.category && tokenOverlapRatio(left.sourceText, right.sourceText) >= 0.35;
+}
+
+function pathsIntersect(left: string[], right: string[]): boolean {
+  return left.some((leftPath) => right.some((rightPath) => pathsOverlap(leftPath, rightPath)));
+}
+
+function activeMandatoryRequirements(ledger: RequirementLedger): TaskRequirement[] {
+  return ledger.requirements.filter(
+    (requirement) =>
+      requirement.status === "active" &&
+      (requirement.obligation === "required" || requirement.obligation === "prohibited")
+  );
+}
+
+function briefCoverageStatus(
+  briefText: string,
+  requirement: TaskRequirement
+): BriefRequirementCoverageStatus {
+  const normalizedBrief = normalizeComparableText(briefText);
+
+  if (normalizedBrief.includes(requirement.id.toLowerCase())) {
+    return "referenced";
+  }
+
+  if (
+    requirement.relatedPaths.length > 0 &&
+    requirement.relatedPaths.some((path) => normalizedBrief.includes(path.toLowerCase()))
+  ) {
+    return "represented";
+  }
+
+  const overlap = tokenOverlapRatio(briefText, requirement.sourceText);
+
+  if (overlap >= 0.55) {
+    return "represented";
+  }
+
+  if (overlap >= 0.25) {
+    return "partially_represented";
+  }
+
+  return requirement.confidence === "low" ? "ambiguous" : "omitted";
+}
+
+function briefCoverageReason(
+  status: BriefRequirementCoverageStatus,
+  requirement: TaskRequirement
+): string {
+  if (status === "represented") {
+    return "Requirement text, path, or equivalent keywords appear in the derived brief.";
+  }
+
+  if (status === "partially_represented") {
+    return "Some requirement keywords appear in the derived brief.";
+  }
+
+  if (status === "referenced") {
+    return "Requirement is listed by stable ID in the derived brief.";
+  }
+
+  if (status === "ambiguous") {
+    return "Low-confidence requirement was not clearly represented.";
+  }
+
+  return `${requirement.id} is not repeated in the derived brief body.`;
+}
+
+function planRequirementCoverageItem(
+  planText: string,
+  parsedPlan: AgentPlan,
+  requirement: TaskRequirement,
+  planStructure: PlanStructure
+): PlanRequirementCoverageItem {
+  if (planDefersRequirement(planText, requirement)) {
+    return {
+      requirementId: requirement.id,
+      status: "explicitly_deferred",
+      reason: "Plan explicitly defers this canonical requirement.",
+      evidence: [requirement.sourceText]
+    };
+  }
+
+  if (requirement.obligation === "prohibited") {
+    return planViolatesProhibition(planText, parsedPlan, requirement)
+      ? {
+          requirementId: requirement.id,
+          status: "conflicting",
+          reason: "Plan conflicts with a prohibited canonical requirement.",
+          evidence: [requirement.sourceText]
+        }
+      : {
+          requirementId: requirement.id,
+          status: "addressed",
+          reason: "No planned action conflicts with this prohibition.",
+          evidence: [requirement.sourceText]
+        };
+  }
+
+  const evidence = requirementEvidence(planText, parsedPlan, requirement, planStructure);
+
+  if (evidence.coverage === "addressed") {
+    return {
+      requirementId: requirement.id,
+      status: "addressed",
+      reason: "Plan covers the canonical requirement with local evidence.",
+      evidence: evidence.evidence
+    };
+  }
+
+  if (evidence.coverage === "partial") {
+    return {
+      requirementId: requirement.id,
+      status: "partially_addressed",
+      reason: "Plan covers part of the canonical requirement.",
+      evidence: evidence.evidence
+    };
+  }
+
+  if (requirement.confidence === "low") {
+    return {
+      requirementId: requirement.id,
+      status: "ambiguous",
+      reason: "Requirement extraction confidence is low; plan coverage is advisory.",
+      evidence: [requirement.sourceText]
+    };
+  }
+
+  return {
+    requirementId: requirement.id,
+    status: "missing",
+    reason: "Plan does not address this mandatory canonical requirement.",
+    evidence: [requirement.sourceText]
+  };
+}
+
+function planDefersRequirement(planText: string, requirement: TaskRequirement): boolean {
+  const normalizedPlan = normalizeComparableText(planText);
+
+  return (
+    normalizedPlan.includes(requirement.id.toLowerCase()) &&
+    /\b(?:defer|deferred|later|follow-up|not in this patch|not applicable)\b/iu.test(planText)
+  );
+}
+
+function planViolatesProhibition(
+  planText: string,
+  parsedPlan: AgentPlan,
+  requirement: TaskRequirement
+): boolean {
+  const text = normalizeComparableText(`${planText}\n${parsedPlan.proposedFiles.join("\n")}`);
+
+  if (
+    requirement.relatedPaths.length > 0 &&
+    requirement.relatedPaths.some((path) =>
+      parsedPlan.proposedFiles.some((planned) => pathsOverlap(planned, path))
+    )
+  ) {
+    return true;
+  }
+
+  if (requirement.category === "dependency" && parsedPlan.mentionsNewDependencies) {
+    return true;
+  }
+
+  if (requirement.category === "CI" && parsedPlan.mentionsCiChanges) {
+    return true;
+  }
+
+  if (requirement.category === "verification" && parsedPlan.mentionsTestWeakening) {
+    return true;
+  }
+
+  if (/\b(?:publish|push|tag|commit)\b/u.test(text) && /\b(?:publish|push|tag|commit)\b/iu.test(requirement.sourceText)) {
+    return true;
+  }
+
+  return false;
+}
+
+function requirementEvidence(
+  planText: string,
+  parsedPlan: AgentPlan,
+  requirement: TaskRequirement,
+  planStructure: PlanStructure
+): { coverage: "addressed" | "partial" | "missing"; evidence: string[] } {
+  const normalizedPlan = normalizeComparableText(planText);
+
+  if (requirement.relatedPaths.length > 0) {
+    const coveredPaths = requirement.relatedPaths.filter((path) =>
+      parsedPlan.proposedFiles.some((planned) => pathsOverlap(planned, path))
+    );
+
+    if (coveredPaths.length === requirement.relatedPaths.length) {
+      return { coverage: "addressed", evidence: coveredPaths };
+    }
+
+    if (coveredPaths.length > 0) {
+      return { coverage: "partial", evidence: coveredPaths };
+    }
+  }
+
+  if (requirement.category === "verification") {
+    return planStructure.hasVerification
+      ? { coverage: "addressed", evidence: ["verification wording"] }
+      : { coverage: "missing", evidence: [] };
+  }
+
+  if (
+    requirement.category === "documentation" &&
+    (parsedPlan.proposedFiles.some(isDocumentationTarget) ||
+      /\b(?:docs?|documentation|readme|changelog)\b/u.test(normalizedPlan))
+  ) {
+    return { coverage: "addressed", evidence: ["documentation wording"] };
+  }
+
+  if (
+    (requirement.category === "release" || requirement.category === "packaging") &&
+    /\b(?:version|release|changelog|package|pack|smoke|build|tarball|npm)\b/u.test(normalizedPlan)
+  ) {
+    return { coverage: "addressed", evidence: ["release/package wording"] };
+  }
+
+  if (
+    requirement.category === "platform" &&
+    /\b(?:windows|macos|linux|cross-platform|path|unicode|utf-?8)\b/u.test(normalizedPlan)
+  ) {
+    return { coverage: "addressed", evidence: ["platform wording"] };
+  }
+
+  if (tokenOverlapRatio(planText, requirement.sourceText) >= 0.45) {
+    return { coverage: "addressed", evidence: ["requirement keyword overlap"] };
+  }
+
+  if (tokenOverlapRatio(planText, requirement.sourceText) >= 0.25) {
+    return { coverage: "partial", evidence: ["partial requirement keyword overlap"] };
+  }
+
+  return { coverage: "missing", evidence: [] };
+}
+
+function inferPlanStructureForCoverage(planText: string, parsedPlan: AgentPlan): PlanStructure {
+  return {
+    hasFiles: parsedPlan.proposedFiles.length > 0 || extractPathTokens(planText).length > 0,
+    hasImplementation:
+      parsedPlan.proposedFiles.length > 0 ||
+      /\b(?:implement|update|modify|edit|change|fix|add|remove|refactor)\b/iu.test(planText),
+    hasRiskRationale: /\b(?:risk|rationale|because|needed|required|scope|assumption)\b/iu.test(
+      planText
+    ),
+    hasVerification: /\b(?:test|tests|verify|verification|validate|validation|lint|typecheck|build|smoke|check)\b/iu.test(
+      planText
+    )
+  };
+}
+
+function isDocumentationTarget(path: string): boolean {
+  const normalized = normalizePath(path).toLowerCase();
+  const fileName = basename(normalized);
+
+  return (
+    normalized.startsWith("docs/") ||
+    ["readme.md", "changelog.md", "agents.md", "contributing.md"].includes(fileName)
+  );
+}
+
+function tokenOverlapRatio(left: string, right: string): number {
+  const leftTokens = new Set(requirementTokens(left));
+  const rightTokens = requirementTokens(right);
+
+  if (rightTokens.length === 0) {
+    return 0;
+  }
+
+  let overlap = 0;
+
+  for (const token of rightTokens) {
+    if (leftTokens.has(token)) {
+      overlap += 1;
+    }
+  }
+
+  return overlap / rightTokens.length;
+}
+
+function requirementTokens(value: string): string[] {
+  return normalizeComparableText(value)
+    .split(/[^a-z0-9_/-]+/u)
+    .filter((token) => token.length > 2)
+    .filter(
+      (token) =>
+        !new Set([
+          "the",
+          "and",
+          "for",
+          "that",
+          "this",
+          "with",
+          "from",
+          "into",
+          "must",
+          "should",
+          "required",
+          "require",
+          "requires"
+        ]).has(token)
+    );
+}
+
+function normalizeComparableText(value: string): string {
+  return normalizePath(value).toLowerCase();
+}
+
+function formatTaskReference(task: string, canonicalTask: CanonicalTaskReference | undefined): string {
+  const preview = taskPreview(task);
+
+  if (canonicalTask === undefined) {
+    return `Task preview: ${preview}`;
+  }
+
+  return [
+    `- Canonical task: ${canonicalTask.artifactPath}`,
+    `- Canonical revision: ${canonicalTask.activeRevisionId}`,
+    `- Canonical hash: ${canonicalTask.contentHash}`,
+    `- Task preview: ${preview}`
+  ].join("\n");
+}
+
+function taskPreview(task: string): string {
+  const compact = task.replace(/\s+/gu, " ").trim();
+
+  return compact.length <= 220 ? compact : `${compact.slice(0, 217)}...`;
+}
+
+function withBriefAuthority(
+  body: string,
+  input: GenerateImplementationBriefInput
+): string {
+  const coverage =
+    input.requirementLedger === undefined
+      ? undefined
+      : analyzeBriefCoverage(body, input.requirementLedger);
+  const metadata = {
+    authority: "derived",
+    canonicalTaskId: input.canonicalTask?.taskId ?? null,
+    canonicalRevisionId: input.canonicalTask?.activeRevisionId ?? null,
+    canonicalTaskHash: input.canonicalTask?.contentHash ?? input.requirementLedger?.canonicalTaskHash ?? null,
+    generatedFrom: input.canonicalTask?.artifactPath ?? "task text received by Gleip",
+    briefSchemaVersion: "1.0.0",
+    coverageStatus: coverage?.coverageStatus ?? "unavailable",
+    omittedRequirementCount: coverage?.omittedRequirementCount ?? 0,
+    ambiguousRequirementCount: coverage?.ambiguousRequirementCount ?? 0
+  };
+  const authority = [
+    "<!-- GLEIP_BRIEF_METADATA",
+    JSON.stringify(metadata, null, 2),
+    "GLEIP_BRIEF_METADATA -->",
+    "## Authority",
+    "This brief is derived from the canonical user task.",
+    "It is a navigation aid, not a replacement.",
+    "If it omits or conflicts with a user requirement, the canonical task is authoritative.",
+    "Do not infer that omitted brief details are optional."
+  ].join("\n");
+
+  return `${body.trimEnd()}\n\n${authority}\n\n${formatBriefCoverageSection(
+    input.requirementLedger,
+    coverage
+  )}\n`;
+}
+
+function formatBriefCoverageSection(
+  ledger: RequirementLedger | undefined,
+  coverage: BriefCoverageAnalysis | undefined
+): string {
+  if (ledger === undefined || coverage === undefined) {
+    return [
+      "## Canonical requirement coverage",
+      "- Requirement ledger unavailable for this brief."
+    ].join("\n");
+  }
+
+  const omitted = coverage.requirements
+    .filter((item) => item.status === "omitted" || item.status === "ambiguous")
+    .map((item) => ledger.requirements.find((requirement) => requirement.id === item.requirementId))
+    .filter((requirement): requirement is TaskRequirement => requirement !== undefined)
+    .slice(0, 10);
+
+  return [
+    "## Canonical requirement coverage",
+    `- Coverage status: ${coverage.coverageStatus}`,
+    `- Mandatory/prohibited requirements checked: ${coverage.requirements.length}`,
+    `- Omitted from navigation body: ${coverage.omittedRequirementCount}`,
+    `- Ambiguous coverage: ${coverage.ambiguousRequirementCount}`,
+    "",
+    "Canonical requirements not repeated in this brief:",
+    ...(omitted.length === 0
+      ? ["- None detected."]
+      : omitted.map((requirement) => `- ${requirement.id}: ${shortRequirementText(requirement)}`))
+  ].join("\n");
+}
+
+function shortRequirementText(requirement: TaskRequirement): string {
+  const compact = requirement.sourceText.replace(/\s+/gu, " ").trim();
+
+  return compact.length <= 120 ? compact : `${compact.slice(0, 117)}...`;
 }
 
 export function parseAgentPlan(
@@ -1431,6 +2382,18 @@ export function validateAgentPlan(input: ValidateAgentPlanInput): PlanValidation
     input.planText
   );
   findings.push(...protectedSemanticFindings);
+  const requirementCoverage =
+    input.requirementLedger === undefined
+      ? undefined
+      : analyzePlanRequirementCoverage(
+          input.planText,
+          parsedPlan,
+          input.requirementLedger,
+          planStructure
+        );
+  if (input.requirementLedger !== undefined && requirementCoverage !== undefined) {
+    findings.push(...validatePlanRequirements(input.requirementLedger, requirementCoverage));
+  }
 
   if (input.scopeBudget.requiredTests && !planStructure.hasVerification) {
     findings.push({
@@ -1505,8 +2468,73 @@ export function validateAgentPlan(input: ValidateAgentPlanInput): PlanValidation
     summary: planValidationSummary(status, findings),
     nextAction: planValidationNextAction(status),
     parsedPlan,
-    targetClassifications
+    targetClassifications,
+    ...(requirementCoverage === undefined ? {} : { requirementCoverage })
   };
+}
+
+function validatePlanRequirements(
+  ledger: RequirementLedger,
+  coverage: PlanRequirementCoverage
+): PlanValidationFinding[] {
+  const findings: PlanValidationFinding[] = [];
+  const requirementById = new Map(
+    ledger.requirements.map((requirement) => [requirement.id, requirement])
+  );
+  const blockingConflicts = ledger.conflicts.filter((conflict) => conflict.severity === "blocking");
+
+  if (blockingConflicts.length > 0) {
+    findings.push({
+      code: "CANONICAL_REQUIREMENT_CONFLICT",
+      severity: "action_required",
+      title: "Canonical requirements conflict",
+      message:
+        "The canonical task has required and prohibited requirements that overlap and need clarification.",
+      recommendation:
+        "Resolve the conflicting user requirements or add an explicit superseding amendment.",
+      evidence: blockingConflicts.flatMap((conflict) => conflict.requirementIds)
+    });
+  }
+
+  if (coverage.conflictingRequirements.length > 0) {
+    findings.push({
+      code: "CANONICAL_PROHIBITION_CONFLICT",
+      severity: "action_required",
+      title: "Plan conflicts with canonical prohibition",
+      message:
+        "The plan proposes work that conflicts with a prohibited canonical requirement.",
+      recommendation: "Remove the prohibited action or obtain explicit user approval.",
+      evidence: coverage.conflictingRequirements.flatMap((id) =>
+        requirementEvidenceById(requirementById, id)
+      )
+    });
+  }
+
+  if (coverage.missingRequired.length > 0) {
+    findings.push({
+      code: "CANONICAL_REQUIREMENT_MISSING",
+      severity: "warn",
+      title: "Mandatory canonical requirement missing",
+      message:
+        "The plan does not address one or more mandatory requirements from the canonical task.",
+      recommendation:
+        "Update the plan to cover the missing canonical requirements or explicitly defer them with rationale.",
+      evidence: coverage.missingRequired.flatMap((id) =>
+        requirementEvidenceById(requirementById, id)
+      )
+    });
+  }
+
+  return findings;
+}
+
+function requirementEvidenceById(
+  requirementById: Map<string, TaskRequirement>,
+  id: string
+): string[] {
+  const requirement = requirementById.get(id);
+
+  return requirement === undefined ? [id] : [`${id}: ${shortRequirementText(requirement)}`];
 }
 
 function scanRepository(
@@ -2044,8 +3072,12 @@ function extractExplicitEditTargets(text: string): string[] {
   let editListActive = false;
 
   for (const clause of splitIntentClauses(text)) {
-    const paths: string[] = extractPathTokens(clause);
     const hasEditIntent: boolean = hasAffirmativeEditIntent(clause);
+    const paths: string[] = hasEditIntent
+      ? extractPathTokens(leadingEditableTargetSegment(clause), {
+          structuredPathContext: true
+        })
+      : extractPathTokens(clause);
     const continuationPaths: string[] = editListActive
       ? editTargetListContinuationPaths(clause)
       : [];
@@ -2092,6 +3124,16 @@ function leadingEditTargetSegment(clause: string): string {
   const match =
     /^(.+?)(?:[.!?]\s+(?=(?:read|review|run|execute|verify|check|test|inspect)\b)|$)/iu.exec(
       clause
+    );
+
+  return match?.[1] ?? clause;
+}
+
+function leadingEditableTargetSegment(clause: string): string {
+  const normalizedClause = clause.replace(/^\s*(?:[-*]|\d+\.)\s*/u, "");
+  const match =
+    /^(.+?)(?:\s*(?:->|=>)\s*(?=(?:check|run|test|validate|verify)\b)|\s+\band\s+(?=(?:check|run|test|validate|verify)\b)|\s+\b(?:as|based on|because|by|for|so that|to|using|via|with)\b|[.!?]\s+(?=(?:check|inspect|read|review|run|test|validate|verify)\b)|$)/iu.exec(
+      normalizedClause
     );
 
   return match?.[1] ?? clause;
@@ -2269,8 +3311,9 @@ function extractPlanFileMentions(
       inTargetSection =
         /^(?:files?|scope|targets?|touched files?|modules?|routes?|surfaces?)$/iu.test(label);
     }
+    const pathSource = hasStructuredTargetPrefix(line) ? leadingEditableTargetSegment(line) : line;
 
-    for (const path of extractPathTokens(line, {
+    for (const path of extractPathTokens(pathSource, {
       structuredPathContext: inTargetSection || hasStructuredTargetPrefix(line)
     })) {
       allPaths.add(path);
@@ -2342,15 +3385,77 @@ function isNewFileMention(clause: string, path: string): boolean {
 }
 
 function isOutputArtifactMention(clause: string, path: string): boolean {
-  const firstSegment = normalizePath(path).toLowerCase().split("/")[0] ?? "";
+  const normalizedPath = normalizePath(path);
+  const firstSegment = normalizedPath.toLowerCase().split("/")[0] ?? "";
+  const label = sectionLabel(clause);
+  const outputSection =
+    label !== undefined &&
+    /\b(?:artifact|artifacts|coverage|fixture|fixtures|generated|output|outputs|report|reports|result|results|state file|state files)\b/iu.test(
+      label
+    );
+  const pathSuggestsOutput =
+    expectedOutputDirectories.has(firstSegment) || isGeneratedArtifact(normalizedPath);
+  const artifactLanguage =
+    /\b(?:artifact|generated(?: output| artifact)?|output artifact|coverage report|report file|result file|fixture|state file)\b/iu.test(
+      clause
+    );
+  const directOutputVerb = hasDirectOutputVerbForPath(clause, normalizedPath);
+  const directEditIntent = hasDirectEditIntentForPath(clause, normalizedPath);
+
+  if (directEditIntent && !outputSection && !directOutputVerb) {
+    return false;
+  }
 
   return (
-    /\b(?:artifact|generated|output|produce|write|emit|build output|coverage report|report|result|fixture|cache|state file)\b/iu.test(
-      clause
-    ) &&
-    (expectedOutputDirectories.has(firstSegment) ||
-      /\b(?:artifact|generated output|report|result|fixture|cache|state file)\b/iu.test(clause))
+    (outputSection && (pathSuggestsOutput || artifactLanguage || directOutputVerb)) ||
+    (directOutputVerb && (pathSuggestsOutput || artifactLanguage)) ||
+    (pathSuggestsOutput && artifactLanguage && !directEditIntent)
   );
+}
+
+function hasDirectEditIntentForPath(clause: string, path: string): boolean {
+  const pathIndex = normalizedIndexOfPath(clause, path);
+  const prefix = pathIndex < 0 ? clause : clause.slice(0, pathIndex);
+
+  return (
+    !hasNegativeEditIntent(prefix) &&
+    /\b(?:add behavior to|change|connect|edit|extend|implement|migrate|modify|patch|refactor|remove behavior from|synchronize|touch|update|wire)\b/iu.test(
+      prefix
+    )
+  );
+}
+
+function hasDirectOutputVerbForPath(clause: string, path: string): boolean {
+  const variants = pathVariants(path);
+
+  return variants.some((variant) =>
+    new RegExp(
+      `\\b(?:build|dump|emit|export|generate|output|produce|record|render|save|write)\\b[^.\\n]{0,100}${escapeRegExp(
+        variant
+      )}`,
+      "iu"
+    ).test(clause)
+  );
+}
+
+function normalizedIndexOfPath(value: string, path: string): number {
+  const normalizedValue = normalizePath(value);
+
+  return pathVariants(path).reduce((index, variant) => {
+    const nextIndex = normalizedValue.indexOf(variant);
+
+    if (nextIndex < 0) {
+      return index;
+    }
+
+    return index < 0 ? nextIndex : Math.min(index, nextIndex);
+  }, -1);
+}
+
+function pathVariants(path: string): string[] {
+  const normalizedPath = normalizePath(path);
+
+  return [normalizedPath, normalizedPath.replace(/\//gu, "\\")];
 }
 
 function extractPathTokens(
@@ -2384,7 +3489,7 @@ function isFileLikePlanPath(
   const hasStrongWrapper = /^[`"'<([{].*[`"'>)\]}.,;:]?$/u.test(rawValue);
   const hasGlob = hasGlobSyntax(normalizedValue);
   const hasRecognizedExtension =
-    /\.(?:ts|tsx|js|jsx|mjs|cjs|json|md|yml|yaml|toml|css|scss|html|py|go|rs|java|kt|cs|rb|php|vue|svelte|lock)$/iu.test(
+    /\.(?:ts|tsx|js|jsx|mjs|cjs|json|md|yml|yaml|toml|xml|css|scss|html|py|go|rs|java|kt|cs|rb|php|vue|svelte|lock)$/iu.test(
       fileName
     );
 
@@ -4067,7 +5172,8 @@ function planValidationStatus(findings: PlanValidationFinding[]): PlanValidation
       "PLAN_RISK_RATIONALE_MISSING",
       "SCOPE_EXPANSION_RATIONALE_REQUIRED",
       "SCOPE_EXPANSION_RATIONALE_VAGUE",
-      "DEPENDENCY_REQUIREMENT_CONFLICT"
+      "DEPENDENCY_REQUIREMENT_CONFLICT",
+      "CANONICAL_REQUIREMENT_MISSING"
     ]);
 
     return findings.some((finding) => clarificationCodes.has(finding.code))

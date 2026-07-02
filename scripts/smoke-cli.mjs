@@ -25,8 +25,9 @@ writeRepoFile(
 writeRepoFile(
   "plan.md",
   [
-    "- Modify src/checkout/calculateDiscount.ts",
-    "- Add focused tests in src/checkout/calculateDiscount.test.ts",
+    "- Modify src/checkout/calculateDiscount.ts to fix the checkout discount calculation bug.",
+    "- Add focused tests in src/checkout/calculateDiscount.test.ts.",
+    "- Do not change payment provider integration or checkout routing.",
     ""
   ].join("\n")
 );
@@ -70,6 +71,7 @@ for (const path of [
   "GEMINI.md",
   "GLEIP.md",
   ".gleip.yml",
+  ".gleip/canonical-task.json",
   ".gleip/session.json",
   ".gleip/brief.md",
   ".gleip/scope-budget.json",
@@ -110,12 +112,12 @@ if (!compactStatus.includes("Check necessary: no")) {
 
 const report = JSON.parse(reportJson);
 
-if (version !== "0.8.2") {
-  throw new Error(`Expected Gleip 0.8.2, received: ${version}`);
+if (version !== "0.8.4") {
+  throw new Error(`Expected Gleip 0.8.4, received: ${version}`);
 }
 
-if (report.schemaVersion !== "1.2.0" || report.version !== "0.8.2") {
-  throw new Error(`Expected Gleip 0.8.2 report schema 1.2.0, received:\n${reportJson}`);
+if (report.schemaVersion !== "1.3.0" || report.version !== "0.8.4") {
+  throw new Error(`Expected Gleip 0.8.4 report schema 1.3.0, received:\n${reportJson}`);
 }
 
 if (!report.finalResponse?.markdown?.includes("### Gleip")) {

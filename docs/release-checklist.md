@@ -2,11 +2,12 @@
 
 Use this checklist for the local-only developer preview.
 
-Current release target: `0.8.2`.
+Current release target: `0.8.4`.
 
-Release focus: task-sensitive deterministic plan evidence detection, broader
-verification phrasing support, reduced vocabulary-sensitive false positives, and
-patch-level release metadata updates without changing default check or CI behavior.
+Release focus: canonical task authority, ordered amendments, derived brief
+authority metadata, requirement-ledger coverage, plan-to-requirement validation,
+final requirement completion reporting, and patch-level release metadata updates
+without changing default check or CI behavior.
 
 ## Signal Quality Gates
 
@@ -35,12 +36,13 @@ patch-level release metadata updates without changing default check or CI behavi
 
 ## Packed Install
 
-- Install `dist-pack/gleip-0.8.2.tgz` into a clean external temp repo.
+- Install `dist-pack/gleip-0.8.4.tgz` into a clean external temp repo.
 - Verify:
   - `npx gleip --help`
   - `npx gleip --version`
   - `npx gleip init`
   - `npx gleip preflight --file task.md`
+  - `npx gleip preflight --amend "Also preserve Windows behavior."`
   - `npx gleip validate-plan --file plan.md`
   - `npx gleip status`
   - `npx gleip doctor`
@@ -85,6 +87,9 @@ Task workflow commands are for agents and direct release testing, not the normal
 - Confirm `.gleip/` is ignored.
 - Confirm `.gleip.yml` is not ignored.
 - Confirm generated agent instructions use `npx --no-install gleip` for preflight, plan validation, incremental check, compact status, and report, and include verification-efficiency guidance.
+- Confirm generated agent instructions tell agents to read `.gleip/canonical-task.json` before `.gleip/brief.md`.
+- Confirm `.gleip/canonical-task.json` is ignored, hash-checked, and not included in package contents.
+- Confirm no compression, telemetry, network, or provider integration work was added in 0.8.4.
 - Confirm `doctor` reports complete setup and identifies missing `.gitignore` or agent instructions.
 - Confirm the root and npm READMEs lead with agent auto-usage and list Codex/generic agents, Claude Code, and Gemini CLI.
 - Confirm the root and npm READMEs document the uninstall lifecycle.
