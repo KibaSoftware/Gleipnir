@@ -49,6 +49,14 @@ once for the final state, verify every mandatory canonical requirement before th
 final response, and rerun validation only after invalidating changes. They do not edit or commit `.gleip/` artifacts unless explicitly asked,
 and they explain any failing Gleip check they cannot resolve.
 
+Agents may use `npx --no-install gleip run -- <command>` or pipe output through
+`npx --no-install gleip compress` for large repetitive non-authoritative execution
+evidence. They must retrieve exact originals with `npx --no-install gleip retrieve
+<reference>` before relying on omitted diagnostics. They must not replace the
+canonical task, active brief, requirement ledger, accepted plan, scope state,
+approval state, completion state, source code, dependency manifests, lockfiles, or
+CI configuration with compressed displays.
+
 Before final response, agents run or read `npx --no-install gleip report`, treat it as the source of truth, and may include its generated `Recommended final response` block when it adds useful review evidence. They do not paste the full report. Developers do not need to run this manually during normal usage.
 
 Normal workflow commands emit concise summaries that confirm the completed phase and next expected agent action. Incremental baselines and deltas add only the finding lines required by that run; unchanged findings remain a count. Detailed evidence remains in local artifacts, while JSON mode stays machine-readable.

@@ -29,4 +29,13 @@ Scores are heuristics. They explain local review signals but do not prove correc
 - Scope adherence is measured against the effective validated scope after accepted plan validation, including credible explicit edit mentions from compatible artifacts, not against the initial broad candidate list.
 - Broad and subsystem line-count advisories scale with changed target count and do not by themselves prove over-editing.
 
+## 0.9.0 Compression Invariants
+
+- Compressed displays are not used as scoring truth.
+- Requirement completion, scope adherence, plan alignment, approval state,
+  verification status, and review readiness use exact structured data, current git
+  state, or exact retrieved originals.
+- Compression diagnostics can appear in local stats, but they do not make a task
+  more or less review-ready by themselves.
+
 See [reporting.md](reporting.md) for the stable report model and efficiency estimate.

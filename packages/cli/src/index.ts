@@ -26,10 +26,18 @@ import {
 } from "../../controller/src/index.js";
 import {
   collectWorkingTreeDiff as collectBundledWorkingTreeDiff,
+  compressContext,
   createSessionBaseline as createBundledSessionBaseline,
+  defaultCompressionPolicy,
   filterDiffSinceBaseline as filterBundledDiffSinceBaseline,
   fingerprintRepositoryState,
-  isEphemeralGleipArtifactPath
+  isEphemeralGleipArtifactPath,
+  readCompressionStats,
+  retrieveContextOriginal,
+  type CompressionAuthority,
+  type CompressionContentClass,
+  type CompressionLifecycle,
+  type CompressionPolicy
 } from "../../core/src/index.js";
 import {
   classifyTask as classifyBundledTask,
@@ -121,6 +129,7 @@ interface CreateGleipCommandOptions {
   nodeVersion?: string;
   now?: () => Date;
   readStdin?: () => string;
+  rawStdout?: OutputWriter;
   stderr?: OutputWriter;
   stdout?: OutputWriter;
   generateSessionReport?: GenerateSessionReport;
@@ -143,6 +152,7 @@ interface CommandRuntime {
   nodeVersion: string;
   now: () => Date;
   readStdin: () => string;
+  rawStdout: OutputWriter;
   stderr: OutputWriter;
   stdout: OutputWriter;
   generateSessionReport: GenerateSessionReport;
@@ -204,6 +214,24 @@ interface ReportOptions {
   json?: boolean;
 }
 
+interface CompressionCommandOptions {
+  artifactType?: string;
+  audit?: boolean;
+  authority?: string;
+  json?: boolean;
+  lifecycle?: string;
+  sourceCommand?: string;
+  type?: string;
+}
+
+interface RetrieveOptions {
+  json?: boolean;
+}
+
+interface StatsOptions {
+  json?: boolean;
+}
+
 interface GleipState {
   enabled: boolean;
   updatedAt: string;
@@ -213,6 +241,15 @@ interface GleipState {
 
 interface GleipConfigLike {
   approval_required_for?: string[];
+  compression?: {
+    allowed_classes?: string[];
+    audit_only?: boolean;
+    enabled?: boolean;
+    envelope_format?: string;
+    min_confidence?: string;
+    min_input_bytes?: number;
+    min_estimated_tokens_saved?: number;
+  };
   limits?: {
     max_files_changed_warning?: number;
     max_lines_added_warning?: number;
@@ -826,6 +863,12 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
     nodeVersion: options.nodeVersion ?? process.versions.node,
     now: options.now ?? (() => new Date()),
     readStdin: options.readStdin ?? (() => readFileSync(0, "utf8")),
+    rawStdout:
+      options.rawStdout ??
+      options.stdout ??
+      ((message) => {
+        process.stdout.write(message);
+      }),
     stderr: options.stderr ?? ((message) => console.error(message)),
     stdout: options.stdout ?? ((message) => console.log(message)),
     generateSessionReport: options.generateSessionReport ?? generateSessionReportFromPackage,
@@ -1019,6 +1062,50 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
     });
 
   program
+    .command("compress")
+    .description("Classify and compress eligible local execution evidence from text or stdin.")
+    .argument("[content...]", "Content to classify; omit to read from stdin.")
+    .option("--type <class>", "Caller content hint, such as test_output or structured_json.")
+    .option("--artifact-type <type>", "Structural artifact type for authority-aware passthrough.")
+    .option("--authority <authority>", "canonical, derived, evidence, or historical.")
+    .option("--lifecycle <lifecycle>", "active, superseded, stale, or archived.")
+    .option("--source-command <command>", "Command that produced the content.")
+    .option("--audit", "Classify and report policy decisions without replacing content.")
+    .option("--json", "Print machine-readable compression output.")
+    .action(async (content: string[] | undefined, commandOptions: CompressionCommandOptions) => {
+      await compressCliContent(runtime, content ?? [], commandOptions);
+    });
+
+  program
+    .command("run")
+    .description("Run a local command and compress eligible stdout or stderr evidence.")
+    .argument("[commandAndArgs...]", "Command to run. Use `--` before commands with flags.")
+    .option("--type <class>", "Caller content hint for command output.")
+    .option("--audit", "Classify command output without replacing it.")
+    .option("--json", "Print machine-readable wrapper metadata.")
+    .allowUnknownOption(true)
+    .action(async (commandAndArgs: string[] | undefined, commandOptions: CompressionCommandOptions) => {
+      await runWrappedLocalCommand(runtime, commandAndArgs ?? [], commandOptions);
+    });
+
+  program
+    .command("retrieve")
+    .description("Retrieve exact original local content from a Gleip compression reference.")
+    .argument("<reference>", "Full sha256 reference or unambiguous prefix.")
+    .option("--json", "Print retrieval metadata and content as JSON.")
+    .action((reference: string, commandOptions: RetrieveOptions) => {
+      retrieveCompressedContent(runtime, reference, commandOptions);
+    });
+
+  program
+    .command("stats")
+    .description("Print local context-compression statistics and net-savings estimates.")
+    .option("--json", "Print stable compression statistics JSON.")
+    .action((commandOptions: StatsOptions) => {
+      printCompressionStats(runtime, commandOptions);
+    });
+
+  program
     .command("doctor")
     .description("Verify this repository can run local-only Gleip commands.")
     .option("--agents", "Check supported coding-agent instruction files.")
@@ -1133,6 +1220,415 @@ async function generateSessionReportFromPackage(
 async function renderSessionReportMarkdownFromPackage(report: SessionReport): Promise<string> {
   return renderBundledSessionReportMarkdown(report);
 }
+
+async function compressCliContent(
+  runtime: CommandRuntime,
+  contentParts: string[],
+  options: CompressionCommandOptions
+): Promise<void> {
+  const rawContent = contentParts.length > 0 ? contentParts.join(" ") : runtime.readStdin();
+  const input = compressionInputFromOptions(runtime, rawContent, options);
+
+  if (input === undefined) {
+    return;
+  }
+
+  const result = compressContext(input, {
+    cwd: runtime.cwd,
+    now: runtime.now,
+    auditOnly: options.audit === true,
+    policy: await compressionPolicyForRuntime(runtime)
+  });
+
+  if (options.json === true) {
+    runtime.stdout(JSON.stringify(compressionResultJson(result), null, 2));
+    return;
+  }
+
+  if (options.audit === true) {
+    runtime.stdout(formatCompressionAudit("input", result));
+    return;
+  }
+
+  runtime.rawStdout(result.output);
+}
+
+async function runWrappedLocalCommand(
+  runtime: CommandRuntime,
+  commandAndArgs: string[],
+  options: CompressionCommandOptions
+): Promise<void> {
+  const args = commandAndArgs[0] === "--" ? commandAndArgs.slice(1) : commandAndArgs;
+  const commandName = args[0];
+
+  if (commandName === undefined) {
+    runtime.stderr("Usage: gleip run -- <command> [args...]");
+    runtime.setExitCode(1);
+    return;
+  }
+
+  if (!validateCompressionOptions(runtime, options)) {
+    return;
+  }
+
+  const childArgs = args.slice(1);
+  const result = spawnSync(commandName, childArgs, {
+    cwd: runtime.cwd,
+    encoding: "utf8",
+    shell: false
+  });
+
+  if (result.error !== undefined) {
+    runtime.stderr(`Command failed: ${formatError(result.error)}`);
+    runtime.setExitCode(1);
+    return;
+  }
+
+  const sourceCommand = args.join(" ");
+  const policy = await compressionPolicyForRuntime(runtime);
+  const stdout = result.stdout ?? "";
+  const stderr = result.stderr ?? "";
+  const stdoutCompression =
+    stdout.length === 0
+      ? undefined
+      : compressContext(
+          commandOutputInputFromOptions(runtime, stdout, sourceCommand, options, "stdout"),
+          {
+            cwd: runtime.cwd,
+            now: runtime.now,
+            auditOnly: options.audit === true,
+            policy
+          }
+        );
+  const stderrCompression =
+    stderr.length === 0
+      ? undefined
+      : compressContext(
+          commandOutputInputFromOptions(runtime, stderr, sourceCommand, options, "stderr"),
+          {
+            cwd: runtime.cwd,
+            now: runtime.now,
+            auditOnly: options.audit === true,
+            policy
+          }
+        );
+
+  if (options.json === true) {
+    runtime.stdout(
+      JSON.stringify(
+        {
+          command: sourceCommand,
+          exitCode: result.status ?? 1,
+          stdout:
+            stdoutCompression === undefined ? undefined : compressionResultJson(stdoutCompression),
+          stderr:
+            stderrCompression === undefined ? undefined : compressionResultJson(stderrCompression)
+        },
+        null,
+        2
+      )
+    );
+  } else if (options.audit === true) {
+    if (stdoutCompression !== undefined) {
+      runtime.stdout(formatCompressionAudit("stdout", stdoutCompression));
+    }
+    if (stderrCompression !== undefined) {
+      runtime.stderr(formatCompressionAudit("stderr", stderrCompression));
+    }
+  } else {
+    if (stdoutCompression !== undefined) {
+      runtime.rawStdout(stdoutCompression.output);
+    }
+    if (stderrCompression !== undefined) {
+      runtime.stderr(stderrCompression.output);
+    }
+  }
+
+  runtime.setExitCode(result.status ?? 1);
+}
+
+function retrieveCompressedContent(
+  runtime: CommandRuntime,
+  reference: string,
+  options: RetrieveOptions
+): void {
+  const result = retrieveContextOriginal({ cwd: runtime.cwd, reference, now: runtime.now });
+
+  if (!result.ok || result.content === undefined) {
+    runtime.stderr(`[RETRIEVE_FAILED] ${result.error ?? "Unable to retrieve compression object."}`);
+    runtime.setExitCode(1);
+    return;
+  }
+
+  if (options.json === true) {
+    runtime.stdout(
+      JSON.stringify(
+        {
+          reference: result.reference,
+          byteCount: result.byteCount,
+          content: result.content
+        },
+        null,
+        2
+      )
+    );
+    return;
+  }
+
+  runtime.rawStdout(result.content);
+}
+
+function printCompressionStats(runtime: CommandRuntime, options: StatsOptions): void {
+  const stats = readCompressionStats(runtime.cwd);
+
+  if (options.json === true) {
+    runtime.stdout(JSON.stringify(stats, null, 2));
+    return;
+  }
+
+  runtime.stdout(
+    [
+      "Gleip context compression stats",
+      `Objects: ${stats.objectCount}`,
+      `Attempts: ${stats.compressionAttempts}`,
+      `Compressed: ${stats.compressionApplied}`,
+      `Passthrough: ${stats.passthroughCount}`,
+      `Original bytes: ${stats.originalBytes}`,
+      `Compressed bytes: ${stats.compressedBytes}`,
+      `Gross estimated tokens removed: ${stats.grossEstimatedTokensRemoved}`,
+      `Compression metadata tokens: ${stats.compressionMetadataTokens}`,
+      `Retrieval calls: ${stats.retrievalCalls}`,
+      `Retrieval estimated tokens: ${stats.retrievalEstimatedTokens}`,
+      `Net estimated tokens saved: ${stats.netEstimatedTokensSaved}`
+    ].join("\n")
+  );
+}
+
+async function compressionPolicyForRuntime(
+  runtime: CommandRuntime
+): Promise<Partial<CompressionPolicy>> {
+  try {
+    const config = (await runtime.loadConfig(runtime.cwd)) as GleipConfigLike;
+    return compressionPolicyFromConfig(config);
+  } catch {
+    return {};
+  }
+}
+
+function compressionPolicyFromConfig(config: GleipConfigLike | undefined): Partial<CompressionPolicy> {
+  const raw = config?.compression;
+
+  if (raw === undefined) {
+    return {};
+  }
+
+  const policy: Partial<CompressionPolicy> = {};
+  const defaultPolicy = defaultCompressionPolicy();
+
+  if (typeof raw.enabled === "boolean") {
+    policy.enabled = raw.enabled;
+  }
+  if (typeof raw.audit_only === "boolean") {
+    policy.auditOnly = raw.audit_only;
+  }
+  if (typeof raw.min_input_bytes === "number") {
+    policy.minInputBytes = raw.min_input_bytes;
+  }
+  if (typeof raw.min_estimated_tokens_saved === "number") {
+    policy.minEstimatedTokensSaved = raw.min_estimated_tokens_saved;
+  }
+  if (isCompressionConfidence(raw.min_confidence)) {
+    policy.minConfidence = raw.min_confidence;
+  }
+  if (raw.envelope_format === "human" || raw.envelope_format === "json") {
+    policy.envelopeFormat = raw.envelope_format;
+  }
+  if (Array.isArray(raw.allowed_classes)) {
+    const allowed = raw.allowed_classes
+      .map((value) => parseCompressionContentClass(value))
+      .filter((value): value is CompressionContentClass => value !== undefined)
+      .filter((value) => defaultPolicy.allowedClasses.includes(value));
+
+    if (allowed.length > 0) {
+      policy.allowedClasses = allowed;
+    }
+  }
+
+  return policy;
+}
+
+function compressionInputFromOptions(
+  runtime: CommandRuntime,
+  rawContent: string,
+  options: CompressionCommandOptions
+) {
+  const contentType = parseCompressionContentClass(options.type);
+  const authority = parseCompressionAuthority(options.authority);
+  const lifecycle = parseCompressionLifecycle(options.lifecycle);
+
+  if (options.type !== undefined && contentType === undefined) {
+    runtime.stderr(`Unsupported compression content class: ${options.type}`);
+    runtime.setExitCode(1);
+    return undefined;
+  }
+  if (options.authority !== undefined && authority === undefined) {
+    runtime.stderr(`Unsupported compression authority: ${options.authority}`);
+    runtime.setExitCode(1);
+    return undefined;
+  }
+  if (options.lifecycle !== undefined && lifecycle === undefined) {
+    runtime.stderr(`Unsupported compression lifecycle: ${options.lifecycle}`);
+    runtime.setExitCode(1);
+    return undefined;
+  }
+
+  return {
+    rawContent,
+    ...(contentType === undefined ? {} : { contentType }),
+    ...(options.artifactType === undefined ? {} : { artifactType: options.artifactType }),
+    ...(authority === undefined ? {} : { authority }),
+    ...(lifecycle === undefined ? {} : { lifecycle }),
+    ...(options.sourceCommand === undefined ? {} : { sourceCommand: options.sourceCommand })
+  };
+}
+
+function validateCompressionOptions(runtime: CommandRuntime, options: CompressionCommandOptions): boolean {
+  if (options.type !== undefined && parseCompressionContentClass(options.type) === undefined) {
+    runtime.stderr(`Unsupported compression content class: ${options.type}`);
+    runtime.setExitCode(1);
+    return false;
+  }
+
+  if (
+    options.authority !== undefined &&
+    parseCompressionAuthority(options.authority) === undefined
+  ) {
+    runtime.stderr(`Unsupported compression authority: ${options.authority}`);
+    runtime.setExitCode(1);
+    return false;
+  }
+
+  if (
+    options.lifecycle !== undefined &&
+    parseCompressionLifecycle(options.lifecycle) === undefined
+  ) {
+    runtime.stderr(`Unsupported compression lifecycle: ${options.lifecycle}`);
+    runtime.setExitCode(1);
+    return false;
+  }
+
+  return true;
+}
+
+function commandOutputInputFromOptions(
+  runtime: CommandRuntime,
+  rawContent: string,
+  sourceCommand: string,
+  options: CompressionCommandOptions,
+  streamName: "stdout" | "stderr"
+) {
+  return {
+    ...(compressionInputFromOptions(runtime, rawContent, {
+      ...options,
+      sourceCommand
+    }) ?? { rawContent, sourceCommand }),
+    semanticSubtype: streamName,
+    authority: "evidence" as const
+  };
+}
+
+function compressionResultJson(result: ReturnType<typeof compressContext>): Record<string, unknown> {
+  return {
+    compressed: result.compressed,
+    auditOnly: result.auditOnly,
+    classification: result.classification,
+    passthroughReasons: result.passthroughReasons,
+    reference: result.reference,
+    envelope: result.envelope,
+    metrics: result.metrics,
+    output: result.compressed ? result.output : undefined
+  };
+}
+
+function formatCompressionAudit(
+  label: string,
+  result: ReturnType<typeof compressContext>
+): string {
+  return [
+    `Compression audit: ${label}`,
+    `Class: ${result.classification.contentClass}`,
+    `Confidence: ${result.classification.confidence}`,
+    `Authority: ${result.classification.authority}`,
+    `Lifecycle: ${result.classification.lifecycle}`,
+    `Decision: ${
+      result.passthroughReasons.filter((reason) => reason !== "audit_only").length === 0
+        ? "eligible"
+        : "passthrough"
+    }`,
+    `Reasons: ${result.passthroughReasons.length === 0 ? "none" : result.passthroughReasons.join(", ")}`,
+    `Original bytes: ${result.metrics.originalBytes}`,
+    `Estimated original tokens: ${result.metrics.estimatedOriginalTokens}`
+  ].join("\n");
+}
+
+function parseCompressionContentClass(value: string | undefined): CompressionContentClass | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  return compressionContentClasses.has(value as CompressionContentClass)
+    ? (value as CompressionContentClass)
+    : undefined;
+}
+
+function parseCompressionAuthority(value: string | undefined): CompressionAuthority | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  return ["canonical", "derived", "evidence", "historical"].includes(value)
+    ? (value as CompressionAuthority)
+    : undefined;
+}
+
+function parseCompressionLifecycle(value: string | undefined): CompressionLifecycle | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  return ["active", "superseded", "stale", "archived"].includes(value)
+    ? (value as CompressionLifecycle)
+    : undefined;
+}
+
+function isCompressionConfidence(value: unknown): value is CompressionPolicy["minConfidence"] {
+  return value === "low" || value === "medium" || value === "high";
+}
+
+const compressionContentClasses = new Set<CompressionContentClass>([
+  "test_output",
+  "build_output",
+  "log_output",
+  "structured_json",
+  "search_results",
+  "file_listing",
+  "command_output",
+  "git_diff",
+  "prose",
+  "source_code",
+  "configuration",
+  "policy_or_instruction",
+  "canonical_task",
+  "task_amendment",
+  "requirement_ledger",
+  "active_brief",
+  "accepted_plan",
+  "scope_state",
+  "approval_state",
+  "completion_state",
+  "sensitive",
+  "unknown"
+]);
 
 function initRepository(runtime: CommandRuntime, options: InitOptions): void {
   const force = options.force === true;
@@ -2856,6 +3352,9 @@ function gleipSectionContent(target: AgentInstructionTarget): string {
 - Do not edit or commit files under \`.gleip/\` unless the user explicitly asks.
 - During iteration, run the narrowest existing validation that covers the changed area.
 - Do not rerun a full validation suite while repository state is unchanged.
+- For large repetitive command output, use \`npx --no-install gleip run -- <command>\` or pipe evidence through \`npx --no-install gleip compress\` only when the output is non-authoritative execution evidence.
+- Treat compressed displays as compact evidence views only. Retrieve exact originals with \`npx --no-install gleip retrieve <reference>\` whenever omitted evidence is needed.
+- Never replace canonical task state, active brief, requirement ledger, accepted plan, scope state, completion state, approvals, policy, source code, dependency manifests, or CI configuration with compressed output.
 - Before final completion, verify every mandatory canonical requirement with available local evidence, then run the complete required validation once. Rerun it only after changes that can invalidate the result.
 - Before claiming completion, run \`npx --no-install gleip check --incremental\`.
 - Run \`npx --no-install gleip status --compact\` whenever Gleip's expected next action is unclear.
@@ -2928,6 +3427,7 @@ For multi-step tasks, state a brief plan in this format:
 - [ ] Validate plan with \`npx --no-install gleip validate-plan\`
 - [ ] Implement within \`.gleip/scope-budget.json\`
 - [ ] Run narrow validation while iterating and complete required validation once before final completion
+- [ ] Use compression only for non-authoritative execution evidence; retrieve exact originals before relying on omitted diagnostics
 - [ ] Run \`npx --no-install gleip check --incremental\`
 - [ ] Run \`npx --no-install gleip status --compact\`
 - [ ] Run or read \`npx --no-install gleip report\`
@@ -2996,6 +3496,23 @@ approval_required_for:
   - ci_changes
   - security_policy_changes
 
+compression:
+  enabled: true
+  audit_only: false
+  min_input_bytes: 900
+  min_estimated_tokens_saved: 80
+  min_confidence: medium
+  allowed_classes:
+    - test_output
+    - build_output
+    - log_output
+    - structured_json
+    - search_results
+    - file_listing
+    - command_output
+    - git_diff
+  envelope_format: human
+
 agent_behavior:
   minimal_scoped_changes: true
   avoid_speculative_refactors: true
@@ -3010,7 +3527,7 @@ function defaultGleipReadmeContent(): string {
 
 This repository uses Gleip as a local-only guidance tool for AI coding agents. Gleip is not a permission system and performs no external review.
 
-Agents should run \`npx --no-install gleip preflight "<task>"\` before editing code, read \`.gleip/canonical-task.json\` as the authoritative task contract, use \`.gleip/brief.md\` as a derived navigation aid, validate a short plan with \`npx --no-install gleip validate-plan "<plan>"\`, use the generated expected scope as guidance, then run \`npx --no-install gleip check --incremental\`, \`npx --no-install gleip status --compact\`, and \`npx --no-install gleip report\` before the final response.
+Agents should run \`npx --no-install gleip preflight "<task>"\` before editing code, read \`.gleip/canonical-task.json\` as the authoritative task contract, use \`.gleip/brief.md\` as a derived navigation aid, validate a short plan with \`npx --no-install gleip validate-plan "<plan>"\`, use the generated expected scope as guidance, optionally route large non-authoritative execution evidence through \`npx --no-install gleip run -- <command>\`, then run \`npx --no-install gleip check --incremental\`, \`npx --no-install gleip status --compact\`, and \`npx --no-install gleip report\` before the final response. Compressed displays are never task, scope, scoring, or review-readiness authority; exact originals remain local and retrievable with \`npx --no-install gleip retrieve <reference>\`.
 
 To remove Gleip from this repository, run \`npx --no-install gleip uninstall\`, then run \`npm uninstall gleip\` to remove the package dependency.
 `;

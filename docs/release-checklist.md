@@ -2,12 +2,12 @@
 
 Use this checklist for the local-only developer preview.
 
-Current release target: `0.8.4`.
+Current release target: `0.9.0`.
 
-Release focus: canonical task authority, ordered amendments, derived brief
-authority metadata, requirement-ledger coverage, plan-to-requirement validation,
-final requirement completion reporting, and patch-level release metadata updates
-without changing default check or CI behavior.
+Release focus: deterministic local context compression for non-authoritative
+execution evidence while preserving canonical task authority, normalized scope,
+requirement-ledger coverage, plan validation, final requirement completion, and
+existing check/CI behavior.
 
 ## Signal Quality Gates
 
@@ -18,6 +18,11 @@ without changing default check or CI behavior.
 - Scope expansion must remain warning-based unless there is high-confidence evidence of unrelated or risky work.
 - Multi-file changes must not fail solely because multiple files or modules changed.
 - Plan validation must remain structural rather than semantic.
+- Compression must not replace canonical task state, active brief, requirement
+  ledger, accepted plan, scope state, approval state, completion state, or source
+  code.
+- Compressed displays must not feed scope, scoring, approval, requirement
+  completion, or review-readiness decisions.
 
 ## Package
 
@@ -36,7 +41,7 @@ without changing default check or CI behavior.
 
 ## Packed Install
 
-- Install `dist-pack/gleip-0.8.4.tgz` into a clean external temp repo.
+- Install `dist-pack/gleip-0.9.0.tgz` into a clean external temp repo.
 - Verify:
   - `npx gleip --help`
   - `npx gleip --version`
@@ -73,8 +78,13 @@ Task workflow commands are for agents and direct release testing, not the normal
 - `npx gleip status`
 - `npx gleip status --compact`
 - `npx gleip report`
-- `npx gleip report --json`
-- `npx gleip check`
+  - `npx gleip report --json`
+  - `npx gleip compress --audit --json < large-output.txt`
+  - `npx gleip compress --type test_output < large-output.txt`
+  - `npx gleip retrieve <sha256-reference>`
+  - `npx gleip run -- node -e "for (let i=0;i<200;i++) console.log('PASS repeated.test.ts')"`
+  - `npx gleip stats --json`
+  - `npx gleip check`
 - `npx gleip check --incremental --json`
 - `npx gleip check --incremental --force --json`
 - `npx gleip disable --reason "manual test"`
@@ -89,7 +99,12 @@ Task workflow commands are for agents and direct release testing, not the normal
 - Confirm generated agent instructions use `npx --no-install gleip` for preflight, plan validation, incremental check, compact status, and report, and include verification-efficiency guidance.
 - Confirm generated agent instructions tell agents to read `.gleip/canonical-task.json` before `.gleip/brief.md`.
 - Confirm `.gleip/canonical-task.json` is ignored, hash-checked, and not included in package contents.
-- Confirm no compression, telemetry, network, or provider integration work was added in 0.8.4.
+- Confirm `.gleip/context/` is ignored and recognized as local runtime state.
+- Confirm canonical task, active brief, requirement ledger, accepted plan, scope
+  state, approval state, completion state, source code, manifests, lockfiles, and
+  CI files pass through compression.
+- Confirm no telemetry, network, provider proxy, hosted service, or provider
+  authentication forwarding was added.
 - Confirm `doctor` reports complete setup and identifies missing `.gitignore` or agent instructions.
 - Confirm the root and npm READMEs lead with agent auto-usage and list Codex/generic agents, Claude Code, and Gemini CLI.
 - Confirm the root and npm READMEs document the uninstall lifecycle.

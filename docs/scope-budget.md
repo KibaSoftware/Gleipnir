@@ -146,3 +146,11 @@ is wrong from these signals.
 Package metadata/version changes are distinct from dependency additions. When the
 task requests package metadata, manifest version edits are aligned scope, but added
 dependencies and lockfile changes remain gated.
+
+## Compression Boundary
+
+Context compression reuses these normalized scope classifications; it does not add
+a second path classifier. Protected scope evidence passes through. Evidence needed
+to explain unexplained or approval-required changes should remain exact or be
+retrieved before review. Generated execution output may be compressed only when it
+is non-authoritative and does not hide scope or requirement evidence.

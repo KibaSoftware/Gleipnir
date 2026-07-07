@@ -25,6 +25,24 @@ describe("Gleip config", () => {
       protected_paths: [],
       allowed_paths: [],
       approval_required_for: [],
+      compression: {
+        enabled: true,
+        audit_only: false,
+        min_input_bytes: 900,
+        min_estimated_tokens_saved: 80,
+        min_confidence: "medium",
+        allowed_classes: [
+          "test_output",
+          "build_output",
+          "log_output",
+          "structured_json",
+          "search_results",
+          "file_listing",
+          "command_output",
+          "git_diff"
+        ],
+        envelope_format: "human"
+      },
       agent_behavior: {
         minimal_scoped_changes: true,
         avoid_speculative_refactors: true,
@@ -56,6 +74,16 @@ allowed_paths:
   - packages/config/**
 approval_required_for:
   - dependency_changes
+compression:
+  enabled: false
+  audit_only: true
+  min_input_bytes: 1200
+  min_estimated_tokens_saved: 160
+  min_confidence: high
+  allowed_classes:
+    - test_output
+    - structured_json
+  envelope_format: json
 agent_behavior:
   explain_changed_files: false
 `)
@@ -76,6 +104,15 @@ agent_behavior:
       protected_paths: ["src/security/**"],
       allowed_paths: ["packages/config/**"],
       approval_required_for: ["dependency_changes"],
+      compression: {
+        enabled: false,
+        audit_only: true,
+        min_input_bytes: 1200,
+        min_estimated_tokens_saved: 160,
+        min_confidence: "high",
+        allowed_classes: ["test_output", "structured_json"],
+        envelope_format: "json"
+      },
       agent_behavior: {
         explain_changed_files: false,
         minimal_scoped_changes: true
@@ -122,7 +159,21 @@ agent_behavior:
         avoid_unnecessary_dependencies: true,
         preserve_tests_and_ci: true,
         explain_changed_files: true
+      },
+      compression: {
+        enabled: true,
+        min_confidence: "medium"
       }
     });
+  });
+
+  it("rejects protected authority classes in compression config", () => {
+    expect(() =>
+      parseConfig({
+        compression: {
+          allowed_classes: ["canonical_task"]
+        }
+      })
+    ).toThrow("compression.allowed_classes.0");
   });
 });

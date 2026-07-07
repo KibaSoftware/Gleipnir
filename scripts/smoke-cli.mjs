@@ -112,12 +112,12 @@ if (!compactStatus.includes("Check necessary: no")) {
 
 const report = JSON.parse(reportJson);
 
-if (version !== "0.8.4") {
-  throw new Error(`Expected Gleip 0.8.4, received: ${version}`);
+if (version !== "0.9.0") {
+  throw new Error(`Expected Gleip 0.9.0, received: ${version}`);
 }
 
-if (report.schemaVersion !== "1.3.0" || report.version !== "0.8.4") {
-  throw new Error(`Expected Gleip 0.8.4 report schema 1.3.0, received:\n${reportJson}`);
+if (report.schemaVersion !== "1.3.0" || report.version !== "0.9.0") {
+  throw new Error(`Expected Gleip 0.9.0 report schema 1.3.0, received:\n${reportJson}`);
 }
 
 if (!report.finalResponse?.markdown?.includes("### Gleip")) {

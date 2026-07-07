@@ -35,6 +35,38 @@ const agentBehaviorSchema = z
   })
   .default({});
 
+const compressionClassSchema = z.enum([
+  "test_output",
+  "build_output",
+  "log_output",
+  "structured_json",
+  "search_results",
+  "file_listing",
+  "command_output",
+  "git_diff"
+]);
+
+const compressionSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    audit_only: z.boolean().default(false),
+    min_input_bytes: z.number().int().positive().default(900),
+    min_estimated_tokens_saved: z.number().int().nonnegative().default(80),
+    min_confidence: z.enum(["low", "medium", "high"]).default("medium"),
+    allowed_classes: z.array(compressionClassSchema).default([
+      "test_output",
+      "build_output",
+      "log_output",
+      "structured_json",
+      "search_results",
+      "file_listing",
+      "command_output",
+      "git_diff"
+    ]),
+    envelope_format: z.enum(["human", "json"]).default("human")
+  })
+  .default({});
+
 export const GleipConfigSchema = z
   .object({
     version: z.literal(1).default(1),
@@ -48,6 +80,7 @@ export const GleipConfigSchema = z
     protected_paths: z.array(nonEmptyString).default([]),
     allowed_paths: z.array(nonEmptyString).default([]),
     approval_required_for: z.array(nonEmptyString).default([]),
+    compression: compressionSchema,
     agent_behavior: agentBehaviorSchema
   })
   .strict();

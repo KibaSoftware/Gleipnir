@@ -33,6 +33,8 @@ Gleip does not make network calls, does not call LLM APIs, does not require an a
 - `.gleip/report.md`
 - `.gleip/state.json`
 - `.gleip/check-cache.json`
+- `.gleip/context/index.json`
+- `.gleip/context/objects/<sha256>`
 
 The `.gleip/` directory contains local session state and should generally be ignored.
 
@@ -44,3 +46,16 @@ duplicating the full task text and is not authoritative.
 The incremental check cache stores only local fingerprints, normalized finding data, and result metadata. It does not duplicate source files or diff contents.
 
 Report generation reads only local artifacts and git state. It does not send scores, warnings, file paths, diffs, or efficiency estimates anywhere.
+
+## Context Compression
+
+Context compression is local-only. When `gleip run` or `gleip compress` compacts
+eligible execution evidence, Gleip writes the exact original first under
+`.gleip/context/objects/<sha256>` and records metadata in `.gleip/context/index.json`.
+The index does not store full original content.
+
+Compression does not intercept provider traffic, authentication, prompts, model
+calls, or network requests. It does not compress active canonical task state,
+briefs, requirement ledgers, accepted plans, scope state, approval state, source
+code, dependency manifests, lockfiles, CI configuration, or sensitive-looking
+content.

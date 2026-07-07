@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const tarball = join(root, "dist-pack", "gleip-0.8.4.tgz");
+const tarball = join(root, "dist-pack", "gleip-0.9.0.tgz");
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 const npxCommand = process.platform === "win32" ? "npx.cmd" : "npx";
 
@@ -140,8 +140,53 @@ writeRepoFile(
   ].join("\n")
 );
 
-assertEqual(runGleip(["--version"], repo).trim(), "0.8.4", "packed version");
+assertEqual(runGleip(["--version"], repo).trim(), "0.9.0", "packed version");
 runGleip(["init"], repo);
+const largeOutput = [
+  ...Array.from({ length: 180 }, (_, index) => `PASS packed-${index % 5}.test.ts`),
+  "FAIL packed.test.ts > keeps diagnostics",
+  "AssertionError: expected packed diagnostics"
+].join("\n");
+const compressionAudit = JSON.parse(
+  runGleip(["compress", "--audit", "--json", "--type", "test_output"], repo, largeOutput)
+);
+assertEqual(compressionAudit.classification.contentClass, "test_output", "compression audit class");
+const compressedOutput = runGleip(["compress", "--type", "test_output"], repo, largeOutput);
+const compressionReference = /sha256:[0-9a-f]{64}/u.exec(compressedOutput)?.[0];
+
+if (compressionReference === undefined) {
+  throw new Error(`compression output did not include a reference:\n${compressedOutput}`);
+}
+
+assertIncludes(compressedOutput, "FAIL packed.test.ts", "compressed diagnostic preservation");
+assertEqual(runGleip(["retrieve", compressionReference], repo), largeOutput, "exact retrieval");
+writeRepoFile(
+  "wrapped-output.mjs",
+  [
+    "for (let index = 0; index < 160; index += 1) {",
+    "  console.log('PASS wrapped-packed.test.ts');",
+    "}",
+    "console.log('FAIL wrapped-packed.test.ts');"
+  ].join("\n")
+);
+const wrappedOutput = runGleip(
+  [
+    "run",
+    "--type",
+    "test_output",
+    "--",
+    "node",
+    "wrapped-output.mjs"
+  ],
+  repo
+);
+assertIncludes(wrappedOutput, "[Gleip compressed test_output", "wrapped compression");
+const compressionStats = JSON.parse(runGleip(["stats", "--json"], repo));
+
+if (compressionStats.objectCount < 1 || compressionStats.retrievalCalls < 1) {
+  throw new Error(`unexpected compression stats: ${JSON.stringify(compressionStats)}`);
+}
+
 runGleip(["preflight", "--file", "task.md"], repo);
 
 const canonicalTask = readJson(".gleip/canonical-task.json");
@@ -242,18 +287,19 @@ runGleip(["check"], repo);
 runGleip(["check", "--ci"], repo);
 runGleip(["doctor"], repo);
 
-console.log(`Packed Gleip 0.8.4 smoke test passed in ${repo}`);
+console.log(`Packed Gleip 0.9.0 smoke test passed in ${repo}`);
 
-function runGleip(args, cwd) {
-  return run(npxCommand, ["--no-install", "gleip", ...args], cwd);
+function runGleip(args, cwd, input) {
+  return run(npxCommand, ["--no-install", "gleip", ...args], cwd, input);
 }
 
-function run(command, args, cwd) {
+function run(command, args, cwd, input) {
   return execFileSync(command, args, {
     cwd,
     encoding: "utf8",
+    input,
     shell: process.platform === "win32" && command.endsWith(".cmd"),
-    stdio: ["ignore", "pipe", "pipe"]
+    stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"]
   });
 }
 

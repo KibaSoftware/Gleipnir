@@ -2,7 +2,7 @@
 
 Use these flows before publishing anything. They verify the built CLI can run outside the source TypeScript entrypoint. For the full local-only preview release pass, see [docs/release-checklist.md](release-checklist.md).
 
-Current release target: `0.8.4`.
+Current release target: `0.9.0`.
 
 ## Flow A: npm pack
 
@@ -36,7 +36,7 @@ mkdir %TEMP%\gleip-pack-test
 cd %TEMP%\gleip-pack-test
 git init
 npm init -y
-npm install -D <path-to-repo>\dist-pack\gleip-0.8.4.tgz
+npm install -D <path-to-repo>\dist-pack\gleip-0.9.0.tgz
 ```
 
 On macOS or Linux, use a temp directory such as `/tmp/gleip-pack-test` and the matching tarball path.
@@ -50,6 +50,11 @@ npx gleip init
 npx gleip doctor
 npx gleip doctor --agents
 npx gleip doctor --fix
+npx gleip compress --audit --json < large-output.txt
+npx gleip compress --type test_output < large-output.txt
+npx gleip retrieve <sha256-reference>
+npx gleip run -- node -e "for (let i=0;i<200;i++) console.log('PASS repeated.test.ts')"
+npx gleip stats --json
 npx gleip report --json
 npx gleip check
 npx gleip check --ci
@@ -61,18 +66,27 @@ npx --no-install gleip uninstall --dry-run
 npx --no-install gleip uninstall
 ```
 
-Expected result: help prints, the version is `0.8.4`, setup diagnostics pass, reports and checks run locally, `.gleip/canonical-task.json` is created by preflight, the second identical incremental check reuses its baseline, forced recomputation executes, compact status remains concise, the selected agent instruction is created, repair preserves local runtime files, dry-run changes nothing, and uninstall removes recognized generated repository files without removing the npm dependency or unknown `.gleip/` files.
+Expected result: help prints, the version is `0.9.0`, setup diagnostics pass,
+reports and checks run locally, `.gleip/canonical-task.json` is created by
+preflight, compression stores exact originals under `.gleip/context/` and retrieves
+them by reference, the command wrapper preserves exit status, the second identical
+incremental check reuses its baseline, forced recomputation executes, compact
+status remains concise, the selected agent instruction is created, repair
+preserves local runtime files, dry-run changes nothing, and uninstall removes
+recognized generated repository files without removing the npm dependency or
+unknown `.gleip/` files.
 
 Verify git behavior from the fixture:
 
 ```sh
 git status --ignored
 git check-ignore -v .gleip/session.json
+git check-ignore -v .gleip/context/index.json
 git check-ignore -v .gleip.yml
 git check-ignore -v AGENTS.md
 ```
 
-The `.gleip/session.json` check should match the Gleip block. The `.gleip.yml` and
+The `.gleip/session.json` and `.gleip/context/index.json` checks should match the Gleip block. The `.gleip.yml` and
 `AGENTS.md` checks should return no match because they are intended to be versioned.
 
 ## Testing the workflow manually

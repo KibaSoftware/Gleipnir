@@ -4,9 +4,10 @@
 
 Coding agents can over-edit, drift from task scope, weaken tests, or produce noisy
 final responses. Gleip gives them a deterministic local protocol for task
-preflight, advisory scope budgeting, plan validation, drift checks, session
-reports, and compact final status. Gleip is a guidance tool, not a permission
-system: broad or complex work is acceptable when the task declares it.
+preflight, advisory scope budgeting, plan validation, drift checks, local context
+compression for execution evidence, session reports, and compact final status.
+Gleip is a guidance tool, not a permission system: broad or complex work is
+acceptable when the task declares it.
 
 Gleip makes no network calls and uses no telemetry, LLM/API calls, account, dashboard, or remote metrics.
 
@@ -53,9 +54,11 @@ For each coding task, agents should:
 1. Run `npx --no-install gleip preflight "<task>"` before editing.
 2. Read `.gleip/brief.md` and follow `.gleip/scope-budget.json`.
 3. Validate non-trivial plans with `npx --no-install gleip validate-plan`.
-4. Run the narrowest existing validation while iterating; run complete required validation once for the final repository state.
-5. Run `npx --no-install gleip check --incremental` before claiming completion.
-6. Run `npx --no-install gleip status --compact` when the expected next action is unclear.
+4. Run the narrowest existing validation while iterating; route large repetitive execution output through `npx --no-install gleip run -- <command>` when useful.
+5. Retrieve exact originals with `npx --no-install gleip retrieve <reference>` before relying on omitted diagnostics.
+6. Run complete required validation once for the final repository state.
+7. Run `npx --no-install gleip check --incremental` before claiming completion.
+8. Run `npx --no-install gleip status --compact` when the expected next action is unclear.
 
 ## Commands for Developers
 
@@ -73,6 +76,10 @@ These commands are useful for setup, diagnostics, inspection, and repository lif
 | `npx gleip disable`             | Disable guidance, optionally with `--reason`.                                           | Temporarily pause checks with an explicit local record.                 |
 | `npx gleip report`              | Generate and summarize the canonical session report.                                    | Inspect the current session outcome.                                    |
 | `npx gleip report --json`       | Generate the report and print stable JSON only.                                         | Local scripts, tooling, or debugging.                                   |
+| `npx gleip compress`            | Classify and compress eligible local execution evidence from stdin or text.             | Inspect compression policy or pipe large command output.                 |
+| `npx gleip run -- <command>`     | Run a local command and compress eligible stdout/stderr while preserving exit status.   | Large repetitive test, build, log, search, or listing output.            |
+| `npx gleip retrieve <ref>`       | Print the byte-for-byte original for a compression reference.                           | Review omitted diagnostics or pipe exact original evidence.              |
+| `npx gleip stats`               | Print local compression gross/net savings, retrieval, and dedup statistics.             | Audit context compression behavior.                                     |
 | `npx gleip check`               | Check the working tree against scope without updating the active status file.           | Run a manual drift check; add `--json` for machine-readable output.     |
 | `npx gleip check --incremental` | Reuse a complete deterministic result when all check inputs match.                      | Iterative agent checks; add `--force` to recompute.                     |
 | `npx gleip check --ci`          | Run the conservative CI check and fail only on documented action-required codes.        | Use in local CI without network access or telemetry.                    |
@@ -96,6 +103,9 @@ Generated agent instructions use these commands through `npx --no-install` so th
 | `npx --no-install gleip validate-plan "<plan>"`       | Check a proposed implementation plan against active canonical requirements and scope. | Latest plan validation in `.gleip/session.json`                                                     |
 | `npx --no-install gleip validate-plan --file plan.md` | Read and structurally validate a plan file as read-only context.      | Latest plan validation, including stable finding codes, in `.gleip/session.json`                                 |
 | `npx --no-install gleip check --incremental`          | Check current changes or reuse the matching complete result.          | `.gleip/check-cache.json`; complete baseline or finding delta                                                    |
+| `npx --no-install gleip run -- <command>`             | Run local validation and compact only eligible execution evidence.     | `.gleip/context/objects/<sha256>`, `.gleip/context/index.json`                                                  |
+| `npx --no-install gleip compress`                     | Compress or audit stdin execution evidence without running a command. | `.gleip/context/objects/<sha256>`, `.gleip/context/index.json` when compression applies                         |
+| `npx --no-install gleip retrieve <reference>`         | Retrieve exact original execution evidence by stable reference.       | Raw original content from `.gleip/context/objects/<sha256>`                                                     |
 | `npx --no-install gleip status --compact`             | Print compact iterative state and the next required action.           | Five-line output; no repeated brief, plan, or unchanged finding details                                          |
 | `npx --no-install gleip report`                       | Generate the canonical final status and compact response block.       | `.gleip/report.md`, `.gleip/report.json`                                                                         |
 
@@ -103,9 +113,39 @@ Generated agent instructions use these commands through `npx --no-install` so th
 
 Default workflow modes print concise 1-5 line summaries that confirm the completed phase and next action. An incremental baseline or delta adds one line per finding that must be emitted; unchanged findings remain a count. JSON modes remain machine-readable without human summary noise.
 
-Gleip 0.8.4 preserves the exact received task in `.gleip/canonical-task.json` and treats `.gleip/brief.md` as a derived navigation aid. The canonical task and active amendments remain authoritative for scope, plan validation, final reporting, and generated agent instructions. The local requirement ledger tracks required, prohibited, optional, and informational obligations with deterministic source spans so long prompts are not silently narrowed.
+Gleip preserves the exact received task in `.gleip/canonical-task.json` and treats `.gleip/brief.md` as a derived navigation aid. The canonical task and active amendments remain authoritative for scope, plan validation, final reporting, generated agent instructions, and compression passthrough policy. The local requirement ledger tracks required, prohibited, optional, and informational obligations with deterministic source spans so long prompts are not silently narrowed.
 
 Gleip calibrates ceremony by workflow profile. Documentation-only tasks use a compact brief, no required plan, and content/diff verification by default. Local behavior changes use a short plan and focused verification. Broad changes keep explicit scope rationale and broader verification while scaling advisory line limits with accepted target count. Sensitive dependency, CI, auth, payment, infrastructure, migration, secret, and security-policy work keeps the complete approval and hard-gate workflow.
+
+## Context Compression
+
+Gleip 0.9.0 adds deterministic local compression for non-authoritative execution
+evidence: test output, build/log output, structured JSON, search results, file
+listings, generic command output, and git diffs. Originals are written first to a
+repository-local content-addressed store under `.gleip/context/objects/<sha256>`;
+compressed displays include a stable `sha256:` reference and retrieval command.
+
+Compression is authority-aware. Active canonical task state, task amendments,
+derived brief, requirement ledger, accepted plan, scope state, approvals,
+completion state, policy/instructions, source code, dependency manifests,
+lockfiles, CI configuration, infrastructure definitions, migrations, auth/payment
+configuration, unknown sensitive content, and secret-like output pass through by
+default. Caller hints cannot downgrade protected structural metadata.
+
+Compressed displays are never used as task, scope, scoring, approval,
+verification, requirement-completion, or review-readiness truth. Gleip decisions
+continue to use exact structured artifacts, current git state, or exact originals
+retrieved from the local store. Retrieval overhead is counted in net savings, so a
+run that immediately retrieves the full original may correctly show little or no
+net context savings.
+
+`gleip run -- <command>` preserves child command exit status and captures stdout
+and stderr separately. `gleip compress --audit --json` reports classification,
+confidence, and passthrough reasons without replacing content. `gleip stats
+--json` reports gross estimated tokens removed, compression metadata overhead,
+retrieval overhead, dedup hits, failures, and net estimated tokens saved.
+
+See [Context Compression Policy](docs/compression-policy.md).
 
 ## Stable Findings and CI
 
@@ -188,7 +228,7 @@ they are not a proxy metric and should not create extra justification work.
 
 ## Reports and Metrics
 
-Gleip 0.8.4 generates two local report artifacts:
+Gleip 0.9.0 generates two local report artifacts:
 
 - `.gleip/report.md`: concise scores, risks, findings, actions, and the recommended final-response block.
 - `.gleip/report.json`: stable machine-readable report data, warnings, evidence, summary, and efficiency estimate.
@@ -199,7 +239,7 @@ Before responding, agents treat the report as the source of truth and may includ
 
 **Estimated output/token waste avoided is a deterministic local estimate. It is not exact model billing or API usage data.**
 
-Estimates use only local artifacts and diff, context, or output size. When evidence is insufficient, Gleip returns zero or low confidence. Gleip has no separate `metrics` command or remote metrics service; report scores and estimates provide the implemented visibility.
+Estimates use only local artifacts and diff, context, or output size. When evidence is insufficient, Gleip returns zero or low confidence. Context compression has `gleip stats`; Gleip still has no remote metrics service, telemetry, or hosted dashboard.
 
 Incremental JSON output directly reports whether a check executed or was reused, its reuse rate, full and delta findings emitted, added/updated/resolved counts, and changed files. Validation-cycle and repeated-command measurements are reported as `unavailable` because Gleip does not intercept shell commands or agent tools.
 
@@ -234,6 +274,8 @@ The `.gitignore` block added by `gleip init` ignores `.gleip/`. This local-only 
 - `report.md`
 - `report.json`
 - `check-cache.json`
+- `context/index.json`
+- `context/objects/<sha256>`
 - Timestamped `session-*.json` archives created by `gleip stop`
 
 ## Local-Only Guarantee
@@ -245,7 +287,8 @@ The `.gitignore` block added by `gleip init` ignores `.gleip/`. This local-only 
 - No dashboard.
 - No cloud or remote metrics.
 - No source, diff, prompt, file-name, repository-metadata, or usage-data upload.
-- Generated session and report files stay inside the repository.
+- Generated session, report, and compression-store files stay inside the repository.
+- Exact originals for compressed execution evidence remain local and retrievable.
 
 See [Privacy](docs/privacy.md).
 
@@ -255,6 +298,9 @@ See [Privacy](docs/privacy.md).
 - Deterministic heuristics do not prove correctness.
 - Gleip does not replace tests, security review, or human review.
 - Scope, report, and efficiency estimates are approximate local signals.
+- Compression is limited to selected execution-evidence classes.
+- Source code and active task-contract artifacts are not compressed in 0.9.0.
+- Net savings can be zero when retrieval overhead cancels the compact display gain.
 - Missing artifacts or git evidence reduce report confidence.
 
 See [Known Limitations](docs/known-limitations.md).
@@ -287,6 +333,6 @@ See [Local Package Testing](docs/package-testing.md) and the [Release Checklist]
 
 ## Status
 
-- Current release: `0.8.4`
+- Current release: `0.9.0`
 - License: Apache-2.0
 - Local-only developer preview

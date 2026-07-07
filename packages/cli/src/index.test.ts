@@ -27,6 +27,7 @@ describe("createGleipCommand", () => {
     expect(commandNames).toEqual([
       "brief",
       "check",
+      "compress",
       "disable",
       "doctor",
       "enable",
@@ -34,8 +35,11 @@ describe("createGleipCommand", () => {
       "preflight",
       "repair-agents",
       "report",
+      "retrieve",
+      "run",
       "start",
       "state",
+      "stats",
       "status",
       "stop",
       "uninstall",
@@ -55,6 +59,10 @@ describe("createGleipCommand", () => {
       "status",
       "report",
       "check",
+      "compress",
+      "retrieve",
+      "run",
+      "stats",
       "doctor",
       "stop",
       "enable",
@@ -77,7 +85,7 @@ describe("createGleipCommand", () => {
   it("--version prints the package version", async () => {
     const output = (await runHelpCommand(["--version"])).join("\n");
 
-    expect(output).toBe("0.8.4");
+    expect(output).toBe("0.9.0");
   });
 
   it("command help shows important flags and stdin support", async () => {
@@ -112,6 +120,17 @@ describe("createGleipCommand", () => {
     expect(uninstallHelp).toContain("--keep-agent-files");
     expect(uninstallHelp).toContain("--force");
     expect(uninstallHelp).toContain("npm uninstall gleip");
+
+    const compressHelp = (await runHelpCommand(["compress", "--help"])).join("\n");
+    const runHelp = (await runHelpCommand(["run", "--help"])).join("\n");
+    const retrieveHelp = (await runHelpCommand(["retrieve", "--help"])).join("\n");
+    const statsHelp = (await runHelpCommand(["stats", "--help"])).join("\n");
+
+    expect(compressHelp).toContain("--audit");
+    expect(compressHelp).toContain("--type <class>");
+    expect(runHelp).toContain("Use `--` before commands with flags.");
+    expect(retrieveHelp).toContain("<reference>");
+    expect(statsHelp).toContain("--json");
   });
 
   it("release checklist doc exists", () => {
@@ -138,7 +157,7 @@ describe("createGleipCommand", () => {
     expect(packageJson.exports["."].import).toBe("./dist/index.js");
     expect(packageJson.exports["."].types).toBe("./dist/index.d.ts");
     expect(packageJson.name).toBe("gleip");
-    expect(packageJson.version).toBe("0.8.4");
+    expect(packageJson.version).toBe("0.9.0");
     expect(packageJson.dependencies).toEqual({
       commander: "^12.0.0",
       yaml: "^2.0.0",
@@ -183,7 +202,7 @@ describe("createGleipCommand", () => {
     });
   });
 
-  it("release metadata uses version 0.8.4 across packages", () => {
+  it("release metadata uses version 0.9.0 across packages", () => {
     const packagePaths = [
       "package.json",
       "packages/cli/package.json",
@@ -199,7 +218,7 @@ describe("createGleipCommand", () => {
       const packageJson = JSON.parse(readFileSync(join(repoRoot, packagePath), "utf8")) as {
         version: string;
       };
-      expect(packageJson.version).toBe("0.8.4");
+      expect(packageJson.version).toBe("0.9.0");
     }
 
     const cliPackageJson = readFileSync(join(repoRoot, "packages", "cli", "package.json"), "utf8");
@@ -996,7 +1015,7 @@ describe("createGleipCommand", () => {
     expect(report).toContain("WARN Missing .gleip.yml or GLEIP.md");
     expect(report).toContain("WARN Missing Gleip-managed agent instructions");
     expect(report).toContain("WARN Missing, incomplete, or overridden Gleip .gitignore block");
-    expect(report).toContain("OK   CLI version resolved (0.8.4)");
+    expect(report).toContain("OK   CLI version resolved (0.9.0)");
     expect(report).toContain("OK   Built-in init assets available");
     expect(report).toContain("Run: npx gleip init");
   });
@@ -3453,7 +3472,7 @@ describe("createGleipCommand", () => {
     expect(output).toHaveLength(1);
     expect(output[0]?.trimStart().startsWith("{")).toBe(true);
     expect(output.join("\n")).not.toContain("Gleip report ready");
-    expect(report.version).toBe("0.8.4");
+    expect(report.version).toBe("0.9.0");
     expect(report.generatedAt).toBe("2026-05-30T00:00:00.000Z");
     expect(report.summary.filesChanged).toBe(0);
     expect(existsSync(join(repo, ".gleip", "report.json"))).toBe(true);
@@ -3567,6 +3586,167 @@ describe("createGleipCommand", () => {
     expect(json.metrics.linesAdded).toBe(2);
     expect(json.findings).toEqual([]);
     expect(json.nextAction).toContain("focused verification");
+  });
+
+  it("compress, retrieve, and stats handle execution evidence locally", async () => {
+    const repo = createTempRepo();
+    const original = [
+      ...Array.from({ length: 150 }, (_, index) => `PASS tests/example-${index % 5}.test.ts`),
+      "FAIL tests/parser.test.ts > keeps the failure visible",
+      "AssertionError: expected true to be false"
+    ].join("\n");
+
+    const compressOutput = await runCommand(repo, ["compress", "--type", "test_output"], {
+      readStdin: () => original
+    });
+    const rendered = compressOutput.join("\n");
+    const reference = /sha256:[0-9a-f]{64}/u.exec(rendered)?.[0];
+
+    expect(rendered).toContain("[Gleip compressed test_output");
+    expect(rendered).toContain("FAIL tests/parser.test.ts");
+    expect(reference).toBeDefined();
+
+    const retrieved = await runCommand(repo, ["retrieve", reference!]);
+    expect(retrieved.join("\n")).toBe(original);
+
+    const statsOutput = await runCommand(repo, ["stats", "--json"]);
+    const stats = JSON.parse(statsOutput.join("\n")) as {
+      objectCount: number;
+      retrievalCalls: number;
+      grossEstimatedTokensRemoved: number;
+    };
+    expect(stats.objectCount).toBe(1);
+    expect(stats.retrievalCalls).toBe(1);
+    expect(stats.grossEstimatedTokensRemoved).toBeGreaterThan(0);
+  });
+
+  it("compression audit keeps active task-contract artifacts as passthrough", async () => {
+    const repo = createTempRepo();
+    const output = await runCommand(
+      repo,
+      ["compress", "--artifact-type", "canonical_task", "--audit", "--json"],
+      {
+        readStdin: () =>
+          JSON.stringify({ authority: "canonical", effectiveContent: "Keep the task exact." })
+      }
+    );
+    const audit = JSON.parse(output.join("\n")) as {
+      auditOnly: boolean;
+      classification: { contentClass: string };
+      passthroughReasons: string[];
+      output?: string;
+    };
+
+    expect(audit.auditOnly).toBe(true);
+    expect(audit.classification.contentClass).toBe("canonical_task");
+    expect(audit.passthroughReasons).toContain("protected_authority_passthrough");
+    expect(audit.output).toBeUndefined();
+  });
+
+  it("run wraps local command output and preserves the child exit code", async () => {
+    const repo = createTempRepo();
+    const script = [
+      "for (let index = 0; index < 150; index += 1) console.log(`PASS wrapped-${index % 4}.test.ts`);",
+      "console.log('FAIL wrapped.test.ts > keeps diagnostics');",
+      "process.exit(7);"
+    ].join(" ");
+    const result = await runCommandResult(repo, ["run", "--type", "test_output", "--", process.execPath, "-e", script]);
+
+    expect(result.exitCode).toBe(7);
+    expect(result.output.join("\n")).toContain("[Gleip compressed test_output");
+    expect(result.output.join("\n")).toContain("FAIL wrapped.test.ts");
+  });
+
+  it("keeps long-spec authority, scope, and readiness equivalent after compression activity", async () => {
+    const repo = createTempRepo();
+    writeRepoFile(repo, "src/parser.ts", "export function parse(value: string) { return value; }\n");
+    writeRepoFile(repo, "tests/parser.test.ts", "describe('parser', () => {});\n");
+    writeRepoFile(repo, "CHANGELOG.md", "# Changelog\n");
+    writeRepoFile(
+      repo,
+      "task.md",
+      [
+        "Implement local parser retry evidence for invalid configuration input.",
+        "Must modify src/parser.ts.",
+        "Must update tests/parser.test.ts.",
+        "Must preserve Windows PowerShell path behavior.",
+        "Do not add dependencies.",
+        "Do not change CI configuration.",
+        "Acceptance criteria: invalid parse output includes the retry count and original path.",
+        "Release instructions: update CHANGELOG.md with a concise local parser note.",
+        "Platform requirements: behavior must remain deterministic on Windows and POSIX paths.",
+        "Compatibility requirements: existing JSON configuration remains valid.",
+        "Verification: run the focused parser tests and report the result."
+      ].join("\n")
+    );
+    writeRepoFile(
+      repo,
+      "plan.md",
+      [
+        "## Files",
+        "- src/parser.ts",
+        "- tests/parser.test.ts",
+        "- CHANGELOG.md",
+        "## Implementation",
+        "- Add deterministic retry-count evidence to invalid parse output while preserving the original path.",
+        "- Keep JSON configuration compatibility and avoid dependency or CI changes.",
+        "- Add the concise release note requested by the task.",
+        "## Verification",
+        "- Run focused parser tests on the final state and report the result."
+      ].join("\n")
+    );
+
+    await runCommand(repo, ["preflight", "--file", "task.md"]);
+    await runCommand(repo, ["validate-plan", "--file", "plan.md"]);
+
+    const canonicalBefore = JSON.parse(readFileSync(join(repo, ".gleip", "canonical-task.json"), "utf8"));
+    const scopeBefore = JSON.parse(readFileSync(join(repo, ".gleip", "scope-budget.json"), "utf8"));
+    const sessionBefore = JSON.parse(readFileSync(join(repo, ".gleip", "session.json"), "utf8")) as {
+      latestPlanValidation: unknown;
+    };
+    const reportBefore = JSON.parse((await runCommand(repo, ["report", "--json"])).join("\n")) as {
+      requirements: unknown;
+      risk: unknown;
+      scores: unknown;
+      summary: unknown;
+    };
+    const largeOutput = [
+      ...Array.from({ length: 160 }, (_, index) => `PASS parser-${index % 4}.test.ts`),
+      "FAIL parser.test.ts > invalid input includes retry count",
+      "AssertionError: expected retry count evidence"
+    ].join("\n");
+    const compressed = (await runCommand(repo, ["compress", "--type", "test_output"], {
+      readStdin: () => largeOutput
+    })).join("\n");
+    const reference = /sha256:[0-9a-f]{64}/u.exec(compressed)?.[0];
+
+    expect(reference).toBeDefined();
+    expect((await runCommand(repo, ["retrieve", reference!])).join("\n")).toBe(largeOutput);
+
+    const canonicalAfter = JSON.parse(readFileSync(join(repo, ".gleip", "canonical-task.json"), "utf8"));
+    const scopeAfter = JSON.parse(readFileSync(join(repo, ".gleip", "scope-budget.json"), "utf8"));
+    const sessionAfter = JSON.parse(readFileSync(join(repo, ".gleip", "session.json"), "utf8")) as {
+      latestPlanValidation: unknown;
+    };
+    const reportAfter = JSON.parse((await runCommand(repo, ["report", "--json"])).join("\n")) as {
+      requirements: unknown;
+      risk: unknown;
+      scores: unknown;
+      summary: unknown;
+    };
+
+    expect(canonicalAfter.contentHash).toBe(canonicalBefore.contentHash);
+    expect(canonicalAfter.effectiveContent).toBe(canonicalBefore.effectiveContent);
+    expect(canonicalAfter.revisions).toEqual(canonicalBefore.revisions);
+    expect(canonicalAfter.requirementLedger.requirements).toEqual(
+      canonicalBefore.requirementLedger.requirements
+    );
+    expect(scopeAfter).toEqual(scopeBefore);
+    expect(sessionAfter.latestPlanValidation).toEqual(sessionBefore.latestPlanValidation);
+    expect(reportAfter.scores).toEqual(reportBefore.scores);
+    expect(reportAfter.risk).toEqual(reportBefore.risk);
+    expect(reportAfter.requirements).toEqual(reportBefore.requirements);
+    expect(reportAfter.summary).toEqual(reportBefore.summary);
   });
 
   it("status artifacts include phase metadata", async () => {

@@ -33,6 +33,12 @@ The JSON report includes:
 
 The current report schema version is `1.3.0`. Gleip 0.8.x session, cache, status, report, and pre-canonical task artifacts are read with compatibility fallbacks. When the original task is available, Gleip creates a local compatibility canonical revision; if only a brief is available, provenance is marked incomplete. New writes use the current metadata fields and do not treat the brief as authoritative.
 
+Context compression statistics are separate from report scoring. Compressed
+displays do not affect scope adherence, plan alignment, requirement completion,
+approval state, verification state, or review readiness. When exact omitted
+evidence is needed, retrieve it from `.gleip/context/objects/<sha256>` with
+`gleip retrieve`.
+
 ## Deterministic Scoring
 
 Scores start at 100 and deduct for recomputed local evidence such as:
@@ -49,7 +55,7 @@ All scores are clamped to 0-100. Plan alignment can be 100 without a plan only w
 Verification evidence is recognized from explicit Tests, Verification,
 Validation, or Checks sections and from common local command-result lines such as
 focused test, typecheck, lint, or smoke commands that report success. Gleip still
-does not execute or attest verification commands in 0.8.4; absent current evidence
+does not execute or attest verification commands in 0.9.0; absent current evidence
 reduces readiness without proving that tests were not run.
 
 ## Requirement Completion
@@ -67,6 +73,11 @@ Token-waste reporting is deterministic and evidence-based. When evidence is insu
 When evidence is insufficient, the estimate is zero or low confidence. Gleip does not inspect API usage, model billing, prompts, accounts, or remote metrics.
 
 Output discipline and estimated output waste remain deterministic local heuristics. They do not judge semantic correctness or represent exact model billing usage.
+
+Context-compression stats use the same character-count token estimate but report
+gross savings, compressed-envelope metadata overhead, retrieval overhead, dedup
+hits, compressor failures, validation failures, and net estimated tokens saved.
+They are available through `npx --no-install gleip stats --json`.
 
 ## Interaction Summaries
 

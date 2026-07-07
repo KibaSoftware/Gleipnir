@@ -27,3 +27,27 @@ The derived brief, scope budget, plan validation, status, and report are aids. T
 must reference or evaluate the canonical task, but they do not replace it. No
 production path sends task text, repository content, telemetry, or usage data
 outside the local environment.
+
+## Context Compression
+
+`@gleip/core` owns context compression classification, policy, local object
+storage, exact retrieval, validation, and statistics. The CLI exposes that through
+`compress`, `run`, `retrieve`, and `stats`.
+
+Compression state is separate from task authority state:
+
+```text
+.gleip/canonical-task.json
+.gleip/brief.md
+.gleip/scope-budget.json
+.gleip/session.json
+
+.gleip/context/objects/<sha256>
+.gleip/context/index.json
+```
+
+The task-contract graph is durable session authority and is never compressed,
+replaced by references, or deleted by compression cleanup. The compression store is
+optimization state for exact originals of non-authoritative execution evidence.
+Compressed displays are not used for scope classification, plan validation,
+approval decisions, scoring, requirement completion, or review readiness.

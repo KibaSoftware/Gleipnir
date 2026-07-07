@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.9.0]
+
+### Added
+
+- Added deterministic local context compression for non-authoritative execution evidence: test output, build/log output, structured JSON, search results, file listings, command output, and git diffs.
+- Added `.gleip/context/objects/<sha256>` and `.gleip/context/index.json` as a repository-local content-addressed store for exact originals.
+- Added `gleip compress`, `gleip run`, `gleip retrieve`, and `gleip stats` for audit mode, command wrapping, exact retrieval, and gross/net savings reporting.
+- Added authority-aware compression classification and passthrough policy that protects canonical task state, active brief, requirement ledger, accepted plan, scope state, approval state, completion state, source code, policy, manifests, lockfiles, CI, and sensitive-looking content.
+
+### Changed
+
+- Updated generated agent instructions to use compression only for non-authoritative execution evidence and to retrieve exact originals before relying on omitted diagnostics.
+- Updated local artifact hygiene so `.gleip/context/` is treated as ignored runtime state.
+- Extended `.gleip.yml` with conservative compression settings for enabled state, audit mode, thresholds, allowed classes, confidence, and envelope format.
+
+### Compatibility
+
+- Existing 0.8.3 normalized scope and 0.8.4 canonical-task behavior remain intact. Compressed displays are not used as task, scope, scoring, approval, requirement-completion, verification, or review-readiness truth.
+- No network access, telemetry, provider proxying, hosted service, model/API call, or project-specific compression heuristic was added.
+
 ## [0.8.4]
 
 ### Added

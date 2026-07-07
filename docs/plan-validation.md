@@ -9,7 +9,7 @@ sections, missing or out-of-scope files, vague expansion rationale, dependency
 requirement conflicts, risky file categories, skipped or deleted tests, and scope
 budget mismatches.
 
-In 0.8.4, validation also checks the active canonical requirement ledger. The
+Validation also checks the active canonical requirement ledger. The
 derived brief is a navigation aid, not the task contract. A plan can be fully
 aligned only when required canonical requirements are addressed or validly scoped
 out with rationale and no prohibited canonical action is planned.
