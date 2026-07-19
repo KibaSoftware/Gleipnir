@@ -35,6 +35,13 @@ const agentBehaviorSchema = z
   })
   .default({});
 
+const requiredCommandSchema = z.object({
+  id: nonEmptyString,
+  description: nonEmptyString,
+  executable: nonEmptyString.optional(),
+  argument_includes: z.array(nonEmptyString).default([])
+});
+
 const compressionClassSchema = z.enum([
   "test_output",
   "build_output",
@@ -53,16 +60,18 @@ const compressionSchema = z
     min_input_bytes: z.number().int().positive().default(900),
     min_estimated_tokens_saved: z.number().int().nonnegative().default(80),
     min_confidence: z.enum(["low", "medium", "high"]).default("medium"),
-    allowed_classes: z.array(compressionClassSchema).default([
-      "test_output",
-      "build_output",
-      "log_output",
-      "structured_json",
-      "search_results",
-      "file_listing",
-      "command_output",
-      "git_diff"
-    ]),
+    allowed_classes: z
+      .array(compressionClassSchema)
+      .default([
+        "test_output",
+        "build_output",
+        "log_output",
+        "structured_json",
+        "search_results",
+        "file_listing",
+        "command_output",
+        "git_diff"
+      ]),
     envelope_format: z.enum(["human", "json"]).default("human")
   })
   .default({});
@@ -70,7 +79,7 @@ const compressionSchema = z
 export const GleipConfigSchema = z
   .object({
     version: z.literal(1).default(1),
-    mode: z.enum(["advisory", "strict", "enterprise"]).default("advisory"),
+    mode: z.enum(["passive", "advisory", "strict", "enterprise"]).default("passive"),
     principles: z.array(nonEmptyString).default([]),
     limits: limitsSchema,
     checks: checksSchema,
@@ -80,6 +89,7 @@ export const GleipConfigSchema = z
     protected_paths: z.array(nonEmptyString).default([]),
     allowed_paths: z.array(nonEmptyString).default([]),
     approval_required_for: z.array(nonEmptyString).default([]),
+    required_commands: z.array(requiredCommandSchema).default([]),
     compression: compressionSchema,
     agent_behavior: agentBehaviorSchema
   })

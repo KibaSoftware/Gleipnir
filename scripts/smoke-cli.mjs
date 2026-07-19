@@ -63,6 +63,8 @@ const reusedIncremental = JSON.parse(
 );
 const compactStatus = run("node", [cliEntry, "--cwd", repo, "status", "--compact"], repo);
 const reportJson = run("node", [cliEntry, "--cwd", repo, "report", "--json"], repo);
+const replayJson = run("node", [cliEntry, "--cwd", repo, "replay", "--json"], repo);
+const finalizeJson = run("node", [cliEntry, "--cwd", repo, "finalize", "--json"], repo);
 
 for (const path of [
   ".gitignore",
@@ -111,18 +113,26 @@ if (!compactStatus.includes("Check necessary: no")) {
 }
 
 const report = JSON.parse(reportJson);
+const replay = JSON.parse(replayJson);
+const finalization = JSON.parse(finalizeJson);
 
-if (version !== "0.9.0") {
-  throw new Error(`Expected Gleip 0.9.0, received: ${version}`);
+if (version !== "1.0.0") {
+  throw new Error(`Expected Gleip 1.0.0, received: ${version}`);
 }
 
-if (report.schemaVersion !== "1.3.0" || report.version !== "0.9.0") {
-  throw new Error(`Expected Gleip 0.9.0 report schema 1.3.0, received:\n${reportJson}`);
+if (report.schemaVersion !== "1.3.0" || report.version !== "1.0.0") {
+  throw new Error(`Expected Gleip 1.0.0 report schema 1.3.0, received:\n${reportJson}`);
 }
 
 if (!report.finalResponse?.markdown?.includes("### Gleip")) {
   throw new Error(`Expected compact final response block, received:\n${reportJson}`);
 }
+
+if (replay.events?.length < 1 || finalization.bundle?.completionStatus !== "complete") {
+  throw new Error("Expected replayable events and a complete exact-state evidence bundle.");
+}
+
+assertFile(`.gleip/runs/${finalization.bundle.runId}/final/latest.json`);
 
 console.log(`CLI smoke test passed in ${repo}`);
 

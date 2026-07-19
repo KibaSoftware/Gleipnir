@@ -1,7 +1,7 @@
 {
   "name": "gleip",
-  "version": "0.9.0",
-  "description": "Local-only guidance that AI coding agents use automatically.",
+  "version": "1.0.0",
+  "description": "Passive-first local evidence ledger and precision risk observer for coding-agent work.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -63,7 +63,7 @@
     "typecheck": "pnpm -r typecheck",
     "pack:cli": "node scripts/pack-cli.mjs",
     "smoke:cli": "node scripts/smoke-cli.mjs",
-    "smoke:packed": "node scripts/smoke-packed-0.9.mjs",
+    "smoke:packed": "node scripts/smoke-packed-1.0.mjs",
     "format": "prettier --write ."
   },
   "dependencies": {

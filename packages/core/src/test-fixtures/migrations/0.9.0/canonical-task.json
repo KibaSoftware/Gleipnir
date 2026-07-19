@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "1.0.0",
+  "taskId": "legacy-0.9.0",
+  "activeRevisionId": "revision-1",
+  "contentHash": "sha256:legacy-task",
+  "revisions": [
+    {
+      "revisionId": "revision-1",
+      "revisionNumber": 1,
+      "content": "Keep 0.9 canonical authority readable."
+    }
+  ]
+}

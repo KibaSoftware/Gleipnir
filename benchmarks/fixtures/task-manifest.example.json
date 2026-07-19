@@ -1,0 +1,10 @@
+{
+  "schemaVersion": "1.0.0",
+  "id": "task-example-001",
+  "version": "1",
+  "repositoryCommit": "replace-with-frozen-commit",
+  "taskDigest": "sha256:replace-with-task-digest",
+  "acceptanceSuiteDigest": "sha256:replace-with-hidden-suite-digest",
+  "category": "source_and_test_change",
+  "longTask": false
+}

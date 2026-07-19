@@ -135,7 +135,11 @@ export interface ReportScopeBudget {
   expectedPaths?: string[];
   requiredTests: boolean;
   verificationExpected?: boolean;
-  workflowProfile?: "documentation_only" | "local_behavior_change" | "broad_change" | "sensitive_change";
+  workflowProfile?:
+    | "documentation_only"
+    | "local_behavior_change"
+    | "broad_change"
+    | "sensitive_change";
   planRequired?: boolean;
 }
 
@@ -600,7 +604,7 @@ Test integrity: ${titleCase(report.risk.testIntegrity)}
 Repository hygiene: ${titleCase(report.risk.repositoryHygiene)}
 Over-edit risk: ${titleCase(report.risk.overEdit)}
 
-Evidence-based token waste avoided: ${formatTokenEstimateForReport(report.efficiency.estimatedTokenWasteAvoided)}
+Estimated removable text: ${formatTokenEstimateForReport(report.efficiency.estimatedTokenWasteAvoided)}
 Confidence: ${titleCase(report.efficiency.confidence)}
 
 ## Key findings
@@ -660,9 +664,7 @@ function evaluateRequirementCompletion(
 
   const items = requirements
     .filter((requirement) => requirement.status !== "superseded")
-    .map((requirement) =>
-      evaluateRequirementItem(input, requirement, changedFiles, plannedFiles)
-    );
+    .map((requirement) => evaluateRequirementItem(input, requirement, changedFiles, plannedFiles));
   const mandatory = items.filter((item) => item.obligation === "required");
   const prohibited = items.filter((item) => item.obligation === "prohibited");
 
@@ -721,7 +723,13 @@ function evaluateRequirementItem(
   }
 
   if (requirement.obligation === "required") {
-    const evidence = requirementEvidence(input, requirement, relatedPaths, changedFiles, plannedFiles);
+    const evidence = requirementEvidence(
+      input,
+      requirement,
+      relatedPaths,
+      changedFiles,
+      plannedFiles
+    );
 
     return {
       id: requirement.id,
@@ -738,7 +746,12 @@ function evaluateRequirementItem(
   }
 
   if (requirement.obligation === "prohibited") {
-    const violationEvidence = prohibitedRequirementEvidence(input, requirement, changedFiles, plannedFiles);
+    const violationEvidence = prohibitedRequirementEvidence(
+      input,
+      requirement,
+      changedFiles,
+      plannedFiles
+    );
 
     return {
       id: requirement.id,
@@ -850,7 +863,10 @@ function prohibitedRequirementEvidence(
     .join("\n")
     .toLowerCase();
 
-  if (/\bdependenc|package|lockfile|install\b/u.test(text) && hasDependencyConflict(input, changedFiles)) {
+  if (
+    /\bdependenc|package|lockfile|install\b/u.test(text) &&
+    hasDependencyConflict(input, changedFiles)
+  ) {
     evidence.push("Dependency or lockfile change conflicts with a canonical prohibition.");
   }
 
@@ -907,7 +923,8 @@ function addRequirementWarnings(
       reason: "The final local evidence conflicts with a canonical task prohibition.",
       evidence: violated.flatMap((item) => [`${item.id}: ${item.sourceText}`, ...item.evidence]),
       files: violated.flatMap((item) => item.relatedPaths),
-      suggestedAction: "Remove the prohibited change or get explicit user approval before finalizing."
+      suggestedAction:
+        "Remove the prohibited change or get explicit user approval before finalizing."
     });
     deductions.scopeAdherence += Math.min(45, violated.length * 15);
     deductions.planAlignment += Math.min(45, violated.length * 15);
@@ -1048,7 +1065,10 @@ function addOutputWarnings(
     deductions.outputDiscipline += 10;
   }
 
-  if (!testsMentioned && (input.scopeBudget?.verificationExpected ?? input.scopeBudget?.requiredTests) === true) {
+  if (
+    !testsMentioned &&
+    (input.scopeBudget?.verificationExpected ?? input.scopeBudget?.requiredTests) === true
+  ) {
     addWarning(warnings, {
       id: "output.tests-missing",
       type: "output",
@@ -1139,8 +1159,7 @@ function addOutputWarnings(
 function activeWarningCount(warnings: ReportWarning[]): number {
   return warnings.filter(
     (warning) =>
-      warning.type !== "output" &&
-      (warning.severity === "medium" || warning.severity === "high")
+      warning.type !== "output" && (warning.severity === "medium" || warning.severity === "high")
   ).length;
 }
 
@@ -1469,9 +1488,8 @@ function extractPathsFromText(text: string): string[] {
   );
 
   return (
-    matches
-      ?.map((match) => match.trim().replace(/^[(["'`]+|[)"'`,.]+$/g, ""))
-      .map(normalizePath) ?? []
+    matches?.map((match) => match.trim().replace(/^[(["'`]+|[)"'`,.]+$/g, "")).map(normalizePath) ??
+    []
   );
 }
 
@@ -1556,7 +1574,10 @@ function hasTestConflict(input: GenerateSessionReportInput): boolean {
 }
 
 function hasProhibitedActionEvidence(requirementText: string, evidenceText: string): boolean {
-  if (evidenceText.trim().length === 0 || !hasRequirementKeywordEvidence(requirementText, evidenceText)) {
+  if (
+    evidenceText.trim().length === 0 ||
+    !hasRequirementKeywordEvidence(requirementText, evidenceText)
+  ) {
     return false;
   }
 
@@ -1673,10 +1694,7 @@ function plannedFilesForReport(validation: ReportPlanValidation | undefined): st
       (path) => isCredibleEditablePlanPath(path) && hasEditIntentForPath(rawText, path)
     ),
     ...(validation.targetClassifications ?? [])
-      .filter(
-        (target) =>
-          target.classification === "direct" || target.classification === "derived"
-      )
+      .filter((target) => target.classification === "direct" || target.classification === "derived")
       .map((target) => target.target)
   ];
 
@@ -1857,7 +1875,7 @@ function renderCompactFinalResponse(input: {
 - Repository hygiene: ${titleCase(input.repositoryHygieneRisk)}
 - Output discipline: ${input.scores.outputDiscipline}/100
 - Canonical requirements: ${formatCompactRequirementSummary(input.requirements)}
-- Evidence-based token waste avoided: ${formatTokenEstimateForReport(input.efficiency.estimatedTokenWasteAvoided)} (${titleCase(input.efficiency.confidence)} confidence)
+- Estimated removable text: ${formatTokenEstimateForReport(input.efficiency.estimatedTokenWasteAvoided)} (${titleCase(input.efficiency.confidence)} confidence)
 - Unresolved warnings: ${warningSummary}`;
 }
 

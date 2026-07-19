@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const tarball = join(root, "dist-pack", "gleip-0.9.0.tgz");
+const tarball = join(root, "dist-pack", "gleip-1.0.0.tgz");
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 const npxCommand = process.platform === "win32" ? "npx.cmd" : "npx";
 
@@ -140,7 +140,7 @@ writeRepoFile(
   ].join("\n")
 );
 
-assertEqual(runGleip(["--version"], repo).trim(), "0.9.0", "packed version");
+assertEqual(runGleip(["--version"], repo).trim(), "1.0.0", "packed version");
 runGleip(["init"], repo);
 const largeOutput = [
   ...Array.from({ length: 180 }, (_, index) => `PASS packed-${index % 5}.test.ts`),
@@ -170,14 +170,7 @@ writeRepoFile(
   ].join("\n")
 );
 const wrappedOutput = runGleip(
-  [
-    "run",
-    "--type",
-    "test_output",
-    "--",
-    "node",
-    "wrapped-output.mjs"
-  ],
+  ["run", "--type", "test_output", "--", "node", "wrapped-output.mjs"],
   repo
 );
 assertIncludes(wrappedOutput, "[Gleip compressed test_output", "wrapped compression");
@@ -286,8 +279,14 @@ assertIncludes(
 runGleip(["check"], repo);
 runGleip(["check", "--ci"], repo);
 runGleip(["doctor"], repo);
+const replay = JSON.parse(runGleip(["replay", "--json"], repo));
+const finalization = JSON.parse(runGleip(["finalize", "--json"], repo));
 
-console.log(`Packed Gleip 0.9.0 smoke test passed in ${repo}`);
+if (replay.events.length < 1 || finalization.bundle.completionStatus !== "complete") {
+  throw new Error("packed evidence replay or finalization did not complete");
+}
+
+console.log(`Packed Gleip 1.0.0 smoke test passed in ${repo}`);
 
 function runGleip(args, cwd, input) {
   return run(npxCommand, ["--no-install", "gleip", ...args], cwd, input);

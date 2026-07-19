@@ -224,7 +224,12 @@ export interface ValidateAgentPlanInput {
   requirementLedger?: RequirementLedger;
 }
 
-export type RequirementObligation = "required" | "prohibited" | "optional" | "suggestion" | "informational";
+export type RequirementObligation =
+  | "required"
+  | "prohibited"
+  | "optional"
+  | "suggestion"
+  | "informational";
 
 export type RequirementCategory =
   | "architecture"
@@ -1153,19 +1158,15 @@ export function createScopeBudget(input: CreateScopeBudgetInput): ScopeBudget {
     (taskScopeHints.declaredScopeLabels.includes("context_docs") &&
       taskScopeHints.contextFiles.length === 0);
   const workflowProfile = deriveWorkflowProfile(input.classification, taskBreadth, taskScopeHints);
-  const planRequired = workflowProfile !== "documentation_only";
+  const planRequired = workflowProfile === "broad_change" || workflowProfile === "sensitive_change";
   const effectiveAllowedPaths =
     workflowProfile === "documentation_only"
       ? documentationOnlyScope(taskScopeHints)
       : allowedPaths;
   const effectiveExplicitScope =
-    workflowProfile === "documentation_only"
-      ? effectiveAllowedPaths
-      : explicitScope;
-  const effectiveDerivedScope =
-    workflowProfile === "documentation_only" ? [] : derivedScope;
-  const effectiveRequiredTests =
-    workflowProfile === "documentation_only" ? false : requiredTests;
+    workflowProfile === "documentation_only" ? effectiveAllowedPaths : explicitScope;
+  const effectiveDerivedScope = workflowProfile === "documentation_only" ? [] : derivedScope;
+  const effectiveRequiredTests = workflowProfile === "documentation_only" ? false : requiredTests;
   const effectiveRiskLevel =
     workflowProfile === "documentation_only"
       ? "low"
@@ -1218,18 +1219,26 @@ export function createScopeBudget(input: CreateScopeBudgetInput): ScopeBudget {
   };
 }
 
-export function extractRequirementLedger(input: RequirementLedgerInput | string): RequirementLedger {
+export function extractRequirementLedger(
+  input: RequirementLedgerInput | string
+): RequirementLedger {
   const source =
     typeof input === "string"
       ? { taskText: input }
       : input.revisions !== undefined && input.revisions.length > 0
         ? input
-        : { ...input, revisions: [{ revisionId: "revision-1", revisionNumber: 1, content: input.taskText }] };
-  const revisions =
-    source.revisions ?? [{ revisionId: "revision-1", revisionNumber: 1, content: source.taskText }];
+        : {
+            ...input,
+            revisions: [{ revisionId: "revision-1", revisionNumber: 1, content: input.taskText }]
+          };
+  const revisions = source.revisions ?? [
+    { revisionId: "revision-1", revisionNumber: 1, content: source.taskText }
+  ];
   const requirements: TaskRequirement[] = [];
 
-  for (const revision of revisions.sort((left, right) => left.revisionNumber - right.revisionNumber)) {
+  for (const revision of revisions.sort(
+    (left, right) => left.revisionNumber - right.revisionNumber
+  )) {
     for (const candidate of extractRequirementCandidates(revision)) {
       requirements.push({
         ...candidate,
@@ -1271,7 +1280,9 @@ export function analyzeBriefCoverage(
 
   return {
     authority: "derived",
-    ...(ledger.canonicalTaskHash === undefined ? {} : { canonicalTaskHash: ledger.canonicalTaskHash }),
+    ...(ledger.canonicalTaskHash === undefined
+      ? {}
+      : { canonicalTaskHash: ledger.canonicalTaskHash }),
     coverageStatus:
       omittedRequirementCount > 0
         ? "omissions_visible"
@@ -1551,13 +1562,21 @@ function requirementSectionHeading(
     return undefined;
   }
 
-  const normalized = line.replace(/^#{1,6}\s*/u, "").replace(/:$/u, "").trim().toLowerCase();
+  const normalized = line
+    .replace(/^#{1,6}\s*/u, "")
+    .replace(/:$/u, "")
+    .trim()
+    .toLowerCase();
 
   if (/\b(?:must not|do not|never|exclusions?|prohibited|out of scope)\b/u.test(normalized)) {
     return { obligation: "prohibited", category: "scope" };
   }
 
-  if (/\b(?:acceptance criteria|requirements?|required|constraints?|expected result|before completion)\b/u.test(normalized)) {
+  if (
+    /\b(?:acceptance criteria|requirements?|required|constraints?|expected result|before completion)\b/u.test(
+      normalized
+    )
+  ) {
     return { obligation: "required" };
   }
 
@@ -1633,7 +1652,11 @@ function hasExplicitRequirementSignal(text: string): boolean {
 function classifyRequirementCategory(text: string): RequirementCategory {
   const normalized = text.toLowerCase();
 
-  if (/\b(?:test|tests|verify|verification|validate|validation|lint|typecheck|build|smoke)\b/u.test(normalized)) {
+  if (
+    /\b(?:test|tests|verify|verification|validate|validation|lint|typecheck|build|smoke)\b/u.test(
+      normalized
+    )
+  ) {
     return "verification";
   }
 
@@ -1657,7 +1680,9 @@ function classifyRequirementCategory(text: string): RequirementCategory {
     return "CI";
   }
 
-  if (/\b(?:windows|macos|linux|cross-platform|path semantics|unicode|utf-?8)\b/u.test(normalized)) {
+  if (
+    /\b(?:windows|macos|linux|cross-platform|path semantics|unicode|utf-?8)\b/u.test(normalized)
+  ) {
     return "platform";
   }
 
@@ -1776,7 +1801,9 @@ function requirementsConflict(left: TaskRequirement, right: TaskRequirement): bo
     return true;
   }
 
-  return left.category === right.category && tokenOverlapRatio(left.sourceText, right.sourceText) >= 0.35;
+  return (
+    left.category === right.category && tokenOverlapRatio(left.sourceText, right.sourceText) >= 0.35
+  );
 }
 
 function pathsIntersect(left: string[], right: string[]): boolean {
@@ -1949,7 +1976,10 @@ function planViolatesProhibition(
     return true;
   }
 
-  if (/\b(?:publish|push|tag|commit)\b/u.test(text) && /\b(?:publish|push|tag|commit)\b/iu.test(requirement.sourceText)) {
+  if (
+    /\b(?:publish|push|tag|commit)\b/u.test(text) &&
+    /\b(?:publish|push|tag|commit)\b/iu.test(requirement.sourceText)
+  ) {
     return true;
   }
 
@@ -2026,9 +2056,10 @@ function inferPlanStructureForCoverage(planText: string, parsedPlan: AgentPlan):
     hasRiskRationale: /\b(?:risk|rationale|because|needed|required|scope|assumption)\b/iu.test(
       planText
     ),
-    hasVerification: /\b(?:test|tests|verify|verification|validate|validation|lint|typecheck|build|smoke|check)\b/iu.test(
-      planText
-    )
+    hasVerification:
+      /\b(?:test|tests|verify|verification|validate|validation|lint|typecheck|build|smoke|check)\b/iu.test(
+        planText
+      )
   };
 }
 
@@ -2089,7 +2120,10 @@ function normalizeComparableText(value: string): string {
   return normalizePath(value).toLowerCase();
 }
 
-function formatTaskReference(task: string, canonicalTask: CanonicalTaskReference | undefined): string {
+function formatTaskReference(
+  task: string,
+  canonicalTask: CanonicalTaskReference | undefined
+): string {
   const preview = taskPreview(task);
 
   if (canonicalTask === undefined) {
@@ -2110,10 +2144,7 @@ function taskPreview(task: string): string {
   return compact.length <= 220 ? compact : `${compact.slice(0, 217)}...`;
 }
 
-function withBriefAuthority(
-  body: string,
-  input: GenerateImplementationBriefInput
-): string {
+function withBriefAuthority(body: string, input: GenerateImplementationBriefInput): string {
   const coverage =
     input.requirementLedger === undefined
       ? undefined
@@ -2122,7 +2153,8 @@ function withBriefAuthority(
     authority: "derived",
     canonicalTaskId: input.canonicalTask?.taskId ?? null,
     canonicalRevisionId: input.canonicalTask?.activeRevisionId ?? null,
-    canonicalTaskHash: input.canonicalTask?.contentHash ?? input.requirementLedger?.canonicalTaskHash ?? null,
+    canonicalTaskHash:
+      input.canonicalTask?.contentHash ?? input.requirementLedger?.canonicalTaskHash ?? null,
     generatedFrom: input.canonicalTask?.artifactPath ?? "task text received by Gleip",
     briefSchemaVersion: "1.0.0",
     coverageStatus: coverage?.coverageStatus ?? "unavailable",
@@ -2501,8 +2533,7 @@ function validatePlanRequirements(
       code: "CANONICAL_PROHIBITION_CONFLICT",
       severity: "action_required",
       title: "Plan conflicts with canonical prohibition",
-      message:
-        "The plan proposes work that conflicts with a prohibited canonical requirement.",
+      message: "The plan proposes work that conflicts with a prohibited canonical requirement.",
       recommendation: "Remove the prohibited action or obtain explicit user approval.",
       evidence: coverage.conflictingRequirements.flatMap((id) =>
         requirementEvidenceById(requirementById, id)
@@ -4676,10 +4707,7 @@ function isAcceptedDocumentationPlanTouch(
 ): boolean {
   const normalizedPath = normalizePath(path);
 
-  if (
-    isReadOnlyContextTarget(normalizedPath, scopeBudget) ||
-    !isContextDocsPath(normalizedPath)
-  ) {
+  if (isReadOnlyContextTarget(normalizedPath, scopeBudget) || !isContextDocsPath(normalizedPath)) {
     return false;
   }
 
@@ -5345,7 +5373,9 @@ function documentationOnlyScope(taskScopeHints: TaskScopeHints): string[] {
       ? explicitTargets
       : taskScopeHints.declaredPaths.filter(isNonExecutableDocumentationPath);
 
-  return dedupe(targets).filter((path) => path !== ".").sort(comparePaths);
+  return dedupe(targets)
+    .filter((path) => path !== ".")
+    .sort(comparePaths);
 }
 
 function buildExplicitScope(taskScopeHints: TaskScopeHints): string[] {
@@ -5426,9 +5456,7 @@ function deriveWorkflowProfile(
     ...taskScopeHints.explicitOnlyTargets
   ];
   const editableTargets =
-    explicitEditableTargets.length > 0
-      ? explicitEditableTargets
-      : taskScopeHints.declaredPaths;
+    explicitEditableTargets.length > 0 ? explicitEditableTargets : taskScopeHints.declaredPaths;
 
   if (
     (classification.workflowProfile === "documentation_only" ||
@@ -6290,7 +6318,9 @@ function dedupePatternMatches(matches: RepoPatternMatch[]): RepoPatternMatch[] {
 function isClearlyTestOnly(task: string): boolean {
   const hasTestSignal = /\b(tests?|specs?|coverage|unit test|integration test)\b/i.test(task);
   const hasImplementationJoin =
-    /\b(and|plus|with)\b\s+\b(add|create|implement|enable|support|fix|refactor|update)\b/i.test(task);
+    /\b(and|plus|with)\b\s+\b(add|create|implement|enable|support|fix|refactor|update)\b/i.test(
+      task
+    );
   const declaredScope = extractDeclaredTaskScope(task);
   const hasDeclaredNonTestScope = declaredScope.labels.some(
     (label) => label !== "tests" && label !== "smoke_tests"
@@ -6374,7 +6404,8 @@ function classifyComposedLocalBehaviorTask(task: string): TaskClassification | u
 
   return {
     taskType: "local_behavior_change",
-    confidence: actionSignals.length + behaviorSignals.length + targetSignals.length >= 4 ? "high" : "medium",
+    confidence:
+      actionSignals.length + behaviorSignals.length + targetSignals.length >= 4 ? "high" : "medium",
     riskLevel: "medium",
     reasons: [
       `Matched behavior-change action signal "${actionSignals[0]}".`,
@@ -6388,7 +6419,11 @@ function classifyComposedLocalBehaviorTask(task: string): TaskClassification | u
 }
 
 function workflowProfileForTaskType(taskType: TaskType, task: string): WorkflowProfile {
-  if (["dependency_upgrade", "migration", "auth_security_change", "infra_ci_change"].includes(taskType)) {
+  if (
+    ["dependency_upgrade", "migration", "auth_security_change", "infra_ci_change"].includes(
+      taskType
+    )
+  ) {
     return "sensitive_change";
   }
 
@@ -6396,7 +6431,11 @@ function workflowProfileForTaskType(taskType: TaskType, task: string): WorkflowP
     return "documentation_only";
   }
 
-  if (/\b(?:spanning|across|repository-wide|repo-wide|multiple|several|cross-cutting|cross cutting)\b/iu.test(task)) {
+  if (
+    /\b(?:spanning|across|repository-wide|repo-wide|multiple|several|cross-cutting|cross cutting)\b/iu.test(
+      task
+    )
+  ) {
     return "broad_change";
   }
 

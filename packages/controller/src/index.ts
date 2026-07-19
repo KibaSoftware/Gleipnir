@@ -213,18 +213,8 @@ export function detectScopeDrift(input: DetectScopeDriftInput): DriftResult {
   addSecretFindings(findings, changedFiles, input.scopeBudget);
   addSkippedTestFindings(findings, input.gitDiffContext.rawDiff, input.scopeBudget);
   addDeletedTestFindings(findings, fileStats, input.scopeBudget);
-  addDependencyFindings(
-    findings,
-    changedFiles,
-    input.gitDiffContext.rawDiff,
-    input.scopeBudget
-  );
+  addDependencyFindings(findings, changedFiles, input.gitDiffContext.rawDiff, input.scopeBudget);
   addCiFindings(findings, changedFiles, input.scopeBudget);
-  addSoftLimitFindings(findings, input.scopeBudget, {
-    filesChanged: metrics.filesChanged,
-    linesAdded: metrics.linesAdded,
-    linesDeleted: metrics.linesDeleted
-  });
   addOutsideScopeFindings(findings, changedFiles, fileStats, input.scopeBudget);
   addApprovalPathFindings(findings, changedFiles, input.scopeBudget);
   addBlockedPathFindings(findings, changedFiles, input.scopeBudget);
@@ -297,56 +287,6 @@ export function deriveNextAction(
   return "Continue with focused verification before finalizing.";
 }
 
-function addSoftLimitFindings(
-  findings: DriftFinding[],
-  scopeBudget: ScopeBudgetLike,
-  metrics: { filesChanged: number; linesAdded: number; linesDeleted: number }
-): void {
-  const effectiveMaxLinesAdded = isBroadTaskBreadth(scopeBudget.taskBreadth)
-    ? Math.max(scopeBudget.softLimits.maxLinesAdded, metrics.filesChanged * 120)
-    : scopeBudget.softLimits.maxLinesAdded;
-  const effectiveMaxLinesDeleted = isBroadTaskBreadth(scopeBudget.taskBreadth)
-    ? Math.max(scopeBudget.softLimits.maxLinesDeleted, metrics.filesChanged * 80)
-    : scopeBudget.softLimits.maxLinesDeleted;
-
-  if (
-    metrics.filesChanged > scopeBudget.softLimits.maxFilesChanged &&
-    !isBroadTaskBreadth(scopeBudget.taskBreadth)
-  ) {
-    findings.push({
-      code: "SCOPE_LIMIT_EXCEEDED",
-      severity: "warn",
-      title: "File count exceeds scope budget",
-      message: `${metrics.filesChanged} files changed; soft limit is ${scopeBudget.softLimits.maxFilesChanged}.`,
-      recommendation:
-        "Review whether the added scope is declared by the task and add a scope rationale if needed.",
-      category: "soft_limit"
-    });
-  }
-
-  if (metrics.linesAdded > effectiveMaxLinesAdded) {
-    findings.push({
-      code: "SCOPE_LIMIT_EXCEEDED",
-      severity: "warn",
-      title: "Added lines exceed scope budget",
-      message: `${metrics.linesAdded} lines added; soft limit is ${effectiveMaxLinesAdded}.`,
-      recommendation: "Check whether the implementation can be narrowed.",
-      category: "soft_limit"
-    });
-  }
-
-  if (metrics.linesDeleted > effectiveMaxLinesDeleted) {
-    findings.push({
-      code: "SCOPE_LIMIT_EXCEEDED",
-      severity: "warn",
-      title: "Deleted lines exceed scope budget",
-      message: `${metrics.linesDeleted} lines deleted; soft limit is ${effectiveMaxLinesDeleted}.`,
-      recommendation: "Check whether deleted behavior is intentional and scoped.",
-      category: "soft_limit"
-    });
-  }
-}
-
 function addDependencyFindings(
   findings: DriftFinding[],
   changedFiles: string[],
@@ -409,9 +349,7 @@ function diffShowsDependencyAddition(rawDiff: string, path: string): boolean {
     .map((line) => line.slice(1));
 
   if (fileName === "requirements.txt") {
-    return addedLines.some(
-      (line) => line.trim().length > 0 && !line.trimStart().startsWith("#")
-    );
+    return addedLines.some((line) => line.trim().length > 0 && !line.trimStart().startsWith("#"));
   }
 
   const dependencyContext =
@@ -501,8 +439,7 @@ function addOutsideScopeFindings(
     count: outsideFiles.length,
     examples: outsideFiles,
     targetClassifications,
-    recommendation:
-      "Add rationale for adjacent targets and remove or justify unexplained targets.",
+    recommendation: "Add rationale for adjacent targets and remove or justify unexplained targets.",
     category: "allowed_scope"
   });
 }
@@ -658,10 +595,7 @@ function addSecretFindings(
   }
 }
 
-function addLocalArtifactFindings(
-  findings: DriftFinding[],
-  trackedLocalArtifacts: string[]
-): void {
+function addLocalArtifactFindings(findings: DriftFinding[], trackedLocalArtifacts: string[]): void {
   const artifacts = trackedLocalArtifacts.map(normalizePath).filter(isLocalArtifact);
 
   if (artifacts.length === 0) {
@@ -669,13 +603,14 @@ function addLocalArtifactFindings(
   }
 
   findings.push({
-      code: "LOCAL_ARTIFACT_INCLUDED",
-      severity: "cleanup_required",
+    code: "LOCAL_ARTIFACT_INCLUDED",
+    severity: "cleanup_required",
     title: "Local Gleip artifact included",
     message: `${formatExamples(artifacts)} are tracked by git.`,
     count: artifacts.length,
     examples: artifacts.slice(0, 3),
-    recommendation: "Remove .gleip session artifacts from version control and keep .gleip/ ignored.",
+    recommendation:
+      "Remove .gleip session artifacts from version control and keep .gleip/ ignored.",
     category: "local_artifacts"
   });
 }
@@ -705,9 +640,7 @@ function normalizeFindingGroup(findings: DriftFinding[]): DriftFinding {
       })
     )
   );
-  const targetClassifications = findings.flatMap(
-    (finding) => finding.targetClassifications ?? []
-  );
+  const targetClassifications = findings.flatMap((finding) => finding.targetClassifications ?? []);
   const count = findings.reduce((total, finding) => total + (finding.count ?? 1), 0);
   const message =
     targetClassifications.length > 0
@@ -892,10 +825,7 @@ function matchingScopeEvidence(path: string, entries: string[]): string | undefi
   return entries.find((entry) => isAllowedPath(path, [entry]));
 }
 
-function nearbyScopeEvidence(
-  path: string,
-  scopeBudget: ScopeBudgetLike
-): string | undefined {
+function nearbyScopeEvidence(path: string, scopeBudget: ScopeBudgetLike): string | undefined {
   const entries = [
     ...(scopeBudget.explicitScope ?? []),
     ...(scopeBudget.derivedScope ?? []),
@@ -921,11 +851,7 @@ function nearbyScopeEvidence(
 }
 
 function isBroadTaskBreadth(breadth: ScopeBudgetLike["taskBreadth"]): boolean {
-  return (
-    breadth === "subsystem" ||
-    breadth === "cross_cutting" ||
-    breadth === "repository_wide"
-  );
+  return breadth === "subsystem" || breadth === "cross_cutting" || breadth === "repository_wide";
 }
 
 function isOrdinaryImplementationPath(path: string): boolean {
@@ -1130,11 +1056,7 @@ function nextActionForFindings(findings: Array<{ code?: string }>): string {
     actions.push("Remove the secret/env file from the change set and verify it is ignored.");
   }
 
-  if (
-    codes.has("TEST_SKIPPED") ||
-    codes.has("TEST_DELETED") ||
-    codes.has("TEST_WEAKENED")
-  ) {
+  if (codes.has("TEST_SKIPPED") || codes.has("TEST_DELETED") || codes.has("TEST_WEAKENED")) {
     actions.push(
       "Restore the skipped, deleted, or weakened test or provide explicit user-approved rationale."
     );
@@ -1150,19 +1072,13 @@ function nextActionForFindings(findings: Array<{ code?: string }>): string {
     actions.push("Add a scope rationale or approval for the CI change, or remove it.");
   }
 
-  if (
-    codes.has("SCOPE_LIMIT_EXCEEDED") ||
-    codes.has("SCOPE_EXPANSION_WARN")
-  ) {
+  if (codes.has("SCOPE_LIMIT_EXCEEDED") || codes.has("SCOPE_EXPANSION_WARN")) {
     actions.push(
       "Review whether the added scope is declared by the task. Add a scope rationale if needed."
     );
   }
 
-  if (
-    codes.has("APPROVAL_REQUIRED_PATH_CHANGED") ||
-    codes.has("BLOCKED_PATH_CHANGED")
-  ) {
+  if (codes.has("APPROVAL_REQUIRED_PATH_CHANGED") || codes.has("BLOCKED_PATH_CHANGED")) {
     actions.push("Request approval for the protected change or remove it from the change set.");
   }
 

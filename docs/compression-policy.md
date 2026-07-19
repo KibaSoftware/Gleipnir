@@ -1,7 +1,7 @@
 # Context Compression Policy
 
-Gleip 0.9.0 adds deterministic, repository-local compression for large,
-repetitive execution evidence. It is not a provider proxy, hosted service,
+Gleipnir 1.0 retains experimental deterministic, repository-local compression for large,
+repetitive execution evidence. No controlled benchmark result is claimed. It is not a provider proxy, hosted service,
 telemetry feature, or task summarizer.
 
 ## Supported Evidence

@@ -32,7 +32,7 @@ describe("detectScopeDrift", () => {
     expect(result.summary).toBe("No working tree changes detected.");
   });
 
-  it("warns when file count exceeds the soft limit", () => {
+  it("keeps numeric file budgets silent", () => {
     const result = detectScopeDrift({
       scopeBudget: budget({
         softLimits: { maxFilesChanged: 1, maxLinesAdded: 100, maxLinesDeleted: 100 }
@@ -47,15 +47,12 @@ describe("detectScopeDrift", () => {
       })
     });
 
-    expect(result.status).toBe("advisory");
-    expect(result.findings[0]).toMatchObject({
-      code: "SCOPE_LIMIT_EXCEEDED",
-      severity: "warn",
-      title: "File count exceeds scope budget"
-    });
+    expect(result.status).toBe("clean");
+    expect(result.findings).toEqual([]);
+    expect(result.metrics.filesChanged).toBe(2);
   });
 
-  it("warns when added lines exceed the soft limit", () => {
+  it("keeps numeric line budgets silent while retaining metrics", () => {
     const result = detectScopeDrift({
       scopeBudget: budget({
         allowedPaths: ["src/a.ts"],
@@ -69,11 +66,9 @@ describe("detectScopeDrift", () => {
       })
     });
 
-    expect(result.status).toBe("advisory");
-    expect(result.status).not.toBe("needs_cleanup");
-    expect(result.findings.map((finding) => finding.title)).toContain(
-      "Added lines exceed scope budget"
-    );
+    expect(result.status).toBe("clean");
+    expect(result.findings).toEqual([]);
+    expect(result.metrics.linesAdded).toBe(2);
   });
 
   it("scales line-count advisories for broad accepted work", () => {
@@ -558,8 +553,8 @@ describe("detectScopeDrift", () => {
         })
       });
 
-      expect(result.status).toBe("advisory");
-      expect(result.findings.map((finding) => finding.code)).toEqual(["SCOPE_LIMIT_EXCEEDED"]);
+      expect(result.status).toBe("clean");
+      expect(result.findings).toEqual([]);
       expect(result.findings).not.toContainEqual(
         expect.objectContaining({ code: "SCOPE_EXPANSION_WARN" })
       );
@@ -1105,8 +1100,7 @@ describe("session reports", () => {
         status: "clean",
         findings: []
       },
-      statusContent:
-        "# Gleip Status\n\n- Session files changed: 1\n\n## Findings\n- None\n"
+      statusContent: "# Gleip Status\n\n- Session files changed: 1\n\n## Findings\n- None\n"
     });
 
     expect(report.scores.planAlignment).toBe(100);
@@ -1372,7 +1366,7 @@ describe("session reports", () => {
     expect(markdown).toContain("# Gleipnir Session Report");
     expect(markdown).toContain("Scope adherence:");
     expect(markdown).toContain("Repository hygiene:");
-    expect(markdown).toContain("Evidence-based token waste avoided:");
+    expect(markdown).toContain("Estimated removable text:");
     expect(markdown).toContain("## Canonical requirements");
     expect(markdown).toContain("## Recommended final response");
     expect(markdown).toContain("Token-waste reporting is deterministic and evidence-based.");

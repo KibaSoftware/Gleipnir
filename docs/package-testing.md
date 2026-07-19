@@ -2,7 +2,7 @@
 
 Use these flows before publishing anything. They verify the built CLI can run outside the source TypeScript entrypoint. For the full local-only preview release pass, see [docs/release-checklist.md](release-checklist.md).
 
-Current release target: `0.9.0`.
+Current release target: `1.0.0`.
 
 ## Flow A: npm pack
 
@@ -36,7 +36,7 @@ mkdir %TEMP%\gleip-pack-test
 cd %TEMP%\gleip-pack-test
 git init
 npm init -y
-npm install -D <path-to-repo>\dist-pack\gleip-0.9.0.tgz
+npm install -D <path-to-repo>\dist-pack\gleip-1.0.0.tgz
 ```
 
 On macOS or Linux, use a temp directory such as `/tmp/gleip-pack-test` and the matching tarball path.
@@ -56,6 +56,8 @@ npx gleip retrieve <sha256-reference>
 npx gleip run -- node -e "for (let i=0;i<200;i++) console.log('PASS repeated.test.ts')"
 npx gleip stats --json
 npx gleip report --json
+npx gleip replay
+npx gleip finalize --json
 npx gleip check
 npx gleip check --ci
 npx gleip check --incremental
@@ -66,7 +68,7 @@ npx --no-install gleip uninstall --dry-run
 npx --no-install gleip uninstall
 ```
 
-Expected result: help prints, the version is `0.9.0`, setup diagnostics pass,
+Expected result: help prints, the version is `1.0.0`, setup diagnostics pass,
 reports and checks run locally, `.gleip/canonical-task.json` is created by
 preflight, compression stores exact originals under `.gleip/context/` and retrieves
 them by reference, the command wrapper preserves exit status, the second identical

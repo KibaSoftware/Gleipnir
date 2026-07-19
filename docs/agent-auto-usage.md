@@ -1,6 +1,6 @@
 # Agent Auto-Usage
 
-Agent auto-usage means the developer initializes Gleip once, then keeps using their coding agent normally. Generated repository instructions tell the agent to run Gleip before editing code, read the canonical task before planning, validate non-trivial plans, stay inside the scope budget, run incremental check before claiming completion, and use compact status when the next action is unclear.
+Agent auto-usage means the developer initializes Gleip once, then keeps using their coding agent normally. Generated repository instructions tell the agent to run Gleip before editing code, read the canonical task before planning, validate broad or sensitive plans, treat other findings passively, run incremental checks, and finalize exact-state evidence before claiming completion.
 
 Agents use `npx --no-install gleip` for task workflow commands so Gleip can remain a local development dependency.
 
@@ -40,7 +40,7 @@ These are setup, diagnostics, and repair commands. The task workflow commands ar
 
 For each task, agents run preflight, read `.gleip/canonical-task.json` as the
 authoritative task contract, use `.gleip/brief.md` as a derived index, read
-`.gleip/scope-budget.json`, validate non-trivial plans against canonical
+`.gleip/scope-budget.json`, validate broad or sensitive plans against canonical
 requirements, keep changes minimal, run the narrowest existing validation
 while iterating, and run `npx --no-install gleip check --incremental` before completion.
 They use `npx --no-install gleip status --compact` for iterative status. They do not
@@ -57,7 +57,7 @@ canonical task, active brief, requirement ledger, accepted plan, scope state,
 approval state, completion state, source code, dependency manifests, lockfiles, or
 CI configuration with compressed displays.
 
-Before final response, agents run or read `npx --no-install gleip report`, treat it as the source of truth, and may include its generated `Recommended final response` block when it adds useful review evidence. They do not paste the full report. Developers do not need to run this manually during normal usage.
+Before final response, agents run `npx --no-install gleip finalize` and report its exact-state completion status, unresolved hazards, and stale or missing evidence. The score-oriented `report` command remains compatibility diagnostics and is not completion authority.
 
 Normal workflow commands emit concise summaries that confirm the completed phase and next expected agent action. Incremental baselines and deltas add only the finding lines required by that run; unchanged findings remain a count. Detailed evidence remains in local artifacts, while JSON mode stays machine-readable.
 

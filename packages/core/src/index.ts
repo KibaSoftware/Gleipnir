@@ -16,6 +16,9 @@ import { createHash } from "node:crypto";
 export const packageName = "@gleip/core";
 
 export type { FindingCode, FindingSeverity } from "../findings.js";
+export * from "./evidence.js";
+export * from "./ledger.js";
+export * from "./benchmark.js";
 
 export interface CollectWorkingTreeDiffOptions {
   cwd: string;
@@ -106,7 +109,10 @@ export function collectWorkingTreeDiff(options: CollectWorkingTreeDiffOptions): 
       ? [collectDiffForBase(options.cwd, options.base)]
       : hasHead
         ? [collectDiffForBase(options.cwd, "HEAD")]
-        : [collectDiff(options.cwd, ["--cached", "--", "."]), collectDiff(options.cwd, ["--", "."])];
+        : [
+            collectDiff(options.cwd, ["--cached", "--", "."]),
+            collectDiff(options.cwd, ["--", "."])
+          ];
 
   const changedFiles = new Set<string>();
   const deletedFiles = new Set<string>();
@@ -143,7 +149,10 @@ export function collectWorkingTreeDiff(options: CollectWorkingTreeDiffOptions): 
     changedFiles.add(untrackedFile);
 
     if (!statsByPath.has(untrackedFile)) {
-      statsByPath.set(untrackedFile, { added: countTextFileLines(options.cwd, untrackedFile), deleted: 0 });
+      statsByPath.set(untrackedFile, {
+        added: countTextFileLines(options.cwd, untrackedFile),
+        deleted: 0
+      });
     }
   }
 
@@ -239,8 +248,7 @@ export function createSessionBaseline(diff: GitDiffContext, createdAt: string): 
 
   return {
     ...base,
-    note:
-      "Pre-existing working-tree changes were detected before this Gleip session. npx --no-install gleip status will focus on changes introduced after preflight."
+    note: "Pre-existing working-tree changes were detected before this Gleip session. npx --no-install gleip status will focus on changes introduced after preflight."
   };
 }
 
@@ -359,7 +367,12 @@ function collectDiff(cwd: string, diffCommand: string[]): InternalDiffContext {
       deletedFiles: new Set(),
       fileStats: [],
       rawDiff: "",
-      error: nameOnly.stderr || numstat.stderr || nameStatus.stderr || rawDiff.stderr || "Git diff failed."
+      error:
+        nameOnly.stderr ||
+        numstat.stderr ||
+        nameStatus.stderr ||
+        rawDiff.stderr ||
+        "Git diff failed."
     };
   }
 
@@ -477,7 +490,9 @@ function countTextFileLines(cwd: string, relativePath: string): number {
       return 0;
     }
 
-    return readFileSync(absolutePath, "utf8").split(/\r?\n/).filter((line) => line.length > 0).length;
+    return readFileSync(absolutePath, "utf8")
+      .split(/\r?\n/)
+      .filter((line) => line.length > 0).length;
   } catch {
     return 0;
   }
@@ -572,11 +587,10 @@ export function isEphemeralGleipArtifactPath(path: string): boolean {
   const normalized = normalizePath(path);
 
   return (
-    EPHEMERAL_GLEIP_ARTIFACTS.includes(
-      normalized as (typeof EPHEMERAL_GLEIP_ARTIFACTS)[number]
-    ) ||
+    EPHEMERAL_GLEIP_ARTIFACTS.includes(normalized as (typeof EPHEMERAL_GLEIP_ARTIFACTS)[number]) ||
     /^\.gleip\/session-[^/]+\.json$/u.test(normalized) ||
-    /^\.gleip\/context(?:\/|$)/u.test(normalized)
+    /^\.gleip\/context(?:\/|$)/u.test(normalized) ||
+    /^\.gleip\/runs(?:\/|$)/u.test(normalized)
   );
 }
 
@@ -596,7 +610,7 @@ function emptyDiff(isGitRepo: boolean, error?: string): GitDiffContext {
 }
 
 export const COMPRESSION_SCHEMA_VERSION = "1.0.0";
-export const COMPRESSION_COMPRESSOR_VERSION = "0.9.0";
+export const COMPRESSION_COMPRESSOR_VERSION = "1.0.0";
 
 export type CompressionAuthority = "canonical" | "derived" | "evidence" | "historical";
 export type CompressionLifecycle = "active" | "superseded" | "stale" | "archived";
@@ -869,7 +883,9 @@ export function defaultCompressionPolicy(
 export function classifyCompressionInput(input: CompressionInput): CompressionClassification {
   const reasonCodes: string[] = [];
   const artifactType = normalizeArtifactType(input.artifactType);
-  const authority = input.authority ?? (artifactType === undefined ? "evidence" : authorityForArtifact(artifactType));
+  const authority =
+    input.authority ??
+    (artifactType === undefined ? "evidence" : authorityForArtifact(artifactType));
   const lifecycle = input.lifecycle ?? "active";
   const alreadyCompressed = isCompressedContextEnvelope(input.rawContent);
   const sensitivityFlags = [
@@ -945,12 +961,20 @@ export function classifyCompressionInput(input: CompressionInput): CompressionCl
     return classified("structured_json", "high");
   }
 
-  if (/\b(vitest|jest|pytest|cargo test|go test|dotnet test|npm test|pnpm test|yarn test)\b/iu.test(command)) {
+  if (
+    /\b(vitest|jest|pytest|cargo test|go test|dotnet test|npm test|pnpm test|yarn test)\b/iu.test(
+      command
+    )
+  ) {
     reasonCodes.push("test_command");
     return classified("test_output", "high");
   }
 
-  if (/\b(fail(?:ed|ing)?|test suite|tests?\s+(?:passed|failed)|assertion|expected|received)\b/iu.test(content)) {
+  if (
+    /\b(fail(?:ed|ing)?|test suite|tests?\s+(?:passed|failed)|assertion|expected|received)\b/iu.test(
+      content
+    )
+  ) {
     reasonCodes.push("test_output_signature");
     return classified("test_output", "medium");
   }
@@ -1091,8 +1115,13 @@ export function compressContext(
   });
   const metadataTokens = estimateCompressionTokens(renderEnvelope(summaryOnlyEnvelope, policy));
   const candidateBytes = byteCount(renderEnvelope(summaryOnlyEnvelope, policy));
-  const estimatedCandidateTokens = estimateCompressionTokens(renderEnvelope(summaryOnlyEnvelope, policy));
-  const grossEstimatedTokensRemoved = Math.max(0, estimatedOriginalTokens - estimatedCandidateTokens);
+  const estimatedCandidateTokens = estimateCompressionTokens(
+    renderEnvelope(summaryOnlyEnvelope, policy)
+  );
+  const grossEstimatedTokensRemoved = Math.max(
+    0,
+    estimatedOriginalTokens - estimatedCandidateTokens
+  );
 
   if (grossEstimatedTokensRemoved - metadataTokens < policy.minEstimatedTokensSaved) {
     incrementCompressionStats(options.cwd, {
@@ -1310,7 +1339,10 @@ export function readCompressionStats(cwd: string): CompressionStats {
     0
   );
   const compressionMetadataTokens = estimateCompressionTokens(JSON.stringify(index));
-  const grossEstimatedTokensRemoved = Math.max(0, estimatedOriginalTokens - estimatedCompressedTokens);
+  const grossEstimatedTokensRemoved = Math.max(
+    0,
+    estimatedOriginalTokens - estimatedCompressedTokens
+  );
 
   return {
     schemaVersion: COMPRESSION_SCHEMA_VERSION,
@@ -1340,7 +1372,10 @@ export function readCompressionStats(cwd: string): CompressionStats {
   };
 }
 
-export function cleanupCompressionStore(cwd: string): { removedObjects: number; preservedAuthorityState: boolean } {
+export function cleanupCompressionStore(cwd: string): {
+  removedObjects: number;
+  preservedAuthorityState: boolean;
+} {
   const contextDir = compressionStorePath(cwd);
   let removedObjects = 0;
 
@@ -1384,10 +1419,7 @@ function eligiblePassthroughReasons(
     reasons.push("protected_authority_passthrough");
   }
 
-  if (
-    input.scopeClassification === "protected" ||
-    input.scopeClassification === "unexplained"
-  ) {
+  if (input.scopeClassification === "protected" || input.scopeClassification === "unexplained") {
     reasons.push("protected_scope_passthrough");
   }
 
@@ -1468,7 +1500,11 @@ function compressDiagnosticOutput(
 
   lines.forEach((line, index) => {
     if (options.importantPattern.test(line) || /^\s*(FAIL|ERROR|WARN|FAILED)\b/u.test(line)) {
-      for (let nearby = Math.max(0, index - 2); nearby <= Math.min(lines.length - 1, index + 3); nearby += 1) {
+      for (
+        let nearby = Math.max(0, index - 2);
+        nearby <= Math.min(lines.length - 1, index + 3);
+        nearby += 1
+      ) {
         importantIndexes.add(nearby);
       }
     }
@@ -1477,8 +1513,12 @@ function compressDiagnosticOutput(
   const preserved =
     importantIndexes.size === 0
       ? [...lines.slice(0, 8), ...(lines.length > 12 ? ["..."] : []), ...lines.slice(-4)]
-      : [...importantIndexes].sort((left, right) => left - right).map((index) => lines[index] ?? "");
-  const failureCount = lines.filter((line) => /\b(fail(?:ed|ing)?|error|assertion)\b/iu.test(line)).length;
+      : [...importantIndexes]
+          .sort((left, right) => left - right)
+          .map((index) => lines[index] ?? "");
+  const failureCount = lines.filter((line) =>
+    /\b(fail(?:ed|ing)?|error|assertion)\b/iu.test(line)
+  ).length;
   const warningCount = lines.filter((line) => /\bwarn(?:ing)?\b/iu.test(line)).length;
 
   return {
@@ -1486,7 +1526,9 @@ function compressDiagnosticOutput(
       `Compressed ${options.label}: ${lines.length} line(s).`,
       `Preserved ${preserved.length} diagnostic/context line(s).`,
       `Detected ${failureCount} failure/error signal(s) and ${warningCount} warning signal(s).`,
-      repeated === 0 ? "No repeated lines suppressed." : `Suppressed ${repeated} repeated line occurrence(s).`
+      repeated === 0
+        ? "No repeated lines suppressed."
+        : `Suppressed ${repeated} repeated line occurrence(s).`
     ],
     preservedEvidence: dedupePreservingOrder(preserved).slice(0, 80)
   };
@@ -1510,7 +1552,10 @@ function compressStructuredJson(content: string): CompressorOutput {
       .map(([key, count]) => `${key} (${count})`);
     const outlierIndexes = objectItems
       .map((item, index) => ({ index, keyCount: Object.keys(item).length }))
-      .filter((entry) => entry.keyCount !== (objectItems[0] === undefined ? 0 : Object.keys(objectItems[0]).length))
+      .filter(
+        (entry) =>
+          entry.keyCount !== (objectItems[0] === undefined ? 0 : Object.keys(objectItems[0]).length)
+      )
       .slice(0, 10)
       .map((entry) => String(entry.index));
 
@@ -1520,8 +1565,12 @@ function compressStructuredJson(content: string): CompressorOutput {
         objectItems.length === parsed.length
           ? "All items are objects."
           : `${parsed.length - objectItems.length} non-object item(s) preserved only by retrieval.`,
-        keys.length === 0 ? "No common object keys detected." : `Object key frequencies: ${keys.slice(0, 20).join(", ")}.`,
-        outlierIndexes.length === 0 ? "No structural outliers detected." : `Structural outlier indexes: ${outlierIndexes.join(", ")}.`
+        keys.length === 0
+          ? "No common object keys detected."
+          : `Object key frequencies: ${keys.slice(0, 20).join(", ")}.`,
+        outlierIndexes.length === 0
+          ? "No structural outliers detected."
+          : `Structural outlier indexes: ${outlierIndexes.join(", ")}.`
       ],
       preservedEvidence: []
     };
@@ -1556,10 +1605,7 @@ function compressSearchResults(content: string): CompressorOutput {
 
   const preserved = [...byPath.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
-    .flatMap(([path, matches]) => [
-      `${path}: ${matches.length} match(es)`,
-      ...matches.slice(0, 3)
-    ])
+    .flatMap(([path, matches]) => [`${path}: ${matches.length} match(es)`, ...matches.slice(0, 3)])
     .slice(0, 80);
 
   return {
@@ -1584,11 +1630,13 @@ function compressFileListing(content: string): CompressorOutput {
   return {
     summary: [
       `Compressed file listing: ${lines.length} item(s).`,
-      `Directory groups: ${[...byDirectory.entries()]
-        .sort(([left], [right]) => left.localeCompare(right))
-        .slice(0, 30)
-        .map(([directory, count]) => `${directory} (${count})`)
-        .join(", ") || "none"}.`
+      `Directory groups: ${
+        [...byDirectory.entries()]
+          .sort(([left], [right]) => left.localeCompare(right))
+          .slice(0, 30)
+          .map(([directory, count]) => `${directory} (${count})`)
+          .join(", ") || "none"
+      }.`
     ],
     preservedEvidence: lines.slice(0, 60)
   };
@@ -1808,33 +1856,31 @@ function storeCompressionOriginal(
 
     const index = readCompressionIndex(cwd);
     const existing = index.objects[hash];
-    const baseRecord: CompressionObjectRecord =
-      existing ??
-      {
-        hash,
-        reference,
-        createdAt: metadata.createdAt,
-        lastAccessedAt: metadata.createdAt,
-        contentClass: metadata.classification.contentClass,
-        authority: metadata.classification.authority,
-        lifecycle: metadata.classification.lifecycle,
-        ...(metadata.artifactType === undefined ? {} : { artifactType: metadata.artifactType }),
-        ...(metadata.sourceCommand === undefined ? {} : { sourceCommand: metadata.sourceCommand }),
-        ...(metadata.sessionId === undefined ? {} : { sessionId: metadata.sessionId }),
-        ...(metadata.repositoryFingerprint === undefined
-          ? {}
-          : { repositoryFingerprint: metadata.repositoryFingerprint }),
-        originalBytes: byteCount(content),
-        originalLines: lineCount(content),
-        estimatedOriginalTokens: estimateCompressionTokens(content),
-        compressedBytes: metadata.compressedBytes,
-        estimatedCompressedTokens: metadata.estimatedCompressedTokens,
-        compressionCount: 0,
-        retrievalCalls: 0,
-        retrievalBytes: 0,
-        retrievalEstimatedTokens: 0,
-        storageDedupHits: 0
-      };
+    const baseRecord: CompressionObjectRecord = existing ?? {
+      hash,
+      reference,
+      createdAt: metadata.createdAt,
+      lastAccessedAt: metadata.createdAt,
+      contentClass: metadata.classification.contentClass,
+      authority: metadata.classification.authority,
+      lifecycle: metadata.classification.lifecycle,
+      ...(metadata.artifactType === undefined ? {} : { artifactType: metadata.artifactType }),
+      ...(metadata.sourceCommand === undefined ? {} : { sourceCommand: metadata.sourceCommand }),
+      ...(metadata.sessionId === undefined ? {} : { sessionId: metadata.sessionId }),
+      ...(metadata.repositoryFingerprint === undefined
+        ? {}
+        : { repositoryFingerprint: metadata.repositoryFingerprint }),
+      originalBytes: byteCount(content),
+      originalLines: lineCount(content),
+      estimatedOriginalTokens: estimateCompressionTokens(content),
+      compressedBytes: metadata.compressedBytes,
+      estimatedCompressedTokens: metadata.estimatedCompressedTokens,
+      compressionCount: 0,
+      retrievalCalls: 0,
+      retrievalBytes: 0,
+      retrievalEstimatedTokens: 0,
+      storageDedupHits: 0
+    };
 
     index.totals.compressionAttempts += 1;
     index.totals.compressionApplied += 1;
@@ -1981,7 +2027,10 @@ function resolveCompressionReference(
   index: CompressionStoreIndex,
   reference: string
 ): { hash: string; error?: undefined } | { hash?: undefined; error: string } {
-  const normalized = reference.trim().replace(/^gleip:\/\//u, "").replace(/^sha256:/u, "");
+  const normalized = reference
+    .trim()
+    .replace(/^gleip:\/\//u, "")
+    .replace(/^sha256:/u, "");
 
   if (!/^[0-9a-f]{8,64}$/u.test(normalized)) {
     return { error: "Invalid compression reference." };
@@ -2036,7 +2085,9 @@ function authorityForArtifact(artifactType: string): CompressionAuthority {
   return "evidence";
 }
 
-function classForArtifactType(artifactType: string | undefined): CompressionContentClass | undefined {
+function classForArtifactType(
+  artifactType: string | undefined
+): CompressionContentClass | undefined {
   if (artifactType === undefined) {
     return undefined;
   }
@@ -2086,7 +2137,10 @@ function classForArtifactType(artifactType: string | undefined): CompressionCont
 }
 
 function normalizeArtifactType(value: string | undefined): string | undefined {
-  return value?.trim().toLowerCase().replace(/[-\s]+/gu, "_");
+  return value
+    ?.trim()
+    .toLowerCase()
+    .replace(/[-\s]+/gu, "_");
 }
 
 function isCompressedContextEnvelope(content: string): boolean {
@@ -2103,7 +2157,11 @@ function isCompressedContextEnvelope(content: string): boolean {
 function detectSensitivityFlags(content: string): string[] {
   const flags: string[] = [];
 
-  if (/\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|password|private[_-]?key)\b\s*[:=]\s*["']?[A-Za-z0-9_./+=-]{12,}/iu.test(content)) {
+  if (
+    /\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|password|private[_-]?key)\b\s*[:=]\s*["']?[A-Za-z0-9_./+=-]{12,}/iu.test(
+      content
+    )
+  ) {
     flags.push("secret_like_assignment");
   }
 
@@ -2185,7 +2243,8 @@ function looksLikeSearchResults(content: string): boolean {
 
   return (
     lines.length >= 4 &&
-    lines.filter((line) => /^[^:\n]+:\d+(?::\d+)?:/u.test(line)).length >= Math.ceil(lines.length / 2)
+    lines.filter((line) => /^[^:\n]+:\d+(?::\d+)?:/u.test(line)).length >=
+      Math.ceil(lines.length / 2)
   );
 }
 

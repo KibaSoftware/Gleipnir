@@ -1,7 +1,7 @@
 {
   "name": "gleip",
-  "version": "0.9.0",
-  "description": "Local-only guidance that AI coding agents use automatically.",
+  "version": "1.0.0",
+  "description": "Passive-first local evidence ledger and precision risk observer for coding-agent work.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",

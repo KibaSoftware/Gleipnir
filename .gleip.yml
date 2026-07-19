@@ -1,5 +1,6 @@
 version: 1
-mode: advisory
+# advisory, strict, and enterprise are reserved compatibility aliases with no extra enforcement.
+mode: passive
 
 principles:
   - Keep generated code lean, scoped, tested, and merge-ready.
@@ -35,6 +36,8 @@ approval_required_for:
   - dependency_changes
   - ci_changes
   - security_policy_changes
+
+required_commands: []
 
 agent_behavior:
   minimal_scoped_changes: true

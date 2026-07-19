@@ -9,8 +9,8 @@ Gleip is organized as a TypeScript monorepo with small packages and explicit bou
 - `@gleip/config` owns `.gleip.yml` loading, validation, and defaults.
 - `@gleip/planner` owns scope, budget, and task planning concepts.
 - `@gleip/controller` owns policy application across agent workflows, deterministic report scoring, and report rendering.
-- `@gleip/adapters` owns integrations with coding agents and external tools.
-- `@gleip/github-action` owns CI entry points for GitHub Actions.
+- `@gleip/adapters` is a reserved compatibility placeholder; it implements no adapter runtime.
+- `@gleip/github-action` is a reserved compatibility placeholder; it implements no GitHub Action runtime.
 
 The CLI should stay thin. Reusable behavior belongs in package code that can be tested without invoking a shell.
 
@@ -23,7 +23,7 @@ older 0.8.x session data. The planner owns deterministic requirement extraction,
 brief coverage, scope derivation, and plan-to-requirement validation. The
 controller owns final requirement-completion reporting and scoring invariants.
 
-The derived brief, scope budget, plan validation, status, and report are aids. They
+The derived brief, scope budget, plan validation, status, and legacy report are aids. They
 must reference or evaluate the canonical task, but they do not replace it. No
 production path sends task text, repository content, telemetry, or usage data
 outside the local environment.
@@ -48,6 +48,13 @@ Compression state is separate from task authority state:
 
 The task-contract graph is durable session authority and is never compressed,
 replaced by references, or deleted by compression cleanup. The compression store is
-optimization state for exact originals of non-authoritative execution evidence.
+experimental mechanism state for exact originals of non-authoritative execution evidence.
 Compressed displays are not used for scope classification, plan validation,
 approval decisions, scoring, requirement completion, or review readiness.
+
+## Evidence Runs
+
+Gleipnir 1.0 stores append-only events, typed evidence, command output, approvals,
+and final bundles under `.gleip/runs/<run-id>/`. Hash chains, atomic writes, and
+locks detect ordinary corruption, crashes, and concurrency conflicts. They do not
+protect against a malicious process with equivalent filesystem permissions.

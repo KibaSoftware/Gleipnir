@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.0.0]
+
+### Added
+
+- Added an append-only, hash-chained local event ledger with run identifiers, replay, partial-tail recovery, atomic artifacts, generation checks, and per-run writer locking.
+- Added explicit evidence classes, exact-state command attestations, durable approvals with revocation/invalidation, legacy artifact migration, and one final evidence bundle tied to the current repository fingerprint.
+- Added controlled-benchmark manifests and local observation fixtures without claiming benchmark outcomes.
+
+### Changed
+
+- Made the workflow passive-first. Plan validation is required only for broad or sensitive work; numeric scope budgets remain recorded metrics without default findings.
+- Made `gleip finalize` the primary completion workflow. The score-oriented `report` command remains compatibility output.
+- Marked `strict` and `enterprise` as reserved compatibility aliases, adapter and GitHub Action packages as placeholders, and context compression as experimental.
+- Replaced causal token-savings wording with non-causal removable-text estimates in user-facing documentation.
+
+### Compatibility
+
+- Existing 0.8.x and 0.9.x local artifacts remain readable and can be imported with backups using `gleip migrate`; legacy status prose remains an `agent_claim` and is never promoted to command evidence.
+- Gleip remains local-only and does not provide merge authorization, deployment verification, cloud control, telemetry, or malicious-local-process tamper resistance.
+
 ## [0.9.0]
 
 ### Added

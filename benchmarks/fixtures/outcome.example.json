@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "1.0.0",
+  "assignmentId": "replace-with-assignment-id",
+  "acceptancePassed": null,
+  "regressionCount": null,
+  "humanCorrectionCount": null,
+  "reviewerInspectionMs": null,
+  "providerInputTokens": null,
+  "providerOutputTokens": null,
+  "providerCost": null,
+  "notes": ["Null means not measured; never infer a favorable outcome."]
+}

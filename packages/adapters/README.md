@@ -1,5 +1,3 @@
 # @gleip/adapters
 
-Coding-agent and repository adapters for Gleip.
-
-This package defines local integration boundaries for agents and repository inspection tools.
+Reserved 1.0 compatibility placeholder. This package exports only its package name and implements no coding-agent or external-tool adapter runtime. Supported integration is generated repository instructions plus direct use of the local `gleip` CLI.

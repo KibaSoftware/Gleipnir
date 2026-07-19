@@ -1,7 +1,7 @@
 {
   "name": "@gleip/github-action",
-  "version": "0.9.0",
-  "description": "GitHub Action entry points for Gleip.",
+  "version": "1.0.0",
+  "description": "Reserved compatibility placeholder; no GitHub Action runtime is implemented.",
   "license": "Apache-2.0",
   "type": "module",
   "exports": {

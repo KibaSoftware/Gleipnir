@@ -6,7 +6,7 @@ describe("Gleip config", () => {
   it("returns the default config", () => {
     expect(getDefaultConfig()).toEqual({
       version: 1,
-      mode: "advisory",
+      mode: "passive",
       principles: [],
       limits: {
         max_files_changed_warning: 12,
@@ -25,6 +25,7 @@ describe("Gleip config", () => {
       protected_paths: [],
       allowed_paths: [],
       approval_required_for: [],
+      required_commands: [],
       compression: {
         enabled: true,
         audit_only: false,
@@ -74,6 +75,12 @@ allowed_paths:
   - packages/config/**
 approval_required_for:
   - dependency_changes
+required_commands:
+  - id: unit-tests
+    description: Run unit tests.
+    executable: pnpm.cmd
+    argument_includes:
+      - test
 compression:
   enabled: false
   audit_only: true
@@ -104,6 +111,14 @@ agent_behavior:
       protected_paths: ["src/security/**"],
       allowed_paths: ["packages/config/**"],
       approval_required_for: ["dependency_changes"],
+      required_commands: [
+        {
+          id: "unit-tests",
+          description: "Run unit tests.",
+          executable: "pnpm.cmd",
+          argument_includes: ["test"]
+        }
+      ],
       compression: {
         enabled: false,
         audit_only: true,
@@ -122,7 +137,7 @@ agent_behavior:
 
   it("reports an invalid mode", () => {
     expect(() => parseConfig({ mode: "review-only" })).toThrow(
-      "mode: Invalid enum value. Expected 'advisory' | 'strict' | 'enterprise', received 'review-only'"
+      "mode: Invalid enum value. Expected 'passive' | 'advisory' | 'strict' | 'enterprise', received 'review-only'"
     );
   });
 

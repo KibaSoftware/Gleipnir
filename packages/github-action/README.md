@@ -1,5 +1,3 @@
 # @gleip/github-action
 
-GitHub Action entry points for Gleip.
-
-This package defines the CI entry-point boundary. The local-only developer preview does not require GitHub Actions.
+Reserved 1.0 compatibility placeholder. This package exports only its package name and implements no GitHub Action runtime. CI users can invoke the local `gleip check --ci` CLI command directly; Gleipnir does not claim merge authorization or deployment verification.

@@ -7,8 +7,7 @@ import {
   renameSync,
   rmSync,
   statSync,
-  unlinkSync,
-  writeFileSync
+  unlinkSync
 } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -25,19 +24,36 @@ import {
   renderSessionReportMarkdown as renderBundledSessionReportMarkdown
 } from "../../controller/src/index.js";
 import {
+  appendRunEvent,
   collectWorkingTreeDiff as collectBundledWorkingTreeDiff,
   compressContext,
+  createEvidenceRun,
   createSessionBaseline as createBundledSessionBaseline,
   defaultCompressionPolicy,
+  environmentFingerprint,
   filterDiffSinceBaseline as filterBundledDiffSinceBaseline,
+  finalizeEvidenceRun,
   fingerprintRepositoryState,
   isEphemeralGleipArtifactPath,
+  migrateLegacyArtifacts,
   readCompressionStats,
+  recordApproval,
+  recordCommandAttestation,
+  recordRunEvidence,
+  recoverRunLedger,
+  replayRun,
+  revokeApproval,
   retrieveContextOriginal,
+  sha256Digest,
+  synchronizeEvidenceRun,
+  writeAtomicJson,
+  writeAtomicText,
+  type CompletionHazard,
   type CompressionAuthority,
   type CompressionContentClass,
   type CompressionLifecycle,
-  type CompressionPolicy
+  type CompressionPolicy,
+  type RequiredCommand
 } from "../../core/src/index.js";
 import {
   classifyTask as classifyBundledTask,
@@ -214,6 +230,24 @@ interface ReportOptions {
   json?: boolean;
 }
 
+interface EvidenceJsonOptions {
+  json?: boolean;
+}
+
+interface ApprovalOptions extends EvidenceJsonOptions {
+  actor: string;
+  reason: string;
+  scope: string;
+  path?: string[];
+  finding?: string[];
+  source?: string;
+  expires?: string;
+}
+
+interface MigrationOptions extends EvidenceJsonOptions {
+  dryRun?: boolean;
+}
+
 interface CompressionCommandOptions {
   artifactType?: string;
   audit?: boolean;
@@ -257,6 +291,12 @@ interface GleipConfigLike {
   };
   mode?: string;
   protected_paths?: string[];
+  required_commands?: Array<{
+    id: string;
+    description: string;
+    executable?: string;
+    argument_includes?: string[];
+  }>;
   risky_files?: string[];
 }
 
@@ -666,6 +706,8 @@ interface ArtifactMetadata {
 
 interface GleipSession {
   sessionId?: string;
+  evidenceRunId?: string;
+  taskRevision?: number;
   canonicalTask?: CanonicalTaskSessionReference;
   requirementLedgerSummary?: RequirementLedgerSummary;
   classification?: TaskClassification;
@@ -997,7 +1039,7 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
     .action((commandOptions: StateChangeOptions) => {
       setGleipEnabled(runtime.cwd, false, commandOptions.reason, runtime.now().toISOString());
       runtime.stdout(
-        "Gleip disabled. Agents should confirm whether to continue without Gleip guidance."
+        "Gleip disabled. Passive guidance will remain inactive until explicitly enabled."
       );
     });
 
@@ -1055,10 +1097,69 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
 
   program
     .command("report")
-    .description("Generate the canonical local-only Gleip session report.")
+    .description("Generate the legacy-compatible local-only Gleip session report.")
     .option("--json", "Print the stable report JSON.")
     .action(async (commandOptions: ReportOptions) => {
       await printReport(runtime, commandOptions);
+    });
+
+  program
+    .command("approve")
+    .description("Record an explicit, state-bound human approval for the active evidence run.")
+    .requiredOption("--actor <actor>", "Person or authority granting approval.")
+    .requiredOption("--reason <reason>", "Reason for the approval.")
+    .requiredOption("--scope <scope>", "Approval scope or completion-hazard code.")
+    .option("--path <path...>", "Affected repository paths.")
+    .option("--finding <id...>", "Finding identifiers covered by the approval.")
+    .option("--source <source>", "Approval source.", "local_cli")
+    .option("--expires <iso-date>", "Optional ISO-8601 expiry time.")
+    .option("--json", "Print the approval as JSON.")
+    .action(async (commandOptions: ApprovalOptions) => {
+      await approveEvidence(runtime, commandOptions);
+    });
+
+  program
+    .command("revoke-approval")
+    .description("Revoke a durable approval in the active evidence run.")
+    .argument("<approvalId>", "Approval identifier to revoke.")
+    .option("--json", "Print the revoked approval as JSON.")
+    .action(async (approvalId: string, commandOptions: EvidenceJsonOptions) => {
+      await revokeEvidenceApproval(runtime, approvalId, commandOptions);
+    });
+
+  program
+    .command("replay")
+    .description("Replay and verify an evidence run from its append-only event ledger.")
+    .argument("[runId]", "Run identifier; defaults to the active run.")
+    .option("--json", "Print replay state as JSON.")
+    .action(async (runId: string | undefined, commandOptions: EvidenceJsonOptions) => {
+      await replayEvidence(runtime, runId, commandOptions);
+    });
+
+  program
+    .command("recover")
+    .description("Recover an evidence ledger with an incomplete final record.")
+    .argument("[runId]", "Run identifier; defaults to the active run.")
+    .option("--json", "Print recovery metadata as JSON.")
+    .action(async (runId: string | undefined, commandOptions: EvidenceJsonOptions) => {
+      await recoverEvidence(runtime, runId, commandOptions);
+    });
+
+  program
+    .command("migrate")
+    .description("Import legacy 0.8/0.9 artifacts into a new immutable 1.0 evidence run.")
+    .option("--dry-run", "Inspect legacy artifacts without writing a run.")
+    .option("--json", "Print migration metadata as JSON.")
+    .action(async (commandOptions: MigrationOptions) => {
+      await migrateEvidence(runtime, commandOptions);
+    });
+
+  program
+    .command("finalize")
+    .description("Create the final evidence bundle for the exact current repository state.")
+    .option("--json", "Print the final evidence bundle as JSON.")
+    .action(async (commandOptions: EvidenceJsonOptions) => {
+      await finalizeEvidence(runtime, commandOptions);
     });
 
   program
@@ -1084,9 +1185,11 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
     .option("--audit", "Classify command output without replacing it.")
     .option("--json", "Print machine-readable wrapper metadata.")
     .allowUnknownOption(true)
-    .action(async (commandAndArgs: string[] | undefined, commandOptions: CompressionCommandOptions) => {
-      await runWrappedLocalCommand(runtime, commandAndArgs ?? [], commandOptions);
-    });
+    .action(
+      async (commandAndArgs: string[] | undefined, commandOptions: CompressionCommandOptions) => {
+        await runWrappedLocalCommand(runtime, commandAndArgs ?? [], commandOptions);
+      }
+    );
 
   program
     .command("retrieve")
@@ -1221,6 +1324,375 @@ async function renderSessionReportMarkdownFromPackage(report: SessionReport): Pr
   return renderBundledSessionReportMarkdown(report);
 }
 
+interface ActiveEvidenceContext {
+  runId: string;
+  taskRevision: number;
+  repositoryFingerprint: string;
+  diff: GitDiffContext;
+}
+
+async function activeEvidenceContext(
+  runtime: CommandRuntime,
+  options: { create?: boolean } = {}
+): Promise<ActiveEvidenceContext | undefined> {
+  const diff = await runtime.collectWorkingTreeDiff({ cwd: runtime.cwd });
+
+  if (!diff.isGitRepo) {
+    return undefined;
+  }
+
+  const repositoryFingerprint = fingerprintRepositoryState(diff);
+  const session = readJsonFile<GleipSession>(join(runtime.cwd, ".gleip", "session.json")).value;
+  const activeRun = readJsonFile<{ runId?: string }>(
+    join(runtime.cwd, ".gleip", "active-run.json")
+  ).value;
+  const canonical = readCanonicalTaskArtifact(runtime.cwd);
+  const taskRevision =
+    canonical?.revisions.length ??
+    session?.taskRevision ??
+    session?.canonicalTask?.revisionCount ??
+    1;
+  let runId = session?.evidenceRunId ?? activeRun?.runId;
+
+  if (runId === undefined && options.create === true) {
+    const createdAt = runtime.now().toISOString();
+    runId = createEvidenceRun({
+      cwd: runtime.cwd,
+      createdAt,
+      repositoryFingerprint,
+      taskRevision
+    }).runId;
+    writeAtomicJson(join(runtime.cwd, ".gleip", "active-run.json"), { runId, createdAt });
+  }
+
+  if (runId !== undefined) {
+    synchronizeEvidenceRun({
+      cwd: runtime.cwd,
+      runId,
+      checkedAt: runtime.now().toISOString(),
+      repositoryFingerprint,
+      taskRevision
+    });
+  }
+
+  return runId === undefined ? undefined : { runId, taskRevision, repositoryFingerprint, diff };
+}
+
+async function approveEvidence(runtime: CommandRuntime, options: ApprovalOptions): Promise<void> {
+  const context = await activeEvidenceContext(runtime);
+
+  if (context === undefined) {
+    runtime.stderr("No active evidence run. Run `gleip preflight` or `gleip migrate` first.");
+    runtime.setExitCode(1);
+    return;
+  }
+
+  const approval = recordApproval({
+    cwd: runtime.cwd,
+    runId: context.runId,
+    actor: options.actor,
+    source: options.source ?? "local_cli",
+    reason: options.reason,
+    scope: options.scope,
+    affectedPaths: options.path ?? [],
+    findingIds: options.finding ?? [],
+    repositoryFingerprint: context.repositoryFingerprint,
+    taskRevision: context.taskRevision,
+    createdAt: runtime.now().toISOString(),
+    ...(options.expires === undefined ? {} : { expiresAt: options.expires })
+  });
+  runtime.stdout(
+    options.json === true
+      ? JSON.stringify(approval, null, 2)
+      : `Approval recorded: ${approval.id} (${approval.scope})`
+  );
+}
+
+async function revokeEvidenceApproval(
+  runtime: CommandRuntime,
+  approvalId: string,
+  options: EvidenceJsonOptions
+): Promise<void> {
+  const context = await activeEvidenceContext(runtime);
+
+  if (context === undefined) {
+    runtime.stderr("No active evidence run.");
+    runtime.setExitCode(1);
+    return;
+  }
+
+  const approval = revokeApproval({
+    cwd: runtime.cwd,
+    runId: context.runId,
+    approvalId,
+    revokedAt: runtime.now().toISOString(),
+    repositoryFingerprint: context.repositoryFingerprint,
+    taskRevision: context.taskRevision
+  });
+  runtime.stdout(
+    options.json === true ? JSON.stringify(approval, null, 2) : `Approval revoked: ${approval.id}`
+  );
+}
+
+async function replayEvidence(
+  runtime: CommandRuntime,
+  requestedRunId: string | undefined,
+  options: EvidenceJsonOptions
+): Promise<void> {
+  const context = requestedRunId === undefined ? await activeEvidenceContext(runtime) : undefined;
+  const runId = requestedRunId ?? context?.runId;
+
+  if (runId === undefined) {
+    runtime.stderr("No evidence run selected.");
+    runtime.setExitCode(1);
+    return;
+  }
+
+  const state = replayRun(runtime.cwd, runId);
+  const serializable = { ...state, findings: Object.fromEntries(state.findings) };
+  runtime.stdout(
+    options.json === true
+      ? JSON.stringify(serializable, null, 2)
+      : `Evidence run ${runId}: ${state.events.length} event(s), ${state.evidence.length} evidence item(s), ${state.approvals.length} approval(s); ledger verified.`
+  );
+}
+
+async function recoverEvidence(
+  runtime: CommandRuntime,
+  requestedRunId: string | undefined,
+  options: EvidenceJsonOptions
+): Promise<void> {
+  const context = requestedRunId === undefined ? await activeEvidenceContext(runtime) : undefined;
+  const runId = requestedRunId ?? context?.runId;
+
+  if (runId === undefined) {
+    runtime.stderr("No evidence run selected.");
+    runtime.setExitCode(1);
+    return;
+  }
+
+  const result = recoverRunLedger(runtime.cwd, runId, runtime.now().toISOString());
+  runtime.stdout(
+    options.json === true
+      ? JSON.stringify({ runId, ...result }, null, 2)
+      : result.recovered
+        ? `Recovered incomplete ledger tail for ${runId}. Preserved at ${result.recoveryPath}.`
+        : `Evidence ledger ${runId} did not require recovery.`
+  );
+}
+
+async function migrateEvidence(runtime: CommandRuntime, options: MigrationOptions): Promise<void> {
+  const diff = await runtime.collectWorkingTreeDiff({ cwd: runtime.cwd });
+
+  if (!diff.isGitRepo) {
+    runtime.stderr(notGitRepositoryMessage());
+    runtime.setExitCode(1);
+    return;
+  }
+
+  const result = migrateLegacyArtifacts({
+    cwd: runtime.cwd,
+    createdAt: runtime.now().toISOString(),
+    repositoryFingerprint: fingerprintRepositoryState(diff),
+    dryRun: options.dryRun === true
+  });
+
+  if (result.run !== undefined) {
+    writeAtomicJson(join(runtime.cwd, ".gleip", "active-run.json"), {
+      runId: result.run.runId,
+      createdAt: result.run.createdAt,
+      migrated: true
+    });
+  }
+
+  const output = {
+    dryRun: options.dryRun === true,
+    artifacts: result.artifacts,
+    runId: result.run?.runId,
+    warnings: result.warnings
+  };
+  runtime.stdout(
+    options.json === true
+      ? JSON.stringify(output, null, 2)
+      : `${options.dryRun === true ? "Migration inspection" : "Migration"}: ${result.artifacts.length} legacy artifact(s)${result.run === undefined ? "." : ` imported into ${result.run.runId}.`}`
+  );
+}
+
+async function finalizeEvidence(
+  runtime: CommandRuntime,
+  options: EvidenceJsonOptions
+): Promise<void> {
+  const context = await activeEvidenceContext(runtime);
+
+  if (context === undefined) {
+    runtime.stderr("No active evidence run. Run `gleip preflight` or `gleip migrate` first.");
+    runtime.setExitCode(1);
+    return;
+  }
+
+  const config = (await runtime.loadConfig(runtime.cwd)) as GleipConfigLike;
+  const session = readJsonFile<GleipSession>(join(runtime.cwd, ".gleip", "session.json")).value;
+  const canonical = readCanonicalTaskArtifact(runtime.cwd);
+  const scopeBudget = readScopeBudget(runtime.cwd);
+  const baseline = readBaseline(runtime.cwd);
+  const filtered = await runtime.filterDiffSinceBaseline(context.diff, baseline);
+  const driftResult =
+    scopeBudget === undefined
+      ? emptyDriftResult()
+      : await runtime.detectScopeDrift({
+          scopeBudget,
+          gitDiffContext: filtered.diff,
+          config
+        });
+  const hazards = completionHazards(driftResult.findings);
+  const requiredCommands: RequiredCommand[] = (config.required_commands ?? []).map((command) => ({
+    id: command.id,
+    description: command.description,
+    ...(command.executable === undefined ? {} : { executable: command.executable }),
+    ...(command.argument_includes === undefined
+      ? {}
+      : { argumentIncludes: command.argument_includes })
+  }));
+  const bundle = finalizeEvidenceRun({
+    cwd: runtime.cwd,
+    runId: context.runId,
+    createdAt: runtime.now().toISOString(),
+    taskAuthority: {
+      present: canonical !== undefined,
+      revision: context.taskRevision,
+      ...(canonical === undefined ? {} : { digest: canonical.contentHash })
+    },
+    repository: {
+      fingerprint: context.repositoryFingerprint,
+      ...(context.diff.head === undefined ? {} : { head: context.diff.head }),
+      dirty: context.diff.hasChanges,
+      changedPaths: context.diff.changedFiles
+    },
+    hazards,
+    requiredCommands
+  });
+  const payload = {
+    bundle,
+    evidenceWarnings:
+      session?.latestStatus === undefined ? ["No current status artifact was attached."] : []
+  };
+  runtime.stdout(
+    options.json === true
+      ? JSON.stringify(payload, null, 2)
+      : [
+          `Final evidence bundle: ${bundle.id}`,
+          `Repository fingerprint: ${bundle.repository.fingerprint}`,
+          `Completion status: ${bundle.completionStatus}`,
+          `Unresolved completion hazards: ${bundle.unresolvedHazards.length}`,
+          `Missing evidence: ${bundle.missingEvidence.length}`
+        ].join("\n")
+  );
+
+  if (bundle.completionStatus !== "complete") {
+    runtime.setExitCode(1);
+  }
+}
+
+function completionHazards(findings: DriftFinding[]): CompletionHazard[] {
+  const blockingCodes = new Set([
+    "TEST_SKIPPED",
+    "TEST_DELETED",
+    "LOCAL_ARTIFACT_INCLUDED",
+    "SECRET_FILE_CHANGED",
+    "BLOCKED_PATH_CHANGED",
+    "APPROVAL_REQUIRED_PATH_CHANGED",
+    "DEPENDENCY_FILE_CHANGED",
+    "LOCKFILE_CHANGED",
+    "CI_FILE_CHANGED"
+  ]);
+  const approvalCodes = new Set([
+    "APPROVAL_REQUIRED_PATH_CHANGED",
+    "DEPENDENCY_FILE_CHANGED",
+    "LOCKFILE_CHANGED",
+    "CI_FILE_CHANGED"
+  ]);
+
+  return findings
+    .filter(
+      (finding): finding is DriftFinding & { code: string } =>
+        finding.code !== undefined && blockingCodes.has(finding.code)
+    )
+    .map((finding, index) => ({
+      id: `hazard-${index + 1}-${finding.code.toLowerCase()}`,
+      code: finding.code,
+      message: finding.message,
+      blocking: true,
+      evidenceIds: [],
+      approvalRequired: approvalCodes.has(finding.code)
+    }));
+}
+
+function recordStatusEvidence(
+  runtime: CommandRuntime,
+  runId: string,
+  input: {
+    createdAt: string;
+    repositoryFingerprint: string;
+    taskRevision: number;
+    status: string;
+    driftResult: DriftResult;
+  }
+): void {
+  const state = replayRun(runtime.cwd, runId);
+  const currentFindings = new Map(
+    input.driftResult.findings.map((finding) => {
+      const findingId = `finding-${shortHash(
+        `${finding.code ?? "UNKNOWN"}:${finding.file ?? ""}:${finding.title}`
+      )}`;
+      return [findingId, finding] as const;
+    })
+  );
+
+  for (const [findingId, finding] of currentFindings) {
+    const previous = state.findings.get(findingId);
+    appendRunEvent(runtime.cwd, runId, {
+      type: previous === undefined ? "finding_created" : "finding_updated",
+      createdAt: input.createdAt,
+      repositoryFingerprint: input.repositoryFingerprint,
+      taskRevision: input.taskRevision,
+      payload: { findingId, finding }
+    });
+  }
+
+  for (const findingId of state.findings.keys()) {
+    if (!currentFindings.has(findingId)) {
+      appendRunEvent(runtime.cwd, runId, {
+        type: "finding_resolved",
+        createdAt: input.createdAt,
+        repositoryFingerprint: input.repositoryFingerprint,
+        taskRevision: input.taskRevision,
+        payload: { findingId }
+      });
+    }
+  }
+
+  recordRunEvidence(runtime.cwd, runId, {
+    evidenceClass: "policy_inference",
+    source: { kind: "local_policy", name: "scope_drift" },
+    createdAt: input.createdAt,
+    repositoryFingerprint: input.repositoryFingerprint,
+    taskRevision: input.taskRevision,
+    payload: {
+      status: input.driftResult.status,
+      metrics: input.driftResult.metrics,
+      findingCount: input.driftResult.findings.length
+    }
+  });
+  recordRunEvidence(runtime.cwd, runId, {
+    evidenceClass: "agent_claim",
+    source: { kind: "generated_status", name: ".gleip/status.md" },
+    createdAt: input.createdAt,
+    repositoryFingerprint: input.repositoryFingerprint,
+    taskRevision: input.taskRevision,
+    payload: { content: input.status }
+  });
+}
+
 async function compressCliContent(
   runtime: CommandRuntime,
   contentParts: string[],
@@ -1272,17 +1744,25 @@ async function runWrappedLocalCommand(
   }
 
   const childArgs = args.slice(1);
+  const startedAt = runtime.now().toISOString();
+  const startedMs = Date.now();
+  const evidenceContext = await activeEvidenceContext(runtime, { create: true });
+
+  if (evidenceContext !== undefined) {
+    appendRunEvent(runtime.cwd, evidenceContext.runId, {
+      type: "command_started",
+      createdAt: startedAt,
+      repositoryFingerprint: evidenceContext.repositoryFingerprint,
+      taskRevision: evidenceContext.taskRevision,
+      payload: { executable: commandName, arguments: childArgs }
+    });
+  }
+
   const result = spawnSync(commandName, childArgs, {
     cwd: runtime.cwd,
     encoding: "utf8",
     shell: false
   });
-
-  if (result.error !== undefined) {
-    runtime.stderr(`Command failed: ${formatError(result.error)}`);
-    runtime.setExitCode(1);
-    return;
-  }
 
   const sourceCommand = args.join(" ");
   const policy = await compressionPolicyForRuntime(runtime);
@@ -1312,6 +1792,59 @@ async function runWrappedLocalCommand(
             policy
           }
         );
+
+  if (evidenceContext !== undefined) {
+    const finishedAt = runtime.now().toISOString();
+    const afterDiff = await runtime.collectWorkingTreeDiff({ cwd: runtime.cwd });
+    const repositoryFingerprintAfter = afterDiff.isGitRepo
+      ? fingerprintRepositoryState(afterDiff)
+      : evidenceContext.repositoryFingerprint;
+    recordCommandAttestation({
+      cwd: runtime.cwd,
+      runId: evidenceContext.runId,
+      createdAt: finishedAt,
+      repositoryFingerprint: repositoryFingerprintAfter,
+      taskRevision: evidenceContext.taskRevision,
+      payload: {
+        executable: commandName,
+        arguments: childArgs,
+        workingDirectory: runtime.cwd,
+        startedAt,
+        finishedAt,
+        durationMs: Math.max(0, Date.now() - startedMs),
+        exitCode: result.status ?? 1,
+        repositoryFingerprintBefore: evidenceContext.repositoryFingerprint,
+        repositoryFingerprintAfter,
+        environmentFingerprint: environmentFingerprint(),
+        stdoutDigest: sha256Digest(stdout),
+        stderrDigest: sha256Digest(stderr),
+        fullOutputStored: true,
+        outputCompressed:
+          stdoutCompression?.compressed === true || stderrCompression?.compressed === true,
+        ...(stdoutCompression?.reference === undefined
+          ? {}
+          : { stdoutReference: stdoutCompression.reference }),
+        ...(stderrCompression?.reference === undefined
+          ? {}
+          : { stderrReference: stderrCompression.reference })
+      },
+      stdout,
+      stderr
+    });
+    synchronizeEvidenceRun({
+      cwd: runtime.cwd,
+      runId: evidenceContext.runId,
+      checkedAt: finishedAt,
+      repositoryFingerprint: repositoryFingerprintAfter,
+      taskRevision: evidenceContext.taskRevision
+    });
+  }
+
+  if (result.error !== undefined) {
+    runtime.stderr(`Command failed: ${formatError(result.error)}`);
+    runtime.setExitCode(1);
+    return;
+  }
 
   if (options.json === true) {
     runtime.stdout(
@@ -1415,7 +1948,9 @@ async function compressionPolicyForRuntime(
   }
 }
 
-function compressionPolicyFromConfig(config: GleipConfigLike | undefined): Partial<CompressionPolicy> {
+function compressionPolicyFromConfig(
+  config: GleipConfigLike | undefined
+): Partial<CompressionPolicy> {
   const raw = config?.compression;
 
   if (raw === undefined) {
@@ -1492,7 +2027,10 @@ function compressionInputFromOptions(
   };
 }
 
-function validateCompressionOptions(runtime: CommandRuntime, options: CompressionCommandOptions): boolean {
+function validateCompressionOptions(
+  runtime: CommandRuntime,
+  options: CompressionCommandOptions
+): boolean {
   if (options.type !== undefined && parseCompressionContentClass(options.type) === undefined) {
     runtime.stderr(`Unsupported compression content class: ${options.type}`);
     runtime.setExitCode(1);
@@ -1537,7 +2075,9 @@ function commandOutputInputFromOptions(
   };
 }
 
-function compressionResultJson(result: ReturnType<typeof compressContext>): Record<string, unknown> {
+function compressionResultJson(
+  result: ReturnType<typeof compressContext>
+): Record<string, unknown> {
   return {
     compressed: result.compressed,
     auditOnly: result.auditOnly,
@@ -1550,10 +2090,7 @@ function compressionResultJson(result: ReturnType<typeof compressContext>): Reco
   };
 }
 
-function formatCompressionAudit(
-  label: string,
-  result: ReturnType<typeof compressContext>
-): string {
+function formatCompressionAudit(label: string, result: ReturnType<typeof compressContext>): string {
   return [
     `Compression audit: ${label}`,
     `Class: ${result.classification.contentClass}`,
@@ -1571,7 +2108,9 @@ function formatCompressionAudit(
   ].join("\n");
 }
 
-function parseCompressionContentClass(value: string | undefined): CompressionContentClass | undefined {
+function parseCompressionContentClass(
+  value: string | undefined
+): CompressionContentClass | undefined {
   if (value === undefined) {
     return undefined;
   }
@@ -1739,14 +2278,14 @@ async function preflight(
 
   const sessionId =
     options.amend === true
-      ? existingSession?.sessionId ?? createSessionId(createdAt)
+      ? (existingSession?.sessionId ?? createSessionId(createdAt))
       : createSessionId(createdAt);
   const compatibilityBrief =
     options.amend === true ? readTextFile(join(runtime.cwd, ".gleip", "brief.md")) : undefined;
   const existingCanonical =
     options.amend === true
-      ? readCanonicalTaskArtifact(runtime.cwd) ??
-        canonicalTaskFromCompatibleSession(existingSession, createdAt, compatibilityBrief)
+      ? (readCanonicalTaskArtifact(runtime.cwd) ??
+        canonicalTaskFromCompatibleSession(existingSession, createdAt, compatibilityBrief))
       : undefined;
   const canonicalTask =
     options.amend === true && existingCanonical !== undefined
@@ -1806,48 +2345,109 @@ async function preflight(
     existingBaseline ?? (await runtime.createSessionBaseline(baselineDiff, createdAt));
   const initialDriftResult = emptyDriftResult();
   const brief = addBaselineNote(implementationBrief, baseline);
+  const repositoryFingerprint = fingerprintRepositoryState(baselineDiff);
+  const taskRevision = canonicalTask.revisions.length;
 
   ensureGleipGitignore(runtime.cwd);
   ensureGleipDirectory(runtime.cwd);
-  writeCanonicalTaskArtifact(runtime.cwd, canonicalTask);
-  writeFileSync(
-    sessionPath,
-    `${JSON.stringify(
-      {
-        ...(existingSession ?? {}),
-        version: 1,
-        schemaVersion: "1.3.0",
-        sessionId,
-        task: effectiveTask,
-        canonicalTask: canonicalTaskSessionReference(canonicalTask),
-        requirementLedgerSummary: requirementLedgerSummary(canonicalTask.requirementLedger),
-        ...(taskFile === undefined
-          ? existingSession?.taskFile === undefined
-            ? {}
-            : { taskFile: existingSession.taskFile }
-          : { taskFile }),
-        classification,
-        repoContext,
-        baseline: summarizeBaseline(baseline),
-        scopeBudgetSummary: summarizeScopeBudget(scopeBudget),
-        status: "ready",
-        approval: "not_required",
-        created_at: createdAt,
-        updated_at: createdAt
-      },
-      null,
-      2
-    )}\n`
-  );
+  const evidenceRunId =
+    existingSession?.evidenceRunId ??
+    createEvidenceRun({
+      cwd: runtime.cwd,
+      createdAt,
+      repositoryFingerprint,
+      taskRevision
+    }).runId;
+  synchronizeEvidenceRun({
+    cwd: runtime.cwd,
+    runId: evidenceRunId,
+    checkedAt: createdAt,
+    repositoryFingerprint,
+    taskRevision
+  });
+  writeAtomicJson(join(runtime.cwd, ".gleip", "active-run.json"), {
+    runId: evidenceRunId,
+    createdAt
+  });
+  appendRunEvent(runtime.cwd, evidenceRunId, {
+    type: options.amend === true ? "task_amended" : "task_captured",
+    createdAt,
+    repositoryFingerprint,
+    taskRevision,
+    payload: {
+      taskId: canonicalTask.taskId,
+      revisionId: canonicalTask.activeRevisionId,
+      contentHash: canonicalTask.contentHash,
+      source: taskFile === undefined ? (options.amend === true ? "amendment" : "inline") : "file"
+    }
+  });
+  recordRunEvidence(runtime.cwd, evidenceRunId, {
+    evidenceClass: "observed_fact",
+    source: {
+      kind: "canonical_task",
+      name: canonicalTask.taskId,
+      reference: ".gleip/canonical-task.json"
+    },
+    createdAt,
+    repositoryFingerprint,
+    taskRevision,
+    payload: {
+      activeRevisionId: canonicalTask.activeRevisionId,
+      contentHash: canonicalTask.contentHash,
+      requirementCount: canonicalTask.requirementLedger.requirements.length
+    }
+  });
   if (existingBaseline === undefined) {
-    writeFileSync(
-      join(runtime.cwd, ".gleip", "baseline.json"),
-      `${JSON.stringify(baseline, null, 2)}\n`
-    );
+    appendRunEvent(runtime.cwd, evidenceRunId, {
+      type: "baseline_captured",
+      createdAt,
+      repositoryFingerprint,
+      taskRevision,
+      payload: { diffFingerprint: baseline.diffFingerprint }
+    });
+    recordRunEvidence(runtime.cwd, evidenceRunId, {
+      evidenceClass: "observed_fact",
+      source: { kind: "git", name: "working_tree_baseline", reference: ".gleip/baseline.json" },
+      createdAt,
+      repositoryFingerprint,
+      taskRevision,
+      payload: { ...summarizeBaseline(baseline) }
+    });
   }
-  writeFileSync(join(runtime.cwd, ".gleip", "brief.md"), brief);
-  writeFileSync(join(runtime.cwd, ".gleip", "scope-budget.json"), scopeBudgetContent(scopeBudget));
-  writeFileSync(
+  writeCanonicalTaskArtifact(runtime.cwd, canonicalTask);
+  writeAtomicJson(sessionPath, {
+    ...(existingSession ?? {}),
+    version: 1,
+    schemaVersion: "1.3.0",
+    sessionId,
+    evidenceRunId,
+    taskRevision,
+    task: effectiveTask,
+    canonicalTask: canonicalTaskSessionReference(canonicalTask),
+    requirementLedgerSummary: requirementLedgerSummary(canonicalTask.requirementLedger),
+    ...(taskFile === undefined
+      ? existingSession?.taskFile === undefined
+        ? {}
+        : { taskFile: existingSession.taskFile }
+      : { taskFile }),
+    classification,
+    repoContext,
+    baseline: summarizeBaseline(baseline),
+    scopeBudgetSummary: summarizeScopeBudget(scopeBudget),
+    status: "ready",
+    approval: "not_required",
+    created_at: createdAt,
+    updated_at: createdAt
+  });
+  if (existingBaseline === undefined) {
+    writeAtomicJson(join(runtime.cwd, ".gleip", "baseline.json"), baseline);
+  }
+  writeAtomicText(join(runtime.cwd, ".gleip", "brief.md"), brief);
+  writeAtomicText(
+    join(runtime.cwd, ".gleip", "scope-budget.json"),
+    scopeBudgetContent(scopeBudget)
+  );
+  writeAtomicText(
     join(runtime.cwd, ".gleip", "status.md"),
     statusContent(
       initialDriftResult,
@@ -1856,7 +2456,7 @@ async function preflight(
       {
         phase: "preflight",
         generatedAt: createdAt,
-        repositoryFingerprint: fingerprintRepositoryState(baselineDiff),
+        repositoryFingerprint,
         sessionId,
         currentArtifact: ".gleip/status.md"
       }
@@ -1869,7 +2469,7 @@ async function preflight(
       : "Gleip preflight complete · brief and scope budget ready",
     "Artifacts: .gleip/canonical-task.json, .gleip/brief.md, .gleip/scope-budget.json",
     scopeBudget.planRequired === false
-      ? "Next: make the documentation change, review the diff, then run status"
+      ? "Next: implement the scoped change, run verification, then run status"
       : "Next: validate plan before editing"
   ];
 
@@ -1939,12 +2539,27 @@ async function validatePlan(
       readTextFile(join(runtime.cwd, ".gleip", "brief.md"))
     );
 
-  if (compatibilityCanonical !== undefined && readCanonicalTaskArtifact(runtime.cwd) === undefined) {
+  if (
+    compatibilityCanonical !== undefined &&
+    readCanonicalTaskArtifact(runtime.cwd) === undefined
+  ) {
     ensureGleipGitignore(runtime.cwd);
     writeCanonicalTaskArtifact(runtime.cwd, compatibilityCanonical);
   }
 
-  const result = await runtime.validateAgentPlan({
+  const evidenceContext = await activeEvidenceContext(runtime);
+
+  if (evidenceContext !== undefined) {
+    appendRunEvent(runtime.cwd, evidenceContext.runId, {
+      type: "plan_submitted",
+      createdAt: runtime.now().toISOString(),
+      repositoryFingerprint: evidenceContext.repositoryFingerprint,
+      taskRevision: evidenceContext.taskRevision,
+      payload: { planDigest: sha256Digest(planInput.text), planFile: planInput.planFile ?? null }
+    });
+  }
+
+  const rawResult = await runtime.validateAgentPlan({
     planText: planInput.text,
     scopeBudget,
     config,
@@ -1955,6 +2570,30 @@ async function validatePlan(
       : { requirementLedger: compatibilityCanonical.requirementLedger }),
     contextFiles: planInput.planFile === undefined ? [] : [planInput.planFile]
   });
+  const result = passivePlanValidationResult(rawResult, scopeBudget);
+
+  if (evidenceContext !== undefined) {
+    recordRunEvidence(
+      runtime.cwd,
+      evidenceContext.runId,
+      {
+        evidenceClass: "policy_inference",
+        source: { kind: "local_policy", name: "plan_validation" },
+        createdAt: runtime.now().toISOString(),
+        repositoryFingerprint: evidenceContext.repositoryFingerprint,
+        taskRevision: evidenceContext.taskRevision,
+        payload: {
+          status: result.status,
+          rawStatus: rawResult.status,
+          planRequired: scopeBudget.planRequired === true,
+          findings: result.findings
+        }
+      },
+      isSuccessfulPlanValidationStatus(result.status)
+        ? "plan_validation_completed"
+        : "plan_validation_rejected"
+    );
+  }
 
   if (session.value !== undefined) {
     const updatedAt = runtime.now().toISOString();
@@ -1977,41 +2616,34 @@ async function validatePlan(
           };
     ensureGleipGitignore(runtime.cwd);
     if (isSuccessfulPlanValidationStatus(result.status)) {
-      writeFileSync(
+      writeAtomicText(
         join(runtime.cwd, ".gleip", "scope-budget.json"),
         scopeBudgetContent(refinedScopeBudget)
       );
     }
-    writeFileSync(
-      sessionPath,
-      `${JSON.stringify(
-        {
-          ...session.value,
-          ...(compatibilityCanonical === undefined
-            ? {}
-            : {
-                task: compatibilityCanonical.effectiveContent,
-                canonicalTask: canonicalTaskSessionReference(compatibilityCanonical),
-                requirementLedgerSummary: requirementLedgerSummary(
-                  compatibilityCanonical.requirementLedger
-                )
-              }),
-          ...(refinedClassification === undefined ? {} : { classification: refinedClassification }),
-          scopeBudgetSummary: summarizeScopeBudget(refinedScopeBudget),
-          latestValidationAttempt: validationRecord,
-          latestPlanValidation: validationRecord,
-          ...(isSuccessfulPlanValidationStatus(result.status)
-            ? {
-                latestSuccessfulValidation: validationRecord,
-                latestSuccessfulPlanValidation: validationRecord
-              }
-            : {}),
-          updated_at: updatedAt
-        },
-        null,
-        2
-      )}\n`
-    );
+    writeAtomicJson(sessionPath, {
+      ...session.value,
+      ...(compatibilityCanonical === undefined
+        ? {}
+        : {
+            task: compatibilityCanonical.effectiveContent,
+            canonicalTask: canonicalTaskSessionReference(compatibilityCanonical),
+            requirementLedgerSummary: requirementLedgerSummary(
+              compatibilityCanonical.requirementLedger
+            )
+          }),
+      ...(refinedClassification === undefined ? {} : { classification: refinedClassification }),
+      scopeBudgetSummary: summarizeScopeBudget(refinedScopeBudget),
+      latestValidationAttempt: validationRecord,
+      latestPlanValidation: validationRecord,
+      ...(isSuccessfulPlanValidationStatus(result.status)
+        ? {
+            latestSuccessfulValidation: validationRecord,
+            latestSuccessfulPlanValidation: validationRecord
+          }
+        : {}),
+      updated_at: updatedAt
+    });
   }
   const output =
     options.json === true
@@ -2218,7 +2850,21 @@ async function printStatus(
 
   if (options.writeStatusFile !== false) {
     ensureGleipGitignore(runtime.cwd);
-    writeFileSync(join(runtime.cwd, ".gleip", "status.md"), status);
+    writeAtomicText(join(runtime.cwd, ".gleip", "status.md"), status);
+  }
+
+  if (session.evidenceRunId !== undefined) {
+    recordStatusEvidence(runtime, session.evidenceRunId, {
+      createdAt: updatedAt,
+      repositoryFingerprint,
+      taskRevision:
+        canonicalTask?.revisions.length ??
+        session.taskRevision ??
+        session.canonicalTask?.revisionCount ??
+        1,
+      status,
+      driftResult
+    });
   }
 
   if (options.updateSession !== false) {
@@ -2226,44 +2872,37 @@ async function printStatus(
     if (canonicalTask !== undefined && readCanonicalTaskArtifact(runtime.cwd) === undefined) {
       writeCanonicalTaskArtifact(runtime.cwd, canonicalTask);
     }
-    writeFileSync(
-      sessionPath,
-      `${JSON.stringify(
-        {
-          ...session,
-          ...(canonicalTask === undefined
-            ? {}
-            : {
-                task: canonicalTask.effectiveContent,
-                canonicalTask: canonicalTaskSessionReference(canonicalTask),
-                requirementLedgerSummary: requirementLedgerSummary(canonicalTask.requirementLedger)
-              }),
-          classification,
-          repoContext,
-          scopeBudgetSummary: summarizeScopeBudget(scopeBudget),
-          status: driftResult.status,
-          approval: driftResult.status === "needs_approval" ? "required" : "not_required",
-          latestStatus: {
-            artifact: artifactMetadata({
-              phase: "verification",
-              generatedAt: updatedAt,
-              repositoryFingerprint,
-              sessionId: session.sessionId ?? null,
-              currentArtifact: ".gleip/status.md"
-            }),
-            status: driftResult.status,
-            summary: driftResult.summary,
-            metrics: driftResult.metrics,
-            baseline: filtered.baseline,
-            nextAction,
-            updated_at: updatedAt
-          },
-          updated_at: updatedAt
-        },
-        null,
-        2
-      )}\n`
-    );
+    writeAtomicJson(sessionPath, {
+      ...session,
+      ...(canonicalTask === undefined
+        ? {}
+        : {
+            task: canonicalTask.effectiveContent,
+            canonicalTask: canonicalTaskSessionReference(canonicalTask),
+            requirementLedgerSummary: requirementLedgerSummary(canonicalTask.requirementLedger)
+          }),
+      classification,
+      repoContext,
+      scopeBudgetSummary: summarizeScopeBudget(scopeBudget),
+      status: driftResult.status,
+      approval: driftResult.status === "needs_approval" ? "required" : "not_required",
+      latestStatus: {
+        artifact: artifactMetadata({
+          phase: "verification",
+          generatedAt: updatedAt,
+          repositoryFingerprint,
+          sessionId: session.sessionId ?? null,
+          currentArtifact: ".gleip/status.md"
+        }),
+        status: driftResult.status,
+        summary: driftResult.summary,
+        metrics: driftResult.metrics,
+        baseline: filtered.baseline,
+        nextAction,
+        updated_at: updatedAt
+      },
+      updated_at: updatedAt
+    });
   }
 
   runtime.stdout(
@@ -2397,8 +3036,8 @@ async function printReport(runtime: CommandRuntime, options: ReportOptions): Pro
   if (canonicalTask !== undefined && readCanonicalTaskArtifact(runtime.cwd) === undefined) {
     writeCanonicalTaskArtifact(runtime.cwd, canonicalTask);
   }
-  writeFileSync(join(runtime.cwd, ".gleip", "report.json"), `${JSON.stringify(report, null, 2)}\n`);
-  writeFileSync(join(runtime.cwd, ".gleip", "report.md"), markdown);
+  writeAtomicJson(join(runtime.cwd, ".gleip", "report.json"), report);
+  writeAtomicText(join(runtime.cwd, ".gleip", "report.md"), markdown);
 
   if (options.json === true) {
     runtime.stdout(JSON.stringify(report, null, 2));
@@ -2749,7 +3388,7 @@ function uninstallRepository(runtime: CommandRuntime, options: UninstallOptions)
     }
 
     for (const modification of plan.modifications) {
-      writeFileSync(join(runtime.cwd, modification.path), modification.content);
+      writeAtomicText(join(runtime.cwd, modification.path), modification.content);
     }
   }
 
@@ -2960,7 +3599,7 @@ function writeGeneratedFile(filePath: string, content: string, force: boolean): 
     return;
   }
 
-  writeFileSync(filePath, content);
+  writeAtomicText(filePath, content);
 }
 
 type GitignoreUpdateResult = "created" | "updated" | "unchanged";
@@ -3000,7 +3639,7 @@ function ensureGleipGitignore(cwd: string): GitignoreUpdateResult {
     return "unchanged";
   }
 
-  writeFileSync(gitignorePath, updated);
+  writeAtomicText(gitignorePath, updated);
   return exists ? "updated" : "created";
 }
 
@@ -3157,7 +3796,7 @@ function loadGleipState(cwd: string): GleipState | undefined {
 
 function writeGleipState(cwd: string, state: GleipState): void {
   ensureGleipDirectory(cwd);
-  writeFileSync(join(cwd, ".gleip", "state.json"), `${JSON.stringify(state, null, 2)}\n`);
+  writeAtomicJson(join(cwd, ".gleip", "state.json"), state);
 }
 
 function setGleipEnabled(
@@ -3310,7 +3949,7 @@ function writeAgentInstructionFile(
 ): void {
   mkdirSync(dirname(filePath), { recursive: true });
   const existing = existsSync(filePath) ? readFileSync(filePath, "utf8") : defaultContent;
-  writeFileSync(filePath, upsertGleipSection(existing, target));
+  writeAtomicText(filePath, upsertGleipSection(existing, target));
 }
 
 function upsertGleipSection(content: string, target: AgentInstructionTarget): string {
@@ -3338,14 +3977,14 @@ function gleipSectionContent(target: AgentInstructionTarget): string {
 ## Gleip Workflow
 
 - This repository uses Gleip local guidance. ${targetLine}
-- If the local package command cannot be run, ask: "Gleip is configured for this repository, but I could not run it through the local package command. Do you want me to continue without Gleip guidance? y/n". Wait for confirmation.
-- Before editing code, check \`.gleip/state.json\`. If \`enabled\` is false, ask: "Gleip is currently inactive. Do you want me to continue without Gleip guidance? y/n". Wait for confirmation.
+- If the local package command cannot be run, report that Gleip evidence is unavailable and continue only within the user's existing authority.
+- Before editing code, check \`.gleip/state.json\`. If \`enabled\` is false, treat Gleip guidance as inactive without creating a mandatory confirmation prompt.
 - If enabled, run \`npx --no-install gleip preflight "<user task>"\`.
 - Read \`.gleip/canonical-task.json\` first. Treat it as the authoritative task contract.
 - Read \`.gleip/brief.md\` as a derived navigation aid and \`.gleip/scope-budget.json\` as scope guidance.
 - If the brief omits or conflicts with the canonical task, follow the canonical task.
 - Check active task revisions and amendments in \`.gleip/canonical-task.json\` before planning.
-- For a non-trivial change, draft a short implementation plan and run \`npx --no-install gleip validate-plan "<plan>"\` before implementing it.
+- For broad or sensitive changes, draft a short implementation plan and run \`npx --no-install gleip validate-plan "<plan>"\` before implementing it. Other plan checks are advisory.
 - Treat \`aligned\` as ready, review \`advisory\`, clarify \`needs_clarification\`, clean up \`needs_cleanup\`, and request approval for \`needs_approval\`.
 - During implementation, use the expected paths in \`.gleip/scope-budget.json\` as guidance and explain necessary expansion.
 - Keep changes minimal and scoped to the canonical task.
@@ -3360,10 +3999,8 @@ function gleipSectionContent(target: AgentInstructionTarget): string {
 - Run \`npx --no-install gleip status --compact\` whenever Gleip's expected next action is unclear.
 - Address cleanup and action-required findings before finalizing. Request approval for approval-required changes.
 - Before the final response, run \`npx --no-install gleip status --compact\`. Report \`advisory\`, \`needs_attention\`, \`needs_cleanup\`, or \`needs_approval\` clearly.
-- Before the final response, run or read \`npx --no-install gleip report\`.
-- Treat \`.gleip/report.json\` and \`.gleip/report.md\` as the source of truth for Gleip final status.
-- Include the compact \`Recommended final response\` block when it adds useful review evidence; do not paste the full report.
-- The generated block contains scope adherence, drift risk, repository hygiene, output discipline, estimated token waste avoided, and unresolved warnings.
+- Before the final response, run \`npx --no-install gleip finalize\` and report its exact-state completion status. The legacy \`report\` command remains compatibility output only.
+- Treat the final evidence bundle under \`.gleip/runs/<run-id>/final/latest.json\` as the primary local completion artifact.
 - Final response should concisely include changed files or summary, verification run, residual risks, and Gleip status when relevant.
 
 ## Gleip working standard
@@ -3424,13 +4061,13 @@ For multi-step tasks, state a brief plan in this format:
 - [ ] Run \`npx --no-install gleip preflight "<task>"\`
 - [ ] Read \`.gleip/canonical-task.json\`
 - [ ] Use \`.gleip/brief.md\` as an index, not a replacement
-- [ ] Validate plan with \`npx --no-install gleip validate-plan\`
+- [ ] Validate broad or sensitive plans with \`npx --no-install gleip validate-plan\`
 - [ ] Implement within \`.gleip/scope-budget.json\`
 - [ ] Run narrow validation while iterating and complete required validation once before final completion
 - [ ] Use compression only for non-authoritative execution evidence; retrieve exact originals before relying on omitted diagnostics
 - [ ] Run \`npx --no-install gleip check --incremental\`
 - [ ] Run \`npx --no-install gleip status --compact\`
-- [ ] Run or read \`npx --no-install gleip report\`
+- [ ] Run \`npx --no-install gleip finalize\`
 - [ ] Include concise review evidence: changed files or summary, tests run, risks, and Gleip status
 ${GLEIP_SECTION_END}`;
 }
@@ -3462,7 +4099,8 @@ function ensureGleipDirectory(cwd: string): void {
 
 function defaultConfigContent(): string {
   return `version: 1
-mode: advisory
+# advisory, strict, and enterprise are reserved compatibility aliases with no extra enforcement.
+mode: passive
 
 principles:
   - Keep generated code lean, scoped, tested, and merge-ready.
@@ -3495,6 +4133,8 @@ approval_required_for:
   - dependency_changes
   - ci_changes
   - security_policy_changes
+
+required_commands: []
 
 compression:
   enabled: true
@@ -3646,7 +4286,9 @@ function createCanonicalTaskRevision(input: {
     byteCount: Buffer.byteLength(input.content, "utf8"),
     characterCount: Array.from(input.content).length,
     createdAt: input.createdAt,
-    ...(input.previousRevisionId === undefined ? {} : { previousRevisionId: input.previousRevisionId }),
+    ...(input.previousRevisionId === undefined
+      ? {}
+      : { previousRevisionId: input.previousRevisionId }),
     status: "active"
   };
 }
@@ -3813,8 +4455,9 @@ function requirementLedgerSummary(ledger: RequirementLedger): RequirementLedgerS
     requirementCount: ledger.requirements.length,
     mandatoryCount: active.filter((requirement) => requirement.obligation === "required").length,
     prohibitedCount: active.filter((requirement) => requirement.obligation === "prohibited").length,
-    optionalCount: active.filter((requirement) =>
-      requirement.obligation === "optional" || requirement.obligation === "suggestion"
+    optionalCount: active.filter(
+      (requirement) =>
+        requirement.obligation === "optional" || requirement.obligation === "suggestion"
     ).length,
     conflictCount: ledger.conflicts.length
   };
@@ -3822,14 +4465,7 @@ function requirementLedgerSummary(ledger: RequirementLedger): RequirementLedgerS
 
 function writeCanonicalTaskArtifact(cwd: string, artifact: CanonicalTaskArtifact): void {
   ensureGleipDirectory(cwd);
-  writeFileAtomic(canonicalTaskPath(cwd), `${JSON.stringify(artifact, null, 2)}\n`);
-}
-
-function writeFileAtomic(path: string, content: string): void {
-  const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
-
-  writeFileSync(tempPath, content);
-  renameSync(tempPath, path);
+  writeAtomicJson(canonicalTaskPath(cwd), artifact);
 }
 
 function hashCanonicalContent(content: string): string {
@@ -4282,6 +4918,22 @@ function isSuccessfulPlanValidationStatus(status: PlanValidationStatus): boolean
   return status === "aligned" || status === "advisory" || status === "approved";
 }
 
+function passivePlanValidationResult(
+  result: PlanValidationResult,
+  scopeBudget: ScopeBudget
+): PlanValidationResult {
+  if (scopeBudget.planRequired === true || isSuccessfulPlanValidationStatus(result.status)) {
+    return result;
+  }
+
+  return {
+    ...result,
+    status: "advisory",
+    summary: `${result.findings.length} passive finding(s) recorded; plan validation is not required for this workflow.`,
+    nextAction: "Continue with the scoped change and verify completion evidence."
+  };
+}
+
 function acceptedPlanTargets(
   validation: PlanValidationRecord,
   classification: ScopeTargetClassification["classification"]
@@ -4437,7 +5089,8 @@ function scopeBudgetFromSummary(
     String(index + 1)
   );
   const requiredTests = summary?.requiredTests ?? classification.likelyRequiresTests;
-  const workflowProfile = summary?.workflowProfile ?? classification.workflowProfile ?? "local_behavior_change";
+  const workflowProfile =
+    summary?.workflowProfile ?? classification.workflowProfile ?? "local_behavior_change";
 
   return {
     taskType: classification.taskType,
@@ -4976,7 +5629,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function writeCheckCache(cwd: string, cache: IncrementalCheckCache): void {
   ensureGleipDirectory(cwd);
-  writeFileSync(join(cwd, ".gleip", "check-cache.json"), `${JSON.stringify(cache, null, 2)}\n`);
+  writeAtomicJson(join(cwd, ".gleip", "check-cache.json"), cache);
 }
 
 function incrementalCheckSummary(

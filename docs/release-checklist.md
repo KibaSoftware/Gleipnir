@@ -1,13 +1,11 @@
 # Release Checklist
 
-Use this checklist for the local-only developer preview.
+Use this checklist for the local-only 1.0 release candidate.
 
-Current release target: `0.9.0`.
+Current release target: `1.0.0`.
 
-Release focus: deterministic local context compression for non-authoritative
-execution evidence while preserving canonical task authority, normalized scope,
-requirement-ledger coverage, plan validation, final requirement completion, and
-existing check/CI behavior.
+Release focus: passive-first local evidence, exact-state command attestations,
+durable approvals, replayable event history, and one final evidence bundle.
 
 ## Signal Quality Gates
 
@@ -41,7 +39,7 @@ existing check/CI behavior.
 
 ## Packed Install
 
-- Install `dist-pack/gleip-0.9.0.tgz` into a clean external temp repo.
+- Install `dist-pack/gleip-1.0.0.tgz` into a clean external temp repo.
 - Verify:
   - `npx gleip --help`
   - `npx gleip --version`
@@ -59,6 +57,8 @@ existing check/CI behavior.
   - `npx gleip check --incremental --force`
   - `npx gleip check --incremental --ci`
   - `npx gleip status --compact`
+  - `npx gleip replay`
+  - `npx gleip finalize`
   - `npx --no-install gleip uninstall --dry-run`
   - `npx --no-install gleip uninstall`
 
