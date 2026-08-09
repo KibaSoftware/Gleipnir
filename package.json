@@ -1,6 +1,6 @@
 {
   "name": "gleip",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Passive-first local evidence ledger and precision risk observer for coding-agent work.",
   "license": "Apache-2.0",
   "repository": {
@@ -63,7 +63,7 @@
     "typecheck": "pnpm -r typecheck",
     "pack:cli": "node scripts/pack-cli.mjs",
     "smoke:cli": "node scripts/smoke-cli.mjs",
-    "smoke:packed": "node scripts/smoke-packed-1.0.mjs",
+    "smoke:packed": "node scripts/smoke-packed-1.1.mjs",
     "format": "prettier --write ."
   },
   "dependencies": {

@@ -91,7 +91,7 @@ describe("createGleipCommand", () => {
   it("--version prints the package version", async () => {
     const output = (await runHelpCommand(["--version"])).join("\n");
 
-    expect(output).toBe("1.0.0");
+    expect(output).toBe("1.1.0");
   });
 
   it("command help shows important flags and stdin support", async () => {
@@ -163,7 +163,7 @@ describe("createGleipCommand", () => {
     expect(packageJson.exports["."].import).toBe("./dist/index.js");
     expect(packageJson.exports["."].types).toBe("./dist/index.d.ts");
     expect(packageJson.name).toBe("gleip");
-    expect(packageJson.version).toBe("1.0.0");
+    expect(packageJson.version).toBe("1.1.0");
     expect(packageJson.dependencies).toEqual({
       commander: "^12.0.0",
       yaml: "^2.0.0",
@@ -208,7 +208,7 @@ describe("createGleipCommand", () => {
     });
   });
 
-  it("release metadata uses version 1.0.0 across packages", () => {
+  it("release metadata uses version 1.1.0 across packages", () => {
     const packagePaths = [
       "package.json",
       "packages/cli/package.json",
@@ -224,7 +224,7 @@ describe("createGleipCommand", () => {
       const packageJson = JSON.parse(readFileSync(join(repoRoot, packagePath), "utf8")) as {
         version: string;
       };
-      expect(packageJson.version).toBe("1.0.0");
+      expect(packageJson.version).toBe("1.1.0");
     }
 
     const cliPackageJson = readFileSync(join(repoRoot, "packages", "cli", "package.json"), "utf8");
@@ -1017,7 +1017,7 @@ describe("createGleipCommand", () => {
     expect(report).toContain("WARN Missing .gleip.yml or GLEIP.md");
     expect(report).toContain("WARN Missing Gleip-managed agent instructions");
     expect(report).toContain("WARN Missing, incomplete, or overridden Gleip .gitignore block");
-    expect(report).toContain("OK   CLI version resolved (1.0.0)");
+    expect(report).toContain("OK   CLI version resolved (1.1.0)");
     expect(report).toContain("OK   Built-in init assets available");
     expect(report).toContain("Run: npx gleip init");
   });
@@ -1250,14 +1250,16 @@ describe("createGleipCommand", () => {
       byteCount: number;
       characterCount: number;
       contentHash: string;
-      effectiveContent: string;
-      requirementLedger: { requirements: Array<{ sourceText: string }> };
+      effectiveContent?: string;
+      requirementLedger: { requirements: Array<{ sourceText?: string }> };
       revisions: Array<{ content: string; source: string }>;
     };
     const brief = readFileSync(join(repo, ".gleip", "brief.md"), "utf8");
 
     expect(canonicalTask.authority).toBe("canonical");
-    expect(canonicalTask.effectiveContent).toBe(taskText);
+    // The agent is told to read this file first, so it must not store the task text twice.
+    // `effectiveContent` is the revisions concatenated and is reconstructed on read.
+    expect(canonicalTask.effectiveContent).toBeUndefined();
     expect(canonicalTask.revisions).toHaveLength(1);
     expect(canonicalTask.revisions[0]).toMatchObject({ content: taskText, source: "file" });
     expect(canonicalTask.byteCount).toBe(Buffer.byteLength(taskText, "utf8"));
@@ -1291,9 +1293,21 @@ describe("createGleipCommand", () => {
     const canonicalTask = JSON.parse(
       readFileSync(join(repo, ".gleip", "canonical-task.json"), "utf8")
     ) as {
-      effectiveContent: string;
-      revisions: Array<{ content: string; previousRevisionId?: string; source: string }>;
-      requirementLedger: { requirements: Array<{ sourceText: string }> };
+      effectiveContent?: string;
+      revisions: Array<{
+        revisionId: string;
+        content: string;
+        previousRevisionId?: string;
+        source: string;
+      }>;
+      requirementLedger: {
+        requirements: Array<{
+          sourceText?: string;
+          canonicalRevisionId: string;
+          sourceStart: number;
+          sourceEnd: number;
+        }>;
+      };
     };
 
     expect(output.join("\n")).toContain("Gleip task amendment recorded");
@@ -1304,9 +1318,27 @@ describe("createGleipCommand", () => {
       source: "amendment"
     });
     expect(canonicalTask.revisions[1]?.previousRevisionId).toBeDefined();
-    expect(canonicalTask.effectiveContent).toContain("Must update src/runtime.ts.");
-    expect(canonicalTask.effectiveContent).toContain("Must preserve Windows compatibility.");
-    expect(canonicalTask.requirementLedger.requirements.map((item) => item.sourceText)).toEqual(
+
+    // The compact form stores neither the concatenated task text nor each requirement's text --
+    // the revisions hold the content and the offsets locate it. Reconstructing here proves the
+    // round-trip is exact rather than assuming it.
+    expect(canonicalTask.effectiveContent).toBeUndefined();
+    const contentByRevision = new Map(
+      canonicalTask.revisions.map((revision) => [revision.revisionId, revision.content])
+    );
+    // Omitted fields default as the reader defines them: canonicalRevisionId defaults to the
+    // latest revision, which is the common case and so is never written.
+    const latestRevisionId = canonicalTask.revisions.at(-1)?.revisionId ?? "";
+    const reconstructed = canonicalTask.requirementLedger.requirements.map(
+      (item) =>
+        item.sourceText ??
+        (contentByRevision.get(item.canonicalRevisionId ?? latestRevisionId) ?? "")
+          .slice(item.sourceStart, item.sourceEnd)
+          .replace(/\s+/gu, " ")
+          .trim()
+    );
+
+    expect(reconstructed).toEqual(
       expect.arrayContaining([
         "Must update src/runtime.ts.",
         "Must preserve Windows compatibility."
@@ -1885,6 +1917,47 @@ describe("createGleipCommand", () => {
       "Next: implement the plan, run verification, then run status"
     );
     expect(validationOutput.split("\n")).toHaveLength(2);
+  });
+
+  // §6.6: the tool correctly identified which mandatory requirement a plan omitted, then printed
+  // only findings[0] and never any evidence -- so it reported "2 finding(s)" while showing one,
+  // and said "a mandatory requirement is missing" without naming it. The --json contract dropped
+  // requirementCoverage entirely, making the analysis unreachable there too.
+  it("validate-plan names the requirements a plan misses", async () => {
+    const repo = createTempRepo();
+    writeRepoFile(repo, "src/runtime.ts", "export const runtime = {};\n");
+    await runCommand(repo, [
+      "preflight",
+      [
+        "## Requirements",
+        "- Must update src/runtime.ts.",
+        "- Must preserve Windows compatibility.",
+        "- Column order must be: order id, created date, status, total."
+      ].join("\n")
+    ]);
+
+    const text = (
+      await runCommand(repo, ["validate-plan", "Implementation: update src/runtime.ts."])
+    ).join("\n");
+
+    // Every printed finding count must correspond to a printed finding.
+    const declaredCount = Number(/(\d+) finding\(s\)/u.exec(text)?.[1] ?? "0");
+    expect(text.match(/^Finding: /gmu) ?? []).toHaveLength(declaredCount);
+    // The specific unmet requirements are named, not merely counted.
+    expect(text).toContain("REQ-");
+
+    const json = JSON.parse(
+      (
+        await runCommand(repo, [
+          "validate-plan",
+          "--json",
+          "Implementation: update src/runtime.ts."
+        ])
+      ).join("\n")
+    ) as { requirementCoverage?: { missingRequired: unknown[] } };
+
+    expect(json.requirementCoverage).toBeDefined();
+    expect(json.requirementCoverage?.missingRequired.length).toBeGreaterThan(0);
   });
 
   it("validate-plan text output shows scope target classifications and next actions", async () => {
@@ -2517,7 +2590,8 @@ describe("createGleipCommand", () => {
 
     expect(lines).toHaveLength(5);
     expect(lines[0]).toContain("Task: Measure compact status");
-    expect(lines[1]).toBe("Repository changed: no");
+    // Distinct from `check`'s baseline comparison, which reports the changed-file count.
+    expect(lines[1]).toBe("Changed since last check: no");
     expect(lines[2]).toBe("Findings: 0 warning, 0 blocking");
     expect(lines[3]).toBe("Check necessary: no");
     expect(output.join("\n")).not.toContain("brief");
@@ -3511,7 +3585,7 @@ describe("createGleipCommand", () => {
     expect(output).toHaveLength(1);
     expect(output[0]?.trimStart().startsWith("{")).toBe(true);
     expect(output.join("\n")).not.toContain("Gleip report ready");
-    expect(report.version).toBe("1.0.0");
+    expect(report.version).toBe("1.1.0");
     expect(report.generatedAt).toBe("2026-05-30T00:00:00.000Z");
     expect(report.summary.filesChanged).toBe(0);
     expect(existsSync(join(repo, ".gleip", "report.json"))).toBe(true);
@@ -3682,6 +3756,44 @@ describe("createGleipCommand", () => {
     expect(audit.output).toBeUndefined();
   });
 
+  // M3: audit mode marked content as passthrough before metrics were computed, so it reported
+  // zero savings even for output that compresses by ~86 %. Audit mode exists to answer "what
+  // would this save?", so it has to measure.
+  it("compression audit reports the savings compression would achieve", async () => {
+    const repo = createTempRepo();
+    const lines = Array.from(
+      { length: 120 },
+      (_unused, index) => ` ✓ src/suite-${index}.test.ts (4 tests) 12ms`
+    );
+    lines.push(" FAIL src/cart.test.ts > applies SAVE10 once");
+    lines.push("AssertionError: expected 90 to be 81");
+    lines.push("    at src/cart.test.ts:12:20");
+    lines.push("      Tests  1 failed | 480 passed (481)");
+    const payload = lines.join("\n");
+
+    const readMetrics = async (args: string[]): Promise<Record<string, number>> => {
+      const output = await runCommand(repo, args, { readStdin: () => payload });
+      const parsed = JSON.parse(output.join("\n")) as {
+        metrics: Record<string, number>;
+        passthroughReasons?: string[];
+        compressed?: boolean;
+      };
+      return parsed.metrics;
+    };
+
+    const audited = await readMetrics(["compress", "--type", "test_output", "--audit", "--json"]);
+    const compressed = await readMetrics(["compress", "--type", "test_output", "--json"]);
+
+    expect(audited.netEstimatedTokensSaved).toBeGreaterThan(0);
+    expect(audited.grossEstimatedTokensRemoved).toBeGreaterThan(0);
+    // A projection, so it need only be close to what compression actually achieves.
+    expect(
+      Math.abs(
+        (audited.netEstimatedTokensSaved ?? 0) - (compressed.netEstimatedTokensSaved ?? 0)
+      ) / (compressed.netEstimatedTokensSaved ?? 1)
+    ).toBeLessThan(0.1);
+  });
+
   it("run wraps local command output and preserves the child exit code", async () => {
     const repo = createTempRepo();
     const script = [
@@ -3720,6 +3832,55 @@ describe("createGleipCommand", () => {
     expect(command.payload.exitCode).toBe(7);
     expect(command.payload.fullOutputStored).toBe(true);
     expect(command.payload.stdoutDigest).toMatch(/^sha256:/u);
+  });
+
+  it("resolves bare command names through PATH", async () => {
+    const repo = createTempRepo();
+    const result = await runCommandResult(repo, ["run", "--", "git", "--version"]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.output.join("\n")).toContain("git version");
+  });
+
+  it("runs npm-family shims that are .cmd files on Windows", async () => {
+    // C2 regression: `npm`/`npx`/`pnpm` are .cmd shims on Windows. A bare spawnSync cannot find
+    // them (ENOENT), and spawning the resolved .cmd with shell:false is refused outright
+    // (EINVAL, the CVE-2024-27980 mitigation). Both failures disabled context compression and
+    // command attestation on the project's primary development platform.
+    const repo = createTempRepo();
+    const result = await runCommandResult(repo, ["run", "--", "npm", "--version"]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.output.join("\n")).toMatch(/\d+\.\d+\.\d+/u);
+  });
+
+  it("preserves argument boundaries and metacharacters through a batch shim", async () => {
+    const repo = createTempRepo();
+    const isWindows = process.platform === "win32";
+    const shimPath = join(repo, isWindows ? "echo-args.cmd" : "echo-args.sh");
+    const printer = "console.log(process.argv.slice(1).join('~'))";
+
+    writeFileSync(
+      shimPath,
+      isWindows
+        ? `@echo off\r\n"${process.execPath}" -e "${printer}" %*\r\n`
+        : `#!/bin/sh\n"${process.execPath}" -e "${printer}" "$@"\n`,
+      { mode: 0o755 }
+    );
+
+    const result = await runCommandResult(repo, [
+      "run",
+      "--",
+      shimPath,
+      "hello world",
+      "a&b",
+      "%PATH%"
+    ]);
+
+    // Spaces stay inside one argument and shell metacharacters stay inert and unexpanded --
+    // the guarantee `shell: true` would not provide.
+    expect(result.exitCode).toBe(0);
+    expect(result.output.join("\n")).toContain("hello world~a&b~%PATH%");
   });
 
   it("attests repository changes that occur during a wrapped command", async () => {
@@ -3810,6 +3971,71 @@ describe("createGleipCommand", () => {
     expect(result.bundle.completionStatus).toBe("complete");
     expect(stored).toEqual(result.bundle);
     expect(stored.repository.fingerprint).toMatch(/^[0-9a-f]{64}$/u);
+  });
+
+  // C3: `finalize` is the designated completion authority but derived hazards from a fixed list
+  // of drift codes only, so it reported "complete, 0 hazards, exit 0" on the same state where
+  // `report` found a HIGH prohibited violation. The two surfaces must not be able to disagree.
+  it("blocks completion when a prohibited path was changed", async () => {
+    const repo = createGitRepo();
+    writeRepoFile(repo, "src/cart.ts", "export const discount = (total: number) => total;\n");
+    writeRepoFile(repo, "src/persistence.ts", "export const save = () => {};\n");
+    git(repo, ["add", "-A"]);
+    git(repo, ["commit", "-m", "base"]);
+
+    await runRealCommand(repo, [
+      "preflight",
+      "Fix the discount function in src/cart.ts. Do not change src/persistence.ts."
+    ]);
+    writeRepoFile(repo, "src/cart.ts", "export const discount = (total: number) => total * 0.9;\n");
+    writeRepoFile(repo, "src/persistence.ts", "export const save = () => ({ ok: true });\n");
+
+    const checkResult = await runRealCommandResult(repo, ["check"]);
+    const checkOutput = checkResult.output.join("\n");
+
+    expect(checkOutput).toContain("CANONICAL_PROHIBITION_CONFLICT");
+    expect(checkOutput).toContain("src/persistence.ts");
+
+    const finalizeResult = await runRealCommandResult(repo, ["finalize", "--json"]);
+    const bundle = (
+      JSON.parse(finalizeResult.output.join("\n")) as {
+        bundle: { completionStatus: string; unresolvedHazards: unknown[] };
+      }
+    ).bundle;
+
+    expect(bundle.completionStatus).not.toBe("complete");
+    expect(bundle.unresolvedHazards.length).toBeGreaterThan(0);
+    expect(finalizeResult.exitCode).toBe(1);
+  });
+
+  // C4: passive mode rewrote a rejected plan's status to "advisory", which then promoted the
+  // plan's targets into accepted scope and stripped them out of readOnlyContextPaths -- so
+  // running validate-plan twice changed its own verdict.
+  it("does not let plan validation mutate the scope budget it validates against", async () => {
+    const repo = createGitRepo();
+    writeRepoFile(repo, "src/cart.ts", "export const discount = (total: number) => total;\n");
+    writeRepoFile(repo, "src/persistence.ts", "export const save = () => {};\n");
+    git(repo, ["add", "-A"]);
+    git(repo, ["commit", "-m", "base"]);
+
+    await runRealCommand(repo, [
+      "preflight",
+      "Fix the discount function in src/cart.ts. Do not change src/persistence.ts."
+    ]);
+
+    const readBudget = (): string =>
+      readFileSync(join(repo, ".gleip", "scope-budget.json"), "utf8");
+    const plan =
+      "Implementation: update src/cart.ts discount handling and adjust src/persistence.ts storage.\nVerification: run the test suite.\nRisks: low.";
+
+    const budgetBefore = readBudget();
+    const first = (await runRealCommandResult(repo, ["validate-plan", plan])).output.join("\n");
+    const budgetAfterFirst = readBudget();
+    const second = (await runRealCommandResult(repo, ["validate-plan", plan])).output.join("\n");
+
+    expect(budgetAfterFirst).toBe(budgetBefore);
+    expect(readBudget()).toBe(budgetBefore);
+    expect(second).toBe(first);
   });
 
   it("keeps long-spec authority, scope, and readiness equivalent after compression activity", async () => {

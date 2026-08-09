@@ -1,7 +1,32 @@
 # Changelog
 
-## [1.0.0]
+## [1.1.0] - 2026-08-09
 
+### Added
+
+- Added cross-platform CI coverage on Windows and Linux with Node.js 20 and 22, including direct checks that wrapped `npm` and `npx` commands work on every supported platform.
+- Added focused regression coverage for requirement extraction, task classification, scope enforcement, completion gating, compression audit metrics, and Windows command execution.
+
+### Changed
+
+- Made requirement extraction stable across one-line, multiline, hard-wrapped, list, heading, and semicolon-separated task contracts while preserving exact canonical source spans.
+- Kept generated Gleip guidance and nonexistent inferred module paths out of expected implementation scope unless the task names them, and made line-count limits informational metrics rather than drift findings.
+- Wired `.gleip.yml` check toggles into the corresponding hard-gate policy and expanded generated agent guidance for exact-state completion evidence.
+
+### Fixed
+
+- Prevented prohibitions from escalating task classification, hiding required edit targets, or becoming the only extracted work; prohibited paths now remain actionable even when they also fall inside expected scope.
+- Prevented plan validation from mutating the scope budget it validates, and made missing canonical requirements explicit in validation output.
+- Made `gleip finalize` block incomplete work and prohibited-path changes instead of relying on a fixed drift-code subset.
+- Made `gleip run` resolve bare executables and Windows `.cmd` shims without losing argument boundaries or command evidence.
+- Made compression audit mode report projected gross and net savings using the real envelope metadata cost without storing compressed content.
+
+### Compatibility
+
+- Existing 1.0.0 artifacts and independently versioned evidence schemas remain compatible; no schema migration or dependency change is required.
+- Gleip remains local-only. No telemetry, hosted service, provider integration, source upload, or automatic publication behavior was added.
+
+## [1.0.0] - 2026-07-19
 ### Added
 
 - Added an append-only, hash-chained local event ledger with run identifiers, replay, partial-tail recovery, atomic artifacts, generation checks, and per-run writer locking.
@@ -20,8 +45,7 @@
 - Existing 0.8.x and 0.9.x local artifacts remain readable and can be imported with backups using `gleip migrate`; legacy status prose remains an `agent_claim` and is never promoted to command evidence.
 - Gleip remains local-only and does not provide merge authorization, deployment verification, cloud control, telemetry, or malicious-local-process tamper resistance.
 
-## [0.9.0]
-
+## [0.9.0] - 2026-07-07
 ### Added
 
 - Added deterministic local context compression for non-authoritative execution evidence: test output, build/log output, structured JSON, search results, file listings, command output, and git diffs.
@@ -40,8 +64,7 @@
 - Existing 0.8.3 normalized scope and 0.8.4 canonical-task behavior remain intact. Compressed displays are not used as task, scope, scoring, approval, requirement-completion, verification, or review-readiness truth.
 - No network access, telemetry, provider proxying, hosted service, model/API call, or project-specific compression heuristic was added.
 
-## [0.8.4]
-
+## [0.8.4] - 2026-07-02
 ### Added
 
 - Added `.gleip/canonical-task.json` as the local authoritative task artifact with exact received content, stable SHA-256 hashes, byte and character counts, ordered revisions, and amendment history.
@@ -59,7 +82,10 @@
 - Existing 0.8.x sessions load safely. When possible, Gleip creates a compatibility canonical revision from the original session task; if only an old brief is available, provenance is marked incomplete.
 - No compression, provider integration, network access, telemetry, or project-specific production logic was added.
 
-## [0.8.3]
+## [0.8.3] - not released
+
+The 0.8.3 work was folded into the 0.8.4 release. No commit carried version 0.8.3
+and no `v0.8.3` tag exists; the entry is kept here so the changes remain findable.
 
 ### Fixed
 
@@ -81,9 +107,10 @@
 
 - No CLI command, exit-code, or schema break was introduced. Existing 0.8.x artifacts remain readable.
 - Dependency, CI, secret, local-artifact, and test-integrity gates remain strict.
+  These are enforced by `gleip check`; automated enforcement across platforms
+  arrived with the CI workflow added after 1.0.0.
 
-## [0.8.2]
-
+## [0.8.2] - 2026-06-28
 ### Changed
 
 - Added workflow profiles for documentation-only, local behavior, broad, and sensitive changes so ordinary docs and contained source work use less ceremony while sensitive work keeps approval gates.
@@ -102,16 +129,14 @@
 
 - 0.8.0 and 0.8.1 session, cache, status, and report artifacts remain readable with compatibility fallbacks. New artifacts use the 0.8.2 schema metadata.
 
-## [0.8.1]
-
+## [0.8.1] - 2026-06-26
 ### Fixed
 
 - Made `validate-plan` use deterministic task-sensitive evidence detection for approach and verification, reducing vocabulary-sensitive false positives for audit, investigation, documentation, operational, and constrained validation plans.
 - Broadened verification recognition beyond exact test/check/smoke wording to include comparison, reconciliation, reproduction, rendered review, status confirmation, and explicit limitation reporting.
 - Prevented negated verification wording such as "do not run tests" from satisfying the verification requirement.
 
-## [0.8.0]
-
+## [0.8.0] - 2026-06-22
 ### Added
 
 - Added `gleip check --incremental` with deterministic result reuse, `--force` recomputation, complete first-run baselines, and added/updated/resolved finding deltas.
@@ -134,8 +159,7 @@
 - Gleip directly measures check execution, reuse, finding emission and deltas, and changed files. Validation cycles, repeated external commands, arbitrary agent reads, and tool calls remain unavailable because Gleip does not intercept shells or agent tools.
 - Incremental state remains repository-local. Gleip adds no network access, telemetry, or remote cache.
 
-## [0.7.5]
-
+## [0.7.5] - 2026-06-22
 ### Added
 
 - Added `gleip doctor --fix` as an explicit repository repair command that restores Gleip's managed `.gitignore` policy and removes only recognized Gleip runtime/state files from the Git index while preserving local copies.
@@ -154,8 +178,7 @@
 - Bumped the additive report schema to `1.1.0` for `risk.repositoryHygiene`.
 - Clarified that package-manager install, update, and uninstall operations do not mutate repository lifecycle files; repository repair and cleanup remain explicit Gleip commands.
 
-## [0.7.4]
-
+## [0.7.4] - 2026-06-20
 ### Fixed
 
 - Recompute reports from current repository and session state instead of treating `.gleip/status.md` as authoritative evidence.
@@ -170,8 +193,7 @@
 
 - Document report source-of-truth boundaries, validation history behavior, dirty-baseline attribution, and documentation/context scope handling.
 
-## 0.7.3
-
+## [0.7.3] - 2026-06-20
 ### Added
 
 - Added semantic scope target classification for plan validation and final drift
@@ -210,8 +232,7 @@
   cloud behavior, external API/LLM calls, source upload, repository metadata
   upload, dashboards, or account systems.
 
-## 0.7.2
-
+## [0.7.2] - 2026-06-19
 ### Fixed
 
 - Added target-specific agent initialization:
@@ -229,8 +250,7 @@
 - Added agent-standard documentation and practical anti-pattern examples.
 - Preserved user-authored content outside Gleip-managed instruction blocks.
 
-## 0.7.1
-
+## [0.7.1] - 2026-06-15
 ### Added
 
 - Added guidance-oriented top-level statuses: `clean`, `advisory`,
@@ -266,8 +286,7 @@
   cloud behavior, external API/LLM calls, source upload, repository metadata
   upload, dashboards, or account systems.
 
-## 0.7.0
-
+## [0.7.0] - 2026-06-14
 ### Added
 
 - Added `gleip preflight --file <path>` for full task contracts.
@@ -313,8 +332,7 @@
   cloud behavior, external API/LLM calls, source upload, repository metadata
   upload, dashboards, or account systems.
 
-## 0.5.0
-
+## [0.5.0] - 2026-06-12
 ### Added
 
 - Added stable finding codes and `info`, `warn`, `fail`, and `blocking` severities.
@@ -333,8 +351,7 @@
   external API/LLM calls, source upload, repository metadata upload, accounts, or
   hosted dashboards.
 
-## 0.4.0
-
+## [0.4.0] - 2026-06-11
 ### Added
 
 - Added `gleip --version` so installed package versions can be verified directly.
@@ -359,3 +376,46 @@
 ### Security / Privacy
 
 - Reaffirmed Gleip's local-only design: no telemetry, network calls, cloud sync, external API calls, or source code and repository metadata leaving the local repository.
+
+## [0.3.0] - 2026-06-10
+
+Entries for 0.1.0 through 0.3.0 were reconstructed from git history after the fact;
+the changelog previously began at 0.4.0. Detail is coarser than for later releases.
+
+### Changed
+
+- Published the `gleip` binary correctly from the npm package.
+
+## [0.2.2] - 2026-06-09
+
+### Changed
+
+- Polished automatic agent usage instructions.
+
+## [0.2.1] - 2026-06-05
+
+### Changed
+
+- Polished the README.
+
+## [0.2.0] - 2026-06-03
+
+### Added
+
+- Added automatic agent usage so supported agents pick up Gleip without manual wiring.
+
+## [0.1.1] - 2026-06-01
+
+### Added
+
+- First local-only preview release.
+
+### Fixed
+
+- Corrected npm installation instructions in the README.
+
+## [0.1.0] - 2026-06-01
+
+### Added
+
+- First public commit of the local-only guidance CLI.

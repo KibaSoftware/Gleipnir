@@ -1,11 +1,11 @@
 # Release Checklist
 
-Use this checklist for the local-only 1.0 release candidate.
+Use this checklist for the local-only 1.1 release candidate.
 
-Current release target: `1.0.0`.
+Current release target: `1.1.0`.
 
-Release focus: passive-first local evidence, exact-state command attestations,
-durable approvals, replayable event history, and one final evidence bundle.
+Release focus: audit hardening for canonical requirement parsing, scope and
+completion enforcement, Windows command execution, and compression metrics.
 
 ## Signal Quality Gates
 
@@ -39,7 +39,7 @@ durable approvals, replayable event history, and one final evidence bundle.
 
 ## Packed Install
 
-- Install `dist-pack/gleip-1.0.0.tgz` into a clean external temp repo.
+- Install `dist-pack/gleip-1.1.0.tgz` into a clean external temp repo.
 - Verify:
   - `npx gleip --help`
   - `npx gleip --version`

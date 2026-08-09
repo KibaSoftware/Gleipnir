@@ -32,6 +32,84 @@ describe("detectScopeDrift", () => {
     expect(result.summary).toBe("No working tree changes detected.");
   });
 
+  // C5: a file named in an explicit prohibition was changed, and neither `check` nor `finalize`
+  // noticed -- prose-driven scope inflation had pulled its directory into expectedPaths, so the
+  // outside-scope check never saw it, and readOnlyContextPaths was consulted only for context
+  // *documents*. A prohibition has to outrank scope membership.
+  describe("prohibited paths", () => {
+    const ledger = {
+      requirements: [
+        {
+          id: "REQ-012",
+          sourceText: "Do not change the database schema in `src/db/schema.ts`.",
+          obligation: "prohibited",
+          status: "active",
+          explicit: true,
+          relatedPaths: ["src/db/schema.ts"]
+        }
+      ]
+    };
+
+    it("reports a forbidden file even when it falls inside expected scope", () => {
+      const result = detectScopeDrift({
+        // src/db is expected scope, so the file matches by prefix and passes the scope check.
+        scopeBudget: budget({ allowedPaths: ["src/db"], expectedPaths: ["src/db"] }),
+        gitDiffContext: diff({
+          changedFiles: ["src/db/schema.ts"],
+          fileStats: [{ path: "src/db/schema.ts", added: 1, deleted: 0 }],
+          hasChanges: true
+        }),
+        requirementLedger: ledger
+      });
+
+      const finding = result.findings.find(
+        (item) => item.code === "CANONICAL_PROHIBITION_CONFLICT"
+      );
+
+      expect(finding).toBeDefined();
+      expect(finding?.severity).toBe("action_required");
+      expect(finding?.examples).toContain("src/db/schema.ts");
+      expect(finding?.message).toContain("REQ-012");
+    });
+
+    it("stays silent when no prohibited path was touched", () => {
+      const result = detectScopeDrift({
+        scopeBudget: budget({ allowedPaths: ["src/db"], expectedPaths: ["src/db"] }),
+        gitDiffContext: diff({
+          changedFiles: ["src/db/client.ts"],
+          fileStats: [{ path: "src/db/client.ts", added: 1, deleted: 0 }],
+          hasChanges: true
+        }),
+        requirementLedger: ledger
+      });
+
+      expect(
+        result.findings.some((item) => item.code === "CANONICAL_PROHIBITION_CONFLICT")
+      ).toBe(false);
+    });
+
+    it("keeps an inferred read-only path advisory rather than blocking", () => {
+      const result = detectScopeDrift({
+        scopeBudget: budget({
+          allowedPaths: ["src"],
+          expectedPaths: ["src"],
+          readOnlyContextPaths: ["src/reference.ts"]
+        }),
+        gitDiffContext: diff({
+          changedFiles: ["src/reference.ts"],
+          fileStats: [{ path: "src/reference.ts", added: 1, deleted: 0 }],
+          hasChanges: true
+        })
+      });
+
+      const finding = result.findings.find(
+        (item) => item.category === "read_only_context"
+      );
+
+      expect(finding?.severity).toBe("warn");
+    });
+  });
+
   it("keeps numeric file budgets silent", () => {
     const result = detectScopeDrift({
       scopeBudget: budget({

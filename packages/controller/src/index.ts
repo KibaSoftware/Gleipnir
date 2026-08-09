@@ -78,6 +78,23 @@ export interface DetectScopeDriftInput {
   scopeBudget: ScopeBudgetLike;
   gitDiffContext: GitDiffContextLike;
   config?: unknown;
+  /**
+   * The canonical requirement ledger, when one exists. Prohibitions are checked against the
+   * changed files directly, so a forbidden file is reported even when it also falls inside
+   * expected scope.
+   */
+  requirementLedger?: RequirementLedgerLike;
+}
+
+export interface RequirementLedgerLike {
+  requirements: Array<{
+    id: string;
+    sourceText: string;
+    obligation: string;
+    status: string;
+    explicit?: boolean;
+    relatedPaths?: string[];
+  }>;
 }
 
 export interface ScopeBudgetLike {
@@ -218,6 +235,7 @@ export function detectScopeDrift(input: DetectScopeDriftInput): DriftResult {
   addOutsideScopeFindings(findings, changedFiles, fileStats, input.scopeBudget);
   addApprovalPathFindings(findings, changedFiles, input.scopeBudget);
   addBlockedPathFindings(findings, changedFiles, input.scopeBudget);
+  addProhibitedPathFindings(findings, changedFiles, input.scopeBudget, input.requirementLedger);
 
   const normalizedFindings = normalizeDriftFindings(findings);
   const status = aggregateStatus(normalizedFindings);
@@ -465,6 +483,88 @@ function addApprovalPathFindings(
       examples: matched.slice(0, 3),
       recommendation: "Request approval for these paths or remove them from the change set.",
       category: "approval_required_path"
+    });
+  }
+}
+
+/**
+ * Report changes to files the task forbade.
+ *
+ * This runs independently of expected scope on purpose. `readOnlyContextPaths` was previously
+ * consulted only for context *documents*, so a read-only source file carried no protection at
+ * all; and once prose-driven scope inflation had pulled the file's directory into
+ * `expectedPaths`, the outside-scope check never saw it either. A file named in an explicit
+ * prohibition was therefore changed, `check` said "advisory", and `finalize` said "complete".
+ *
+ * A prohibition the user wrote themselves binds (`action_required`). One Gleip merely inferred
+ * stays advisory -- Gleip enforces the user's stated rule, never its own guess.
+ */
+function addProhibitedPathFindings(
+  findings: DriftFinding[],
+  changedFiles: string[],
+  scopeBudget: ScopeBudgetLike,
+  requirementLedger: RequirementLedgerLike | undefined
+): void {
+  const prohibitions = (requirementLedger?.requirements ?? []).filter(
+    (requirement) => requirement.obligation === "prohibited" && requirement.status === "active"
+  );
+  const violations = new Map<string, { requirementId: string; sourceText: string }>();
+
+  for (const requirement of prohibitions) {
+    for (const declaredPath of requirement.relatedPaths ?? []) {
+      const normalized = normalizePath(declaredPath);
+
+      for (const changed of changedFiles) {
+        if (changed === normalized || changed.startsWith(`${normalized}/`)) {
+          violations.set(changed, {
+            requirementId: requirement.id,
+            sourceText: requirement.sourceText
+          });
+        }
+      }
+    }
+  }
+
+  if (violations.size > 0) {
+    const files = [...violations.keys()].sort();
+
+    findings.push({
+      code: "CANONICAL_PROHIBITION_CONFLICT",
+      severity: "action_required",
+      title: "Prohibited path changed",
+      message: `${formatExamples(files)} ${files.length === 1 ? "is" : "are"} named by a prohibition in the task: ${files
+        .map((file) => `${violations.get(file)?.requirementId}: ${violations.get(file)?.sourceText}`)
+        .slice(0, 2)
+        .join("; ")}`,
+      count: files.length,
+      examples: files.slice(0, 3),
+      recommendation:
+        "Revert the change to the prohibited path, or record an approval that names the requirement being overridden.",
+      category: "prohibited_path"
+    });
+  }
+
+  // Read-only context that no explicit prohibition covers: advisory, since the read-only marking
+  // is inferred from phrasing rather than stated as a rule.
+  const readOnlyTouched = changedFiles.filter(
+    (path) =>
+      !violations.has(path) &&
+      (scopeBudget.readOnlyContextPaths ?? []).some(
+        (contextPath) => normalizePath(contextPath) === path
+      )
+  );
+
+  if (readOnlyTouched.length > 0) {
+    findings.push({
+      code: "SCOPE_EXPANSION_WARN",
+      severity: "warn",
+      title: "Read-only context changed",
+      message: `${formatExamples(readOnlyTouched)} were treated as read-only context for this task.`,
+      count: readOnlyTouched.length,
+      examples: readOnlyTouched.slice(0, 3),
+      recommendation:
+        "Confirm the task intends these files to change, or revert them and keep them as context.",
+      category: "read_only_context"
     });
   }
 }

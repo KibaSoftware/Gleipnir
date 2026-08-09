@@ -1062,11 +1062,12 @@ export function compressContext(
   };
   const passthrough = eligiblePassthroughReasons(input, classification, policy, originalBytes);
 
-  if (policy.auditOnly) {
-    passthrough.push("audit_only");
-  }
-
   if (passthrough.length > 0) {
+    // Content that would never be compressed anyway: report why, and that audit mode was on.
+    if (policy.auditOnly) {
+      passthrough.push("audit_only");
+    }
+
     incrementCompressionStats(options.cwd, {
       attemptedClass: classification.contentClass,
       passthrough: true
@@ -1106,7 +1107,10 @@ export function compressContext(
   }
 
   const summaryOnlyEnvelope = createEnvelope({
-    reference: "sha256:pending",
+    // Same shape as a real store reference, so the metadata cost this envelope is measured for
+    // matches what the stored envelope will actually carry. A short placeholder under-counted
+    // metadata in both the minimum-savings gate and the audit-mode projection.
+    reference: `sha256:${"0".repeat(64)}`,
     classification,
     originalBytes,
     originalLines,
@@ -1136,6 +1140,35 @@ export function compressContext(
       originalContent: input.rawContent,
       classification,
       passthroughReasons: ["below_minimum_savings"],
+      metrics: {
+        ...baseMetrics,
+        compressedBytes: candidateBytes,
+        estimatedCompressedTokens: estimatedCandidateTokens,
+        grossEstimatedTokensRemoved,
+        compressionMetadataTokens: metadataTokens,
+        netEstimatedTokensSaved: Math.max(0, grossEstimatedTokensRemoved - metadataTokens),
+        latencyMs: Date.now() - startedAt
+      }
+    };
+  }
+
+  // Audit mode asks "what would this save?", so the answer has to be measured. Marking the
+  // content as passthrough before metrics were computed made audit mode report zero savings for
+  // content that compresses by 86 % -- technically true, since nothing was compressed, but not
+  // the question being asked. Nothing is stored and the original still passes through.
+  if (policy.auditOnly) {
+    incrementCompressionStats(options.cwd, {
+      attemptedClass: classification.contentClass,
+      passthrough: true
+    });
+
+    return {
+      compressed: false,
+      auditOnly: true,
+      output: input.rawContent,
+      originalContent: input.rawContent,
+      classification,
+      passthroughReasons: ["audit_only"],
       metrics: {
         ...baseMetrics,
         compressedBytes: candidateBytes,

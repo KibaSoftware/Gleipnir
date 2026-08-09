@@ -27,7 +27,7 @@ Scores are heuristics. They explain local review signals but do not prove correc
 - Output discipline measures avoidable narration, repetition, compactness, and format compliance. It is not a substitute for changed-file or verification evidence.
 - Output discipline stays separate from requirement completeness.
 - Scope adherence is measured against the effective validated scope after accepted plan validation, including credible explicit edit mentions from compatible artifacts, not against the initial broad candidate list.
-- Broad and subsystem line-count advisories scale with changed target count and do not by themselves prove over-editing.
+- Line counts are reported as metrics and never emit a drift finding on their own; they do not by themselves prove over-editing.
 
 ## 1.0 Compression Invariants
 

@@ -15,7 +15,7 @@ Gleipnir is a local-only evidence ledger and precision risk observer built aroun
 - Estimated removable text is not exact model usage, billing data, or a measured counterfactual.
 - Context-compression token counts are estimates and net savings can be zero when
   retrieval overhead cancels compact-display savings.
-- Compression is experimental and limited to selected execution-evidence classes in 1.0.0.
+- Compression is experimental and limited to selected execution-evidence classes in 1.1.0.
 - Source code, active canonical task state, active brief, requirement ledger,
   accepted plan, scope state, approval state, and completion state pass through.
 - Missing session artifacts, plan validation, git state, or explicit tests/risks evidence reduce report confidence.

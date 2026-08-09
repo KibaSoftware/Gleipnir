@@ -64,7 +64,12 @@ const reusedIncremental = JSON.parse(
 const compactStatus = run("node", [cliEntry, "--cwd", repo, "status", "--compact"], repo);
 const reportJson = run("node", [cliEntry, "--cwd", repo, "report", "--json"], repo);
 const replayJson = run("node", [cliEntry, "--cwd", repo, "replay", "--json"], repo);
-const finalizeJson = run("node", [cliEntry, "--cwd", repo, "finalize", "--json"], repo);
+// Exits 1 because this scenario never implements or verifies the task; see the assertion below.
+const finalizeJson = runAllowingFailure(
+  "node",
+  [cliEntry, "--cwd", repo, "finalize", "--json"],
+  repo
+);
 
 for (const path of [
   ".gitignore",
@@ -116,20 +121,39 @@ const report = JSON.parse(reportJson);
 const replay = JSON.parse(replayJson);
 const finalization = JSON.parse(finalizeJson);
 
-if (version !== "1.0.0") {
-  throw new Error(`Expected Gleip 1.0.0, received: ${version}`);
+if (version !== "1.1.0") {
+  throw new Error(`Expected Gleip 1.1.0, received: ${version}`);
 }
 
-if (report.schemaVersion !== "1.3.0" || report.version !== "1.0.0") {
-  throw new Error(`Expected Gleip 1.0.0 report schema 1.3.0, received:\n${reportJson}`);
+if (report.schemaVersion !== "1.3.0" || report.version !== "1.1.0") {
+  throw new Error(`Expected Gleip 1.1.0 report schema 1.3.0, received:\n${reportJson}`);
 }
 
 if (!report.finalResponse?.markdown?.includes("### Gleip")) {
   throw new Error(`Expected compact final response block, received:\n${reportJson}`);
 }
 
-if (replay.events?.length < 1 || finalization.bundle?.completionStatus !== "complete") {
-  throw new Error("Expected replayable events and a complete exact-state evidence bundle.");
+if (replay.events?.length < 1) {
+  throw new Error("Expected replayable events in the run ledger.");
+}
+
+// This scenario runs preflight and validate-plan but never implements the task or records
+// verification, so completion must be blocked. `finalize` used to derive hazards from a fixed
+// list of drift codes alone and reported "complete" here -- on a session where nothing had been
+// done -- while `report` flagged the same state. It now reads the same requirement and
+// verification evidence `report` does, so the two surfaces cannot disagree.
+if (finalization.bundle?.completionStatus !== "blocked_completion") {
+  throw new Error(
+    `Expected completion to be blocked for an unimplemented, unverified session, received: ${finalization.bundle?.completionStatus}`
+  );
+}
+
+const hazardCodes = (finalization.bundle?.unresolvedHazards ?? []).map((hazard) => hazard.code);
+
+if (!hazardCodes.includes("CANONICAL_REQUIREMENT_MISSING")) {
+  throw new Error(
+    `Expected an unresolved mandatory requirement hazard, received: ${hazardCodes.join(", ")}`
+  );
 }
 
 assertFile(`.gleip/runs/${finalization.bundle.runId}/final/latest.json`);
@@ -142,6 +166,22 @@ function run(command, args, cwd) {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"]
   });
+}
+
+/**
+ * Run a command whose non-zero exit is part of the expected outcome, returning its stdout.
+ * `gleip finalize` exits 1 when completion is blocked, which is a result, not a failure.
+ */
+function runAllowingFailure(command, args, cwd) {
+  try {
+    return run(command, args, cwd);
+  } catch (error) {
+    if (typeof error.stdout === "string" && error.stdout.length > 0) {
+      return error.stdout;
+    }
+
+    throw error;
+  }
 }
 
 function writeRepoFile(path, content) {

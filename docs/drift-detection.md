@@ -106,7 +106,6 @@ Text output uses a concise form such as
 | `SCOPE_EXPANSION_WARN`                      | `warn`                        | Adjacent or unexplained files need scope clarification.                |
 | `PLAN_TOO_VAGUE`                            | `warn`                        | Structural plan details are too vague.                                 |
 | `MISSING_TEST_STRATEGY`                     | `warn`                        | A structurally required test strategy is absent.                       |
-| `SCOPE_LIMIT_EXCEEDED`                      | `warn`                        | A soft file or line limit was exceeded.                                |
 | `GIT_UNAVAILABLE`                           | `warn`                        | Local git evidence could not be inspected.                             |
 | `CI_FILE_CHANGED`                           | `approval_required`           | CI configuration changed without declared approval.                    |
 | `SECRET_FILE_CHANGED`                       | `cleanup_required`            | A likely secret or env file changed.                                   |
@@ -137,6 +136,15 @@ Text output uses a concise form such as
 
 `MISSING_IMPLEMENTATION_CHANGE` is reserved but intentionally not emitted.
 Gleip does not yet have a high-confidence structural detector for that condition.
+
+`SCOPE_LIMIT_EXCEEDED` is likewise reserved and intentionally not emitted. The
+soft limits in `.gleip.yml` (`limits.max_lines_added_warning`,
+`limits.max_lines_deleted_warning`) shape the scope budget and are reported in
+the brief, but exceeding a line count is not by itself evidence of drift: legitimate
+multi-surface work routinely exceeds a local-change ceiling. Gleip reports the
+line counts as metrics and leaves the judgement to the reviewer.
+`limits.max_files_changed_warning` does have an effect — it narrows the plan
+validation file ceiling (`PLAN_SCOPE_EXCEEDS_BUDGET`).
 
 ## How Agents Should Use It
 

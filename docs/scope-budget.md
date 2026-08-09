@@ -2,11 +2,17 @@
 
 Scope budget is the amount of repository change Gleip expects for a task.
 
-Initial budget levels:
+A budget is derived from three properties of the task, not from a preset level:
 
-- `small`: localized edits with narrow tests or docs.
-- `medium`: multiple related files or package-level behavior.
-- `large`: cross-package work that requires explicit planning.
+- `taskType`: what kind of change it is (`bug_fix`, `small_feature`, `refactor`,
+  `migration`, `auth_security_change`, `infra_ci_change`, …).
+- `workflowProfile`: how much ceremony applies (`documentation_only`,
+  `local_change`, `broad_change`, `sensitive_change`).
+- `taskBreadth`: how far it reaches (`local`, `feature`, `subsystem`,
+  `cross_cutting`, `repository_wide`).
+
+Together these set the expected file range, the soft limits, and whether a plan is
+required.
 
 Agents should use the smallest budget that can satisfy the request. Explicitly broad
 tasks receive broader advisory limits. Expansion beyond expected paths should
@@ -112,10 +118,12 @@ dependencies, CI changes, skipped or deleted tests, and secrets. They guide the
 next action without declaring the task invalid.
 
 For broad, subsystem, cross-cutting, and repository-wide work, changed-file count
-also scales line-count advisories. This keeps multi-surface feature work from
-being judged by a narrow local-change ceiling while preserving the same protected
-checks for dependencies, CI, secrets, migrations, auth/security, infrastructure,
-and test integrity.
+scales the soft line limits recorded in the budget. Those limits describe the
+expected size of the change; they are reported in the brief and never emit a drift
+finding on their own, so multi-surface feature work is not judged by a narrow
+local-change ceiling. The protected checks for dependencies, CI, secrets,
+migrations, auth/security, infrastructure, and test integrity are unaffected and
+still apply.
 
 Gleip also records generic breadth as `local`, `feature`, `subsystem`,
 `cross_cutting`, or `repository_wide`. Breadth adjusts advisory thresholds, but it

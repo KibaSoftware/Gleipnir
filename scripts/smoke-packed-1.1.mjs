@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const tarball = join(root, "dist-pack", "gleip-1.0.0.tgz");
+const tarball = join(root, "dist-pack", "gleip-1.1.0.tgz");
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 const npxCommand = process.platform === "win32" ? "npx.cmd" : "npx";
 
@@ -140,7 +140,7 @@ writeRepoFile(
   ].join("\n")
 );
 
-assertEqual(runGleip(["--version"], repo).trim(), "1.0.0", "packed version");
+assertEqual(runGleip(["--version"], repo).trim(), "1.1.0", "packed version");
 runGleip(["init"], repo);
 const largeOutput = [
   ...Array.from({ length: 180 }, (_, index) => `PASS packed-${index % 5}.test.ts`),
@@ -185,13 +185,16 @@ runGleip(["preflight", "--file", "task.md"], repo);
 const canonicalTask = readJson(".gleip/canonical-task.json");
 const session = readJson(".gleip/session.json");
 const allowedPaths = readJson(".gleip/scope-budget.json").allowedPaths;
+const activeRevision = canonicalTask.revisions.find(
+  (revision) => revision.revisionId === canonicalTask.activeRevisionId
+);
 const evidencePaths = [
   ...session.repoContext.likelyRelevantFiles.map((entry) => entry.path),
   ...session.repoContext.likelyTestFiles.map((entry) => entry.path),
   ...session.repoContext.existingPatternMatches.map((entry) => entry.path)
 ];
 
-assertIncludes(canonicalTask.effectiveContent, "Use Typer", "canonical task content");
+assertIncludes(activeRevision?.content ?? "", "Use Typer", "canonical task content");
 assertIncludes(session.repoContext.contextFiles, "task.md", "task file context");
 assertNotIncludes(allowedPaths, "task.md", "task file editable scope");
 assertNotIncludes(evidencePaths, "vendor/foo.ts", "vendor relevance exclusion");
@@ -280,16 +283,42 @@ runGleip(["check"], repo);
 runGleip(["check", "--ci"], repo);
 runGleip(["doctor"], repo);
 const replay = JSON.parse(runGleip(["replay", "--json"], repo));
-const finalization = JSON.parse(runGleip(["finalize", "--json"], repo));
+const finalization = JSON.parse(runGleipAllowingFailure(["finalize", "--json"], repo));
 
-if (replay.events.length < 1 || finalization.bundle.completionStatus !== "complete") {
-  throw new Error("packed evidence replay or finalization did not complete");
+if (replay.events.length < 1) {
+  throw new Error("expected replayable packed evidence events");
 }
 
-console.log(`Packed Gleip 1.0.0 smoke test passed in ${repo}`);
+if (finalization.bundle.completionStatus !== "blocked_completion") {
+  throw new Error(
+    `expected packed finalization to block unimplemented work, received: ${finalization.bundle.completionStatus}`
+  );
+}
+
+const hazardCodes = finalization.bundle.unresolvedHazards.map((hazard) => hazard.code);
+
+if (!hazardCodes.includes("CANONICAL_REQUIREMENT_MISSING")) {
+  throw new Error(
+    `expected an unresolved mandatory requirement hazard, received: ${hazardCodes.join(", ")}`
+  );
+}
+
+console.log(`Packed Gleip 1.1.0 smoke test passed in ${repo}`);
 
 function runGleip(args, cwd, input) {
   return run(npxCommand, ["--no-install", "gleip", ...args], cwd, input);
+}
+
+function runGleipAllowingFailure(args, cwd, input) {
+  try {
+    return runGleip(args, cwd, input);
+  } catch (error) {
+    if (typeof error.stdout === "string" && error.stdout.length > 0) {
+      return error.stdout;
+    }
+
+    throw error;
+  }
 }
 
 function run(command, args, cwd, input) {

@@ -51,6 +51,8 @@ export interface RepoContext {
   riskyMatchedPaths: string[];
   scannedFileCount: number;
   skippedDirectoryCount: number;
+  /** Files and directories seen by the scan, used to reject scope paths that do not exist. */
+  knownPaths?: string[];
 }
 
 export interface RepoFileMatch {
@@ -142,6 +144,20 @@ export interface ScopeBudgetConfig extends RepoContextConfig {
     max_files_changed_warning?: number;
     max_lines_added_warning?: number;
     max_lines_deleted_warning?: number;
+  };
+  /**
+   * Detection toggles from `.gleip.yml`. `GLEIP.md` calls configuration a user-facing API, but
+   * these were read by no code at all -- setting `secrets: false` did not disable secret
+   * detection, and setting it `true` guaranteed nothing. Disabling one is now reported in
+   * `check` output so a weakened posture is visible to whoever reads the result.
+   */
+  checks?: {
+    skipped_tests?: boolean;
+    deleted_tests?: boolean;
+    dependency_bloat?: boolean;
+    ci_weakening?: boolean;
+    risky_files?: boolean;
+    secrets?: boolean;
   };
 }
 
@@ -381,12 +397,18 @@ interface TaskScopeHints {
   explicitEditTargets: string[];
   explicitOutputTargets: string[];
   explicitOnlyTargets: string[];
+  /**
+   * Module names inferred from prose. These are guesses, so their path forms are only admitted
+   * to the scope budget once they resolve against the scanned repository.
+   */
+  declaredModuleAreas: string[];
 }
 
 interface DeclaredTaskScope {
   paths: string[];
   labels: string[];
   hasBroadScopeSignal: boolean;
+  moduleAreas: string[];
 }
 
 interface PlanStructure {
@@ -1007,6 +1029,12 @@ export function classifyTask(task: string): TaskClassification {
     );
   }
 
+  // Classify on what the task asks for, not on what it forbids. Matching the raw text meant an
+  // "Out of scope" section listing sensitive areas escalated the task into them: "Do not touch CI
+  // configuration" made a CSV export endpoint an infra_ci_change, inheriting the sensitive_change
+  // profile and high risk. Writing a spec responsibly should not raise its own risk rating.
+  const classificationText = taskTextWithoutProhibitions(normalizedTask);
+
   for (const rule of rules) {
     if (rule.taskType === "test_only") {
       continue;
@@ -1016,8 +1044,8 @@ export function classifyTask(task: string): TaskClassification {
       continue;
     }
 
-    if (findMatches(rule.patterns, normalizedTask).length > 0) {
-      return buildClassification(rule, normalizedTask);
+    if (findMatches(rule.patterns, classificationText).length > 0) {
+      return buildClassification(rule, classificationText);
     }
   }
 
@@ -1028,6 +1056,34 @@ export function classifyTask(task: string): TaskClassification {
   }
 
   return unknownClassification("No deterministic task signals matched.");
+}
+
+/**
+ * Blank out the spans of active prohibitions, leaving everything else in place.
+ *
+ * Spans are replaced with spaces rather than removed so surrounding words never join, and so
+ * offsets into the original text stay meaningful.
+ */
+function taskTextWithoutProhibitions(task: string): string {
+  const prohibitions = extractRequirementLedger(task)
+    .requirements.filter(
+      (requirement) => requirement.obligation === "prohibited" && requirement.status === "active"
+    )
+    .sort((left, right) => right.sourceStart - left.sourceStart);
+
+  let result = task;
+
+  for (const prohibition of prohibitions) {
+    const { sourceStart, sourceEnd } = prohibition;
+
+    if (sourceEnd <= sourceStart || sourceEnd > result.length) {
+      continue;
+    }
+
+    result = `${result.slice(0, sourceStart)}${" ".repeat(sourceEnd - sourceStart)}${result.slice(sourceEnd)}`;
+  }
+
+  return result;
 }
 
 export function extractTaskTerms(task: string): string[] {
@@ -1061,7 +1117,15 @@ export function discoverRepoContext(options: DiscoverRepoContextOptions): RepoCo
   const ciFiles = scan.files.filter(isCiFile).sort(comparePaths);
   const classification = options.classification ?? classifyTask(options.task);
 
-  const relevanceFiles = scan.files.filter((path) => !contextFiles.has(path));
+  // Gleip's own generated files are dense with generic software vocabulary, so the lexical
+  // relevance heuristic ranked AGENTS.md above real source for almost any task -- the brief then
+  // nominated Gleip's configuration as the implementation target for a shopping-cart bug fix.
+  // They stay eligible only when the task names one of them explicitly.
+  const relevanceFiles = scan.files.filter(
+    (path) =>
+      !contextFiles.has(path) &&
+      (!isGleipGeneratedFile(path) || taskScopeHints.explicitEditTargets.includes(path))
+  );
   const likelyRelevantFiles = relevanceFiles
     .map((path) => scoreRelevantFile(cwd, path, taskTerms, classification, contentCache))
     .filter(isMatch)
@@ -1090,8 +1154,57 @@ export function discoverRepoContext(options: DiscoverRepoContextOptions): RepoCo
     ciFiles,
     riskyMatchedPaths: findRiskyMatchedPaths(scan.files, options.config),
     scannedFileCount: scan.scannedFileCount,
-    skippedDirectoryCount: scan.skippedDirectoryCount
+    skippedDirectoryCount: scan.skippedDirectoryCount,
+    knownPaths: knownRepositoryPaths(scan.files)
   };
+}
+
+/**
+ * Whether a declared scope path is worth admitting to the budget.
+ *
+ * Declared paths are category guesses derived from prose -- the "output" category alone
+ * contributes `reports`, `results`, `samples` and `examples` whenever a task happens to use the
+ * word "result". Directories that do not exist cannot be the work, and every one of them widens
+ * expected scope, which is what let an explicitly forbidden file pass a scope check unnoticed.
+ *
+ * Globs are patterns rather than locations, so they are always kept; so is everything when the
+ * repository has not been scanned.
+ */
+function isPlausibleDeclaredPath(path: string, knownPaths: string[] | undefined): boolean {
+  if (knownPaths === undefined || knownPaths.length === 0 || hasGlobSyntax(path)) {
+    return true;
+  }
+
+  const normalized = normalizePath(path);
+
+  return knownPaths.some(
+    (known) => known === normalized || known.startsWith(`${normalized}/`)
+  );
+}
+
+/** Gleip's own generated configuration and instruction files. */
+function isGleipGeneratedFile(path: string): boolean {
+  return ["AGENTS.md", "CLAUDE.md", "GEMINI.md", "GLEIP.md", ".gleip.yml"].includes(
+    normalizePath(path)
+  );
+}
+
+/** Every scanned file plus each of its ancestor directories. */
+function knownRepositoryPaths(files: string[]): string[] {
+  const paths = new Set<string>();
+
+  for (const file of files) {
+    const normalized = normalizePath(file);
+    paths.add(normalized);
+
+    const parts = normalized.split("/");
+
+    for (let index = 1; index < parts.length; index += 1) {
+      paths.add(parts.slice(0, index).join("/"));
+    }
+  }
+
+  return [...paths].sort(comparePaths);
 }
 
 export function createScopeBudget(input: CreateScopeBudgetInput): ScopeBudget {
@@ -1144,13 +1257,17 @@ export function createScopeBudget(input: CreateScopeBudgetInput): ScopeBudget {
     newDependenciesAllowed,
     ciChangesAllowed
   );
+  // `checks.*` disables a detector. A check that is off means the corresponding change is
+  // allowed through, which is what "allowed" means in a hard gate.
+  const checks = input.config?.checks;
   const hardGates = {
-    newDependenciesAllowed,
-    dependencyMetadataChangesAllowed,
-    ciChangesAllowed,
-    skippedTestsAllowed: false,
-    deletedTestsAllowed: false,
-    secretsAllowed: false
+    newDependenciesAllowed: newDependenciesAllowed || checks?.dependency_bloat === false,
+    dependencyMetadataChangesAllowed:
+      dependencyMetadataChangesAllowed || checks?.dependency_bloat === false,
+    ciChangesAllowed: ciChangesAllowed || checks?.ci_weakening === false,
+    skippedTestsAllowed: checks?.skipped_tests === false,
+    deletedTestsAllowed: checks?.deleted_tests === false,
+    secretsAllowed: checks?.secrets === false
   };
   const contextDocsTouchAllowed =
     taskScopeHints.explicitEditTargets.some(isContextDocsPath) ||
@@ -1483,15 +1600,25 @@ function extractRequirementCandidates(
   const requirements: Array<Omit<TaskRequirement, "id">> = [];
   let sectionContext: RequirementObligation | undefined;
   let sectionCategory: RequirementCategory | undefined;
+  let fallbackCandidate:
+    | {
+        segment: RequirementSourceSegment;
+        sourceText: string;
+        sectionCategory: RequirementCategory | undefined;
+      }
+    | undefined;
 
-  for (const line of sourceLines(revision.content)) {
-    const trimmed = line.text.trim();
-
-    if (trimmed.length === 0) {
+  for (const segment of requirementSourceSegments(revision.content)) {
+    // A Markdown heading is never a requirement. An unrecognized one still ends the previous
+    // section, so following lines do not inherit an unrelated section's obligation or category.
+    if (segment.isMarkdownHeading) {
+      const heading = requirementSectionHeading(segment.text);
+      sectionContext = heading?.obligation;
+      sectionCategory = heading?.category;
       continue;
     }
 
-    const heading = requirementSectionHeading(trimmed);
+    const heading = segment.canBeHeading ? requirementSectionHeading(segment.text) : undefined;
 
     if (heading !== undefined) {
       sectionContext = heading.obligation;
@@ -1499,14 +1626,42 @@ function extractRequirementCandidates(
       continue;
     }
 
-    const sourceText = stripMarkdownListMarker(trimmed);
+    const sourceText = stripMarkdownListMarker(segment.text);
     const obligation = classifyRequirementObligation(sourceText, sectionContext);
 
+    // Remember the first thing that reads like an instruction in case nothing else qualifies.
+    // Instruction verbs are a closed vocabulary, so a task phrased outside it would otherwise
+    // contribute nothing and leave a ledger holding only its guardrails.
+    const rememberFallback = (): void => {
+      if (fallbackCandidate === undefined && sectionContext !== "prohibited") {
+        fallbackCandidate = { segment, sourceText, sectionCategory };
+      }
+    };
+
     if (obligation === "informational" && !hasRequirementSignal(sourceText)) {
+      rememberFallback();
       continue;
     }
 
-    const sourceStart = line.start + line.text.indexOf(trimmed);
+    // Free prose under a heading is background narration, not an obligation. A list item
+    // inherits its section's obligation on its own; a plain sentence must carry its own
+    // evidence. Without this, every narrative sentence under "## Requirements" -- including
+    // "The orders service currently has no export capability." -- becomes mandatory.
+    const carriesOwnObligation =
+      classifyRequirementObligation(sourceText, undefined) !== "informational";
+
+    if (
+      !segment.isListItem &&
+      !carriesOwnObligation &&
+      !hasRequirementSignal(sourceText) &&
+      !hasActionableRequirementVerb(sourceText)
+    ) {
+      rememberFallback();
+      continue;
+    }
+
+    const markerOffset = segment.text.length - stripMarkdownListMarker(segment.text).length;
+    const sourceStart = segment.start + markerOffset;
     const explicit = hasExplicitRequirementSignal(sourceText) || sectionContext !== undefined;
     const category = sectionCategory ?? classifyRequirementCategory(sourceText);
     const relatedVerification = relatedVerificationText(sourceText);
@@ -1515,7 +1670,7 @@ function extractRequirementCandidates(
       sourceText,
       canonicalRevisionId: revision.revisionId,
       sourceStart,
-      sourceEnd: sourceStart + trimmed.length,
+      sourceEnd: sourceStart + sourceText.length,
       offsetEncoding: "utf16",
       category,
       obligation,
@@ -1527,7 +1682,268 @@ function extractRequirementCandidates(
     });
   }
 
+  // A task that states only what not to do has been read wrong. If prohibitions were recorded
+  // but no work was, promote the first instruction-shaped segment rather than handing back a
+  // ledger of pure prohibitions -- that shape is what made a task's own target look forbidden.
+  // A task with no obligations at all is background prose and stays empty.
+  if (
+    fallbackCandidate !== undefined &&
+    requirements.some((requirement) => requirement.obligation === "prohibited") &&
+    !requirements.some(
+      (requirement) =>
+        requirement.obligation === "required" || requirement.obligation === "suggestion"
+    )
+  ) {
+    const { segment, sourceText, sectionCategory: category } = fallbackCandidate;
+    const markerOffset = segment.text.length - stripMarkdownListMarker(segment.text).length;
+    const sourceStart = segment.start + markerOffset;
+
+    requirements.unshift({
+      sourceText,
+      canonicalRevisionId: revision.revisionId,
+      sourceStart,
+      sourceEnd: sourceStart + sourceText.length,
+      offsetEncoding: "utf16",
+      category: category ?? classifyRequirementCategory(sourceText),
+      obligation: "required",
+      status: "active",
+      // Inferred from position rather than stated, so it does not bind like an explicit one.
+      confidence: "low",
+      explicit: false,
+      relatedPaths: extractPathTokens(sourceText).sort(comparePaths)
+    });
+  }
+
   return requirements;
+}
+
+interface RequirementSourceSegment {
+  text: string;
+  start: number;
+  end: number;
+  isMarkdownHeading: boolean;
+  isListItem: boolean;
+  /**
+   * Whether this segment may be interpreted as a section heading. A clause taken from inside a
+   * sentence must not be: stripping its trailing punctuation would otherwise make it look like a
+   * heading to the "short line without terminal punctuation" heuristic, and the whole clause
+   * would be consumed as a section marker instead of recorded as a requirement.
+   */
+  canBeHeading: boolean;
+}
+
+/**
+ * Split task source into requirement-sized units.
+ *
+ * Segmenting on newlines alone made phrasing decide meaning: two sentences typed on one line
+ * merged into a single unit (so a trailing "do not ..." guardrail inverted the whole
+ * instruction), while one sentence hard-wrapped across two lines split into fragments that were
+ * not sentences. Both are the same bug seen from opposite sides.
+ *
+ * Continuation lines are joined into a block first, then the block is split on sentence
+ * terminators. Offsets stay exact against the original content: a sentence spanning a line break
+ * is still one contiguous span in the source.
+ */
+function requirementSourceSegments(content: string): RequirementSourceSegment[] {
+  const segments: RequirementSourceSegment[] = [];
+  let block: Array<{ text: string; start: number }> = [];
+  let blockIsListItem = false;
+
+  const flushBlock = (): void => {
+    if (block.length === 0) {
+      return;
+    }
+
+    const joined = joinBlockLines(block);
+    const spans = sentenceSpans(joined.text);
+
+    for (const span of spans) {
+      const raw = joined.text.slice(span.start, span.end);
+      const leading = raw.length - raw.trimStart().length;
+      const text = raw.trim().replace(/;$/u, "");
+
+      if (text.length === 0) {
+        continue;
+      }
+
+      const start = joined.positions[span.start + leading] ?? 0;
+      const end = (joined.positions[span.start + leading + text.length - 1] ?? start) + 1;
+
+      segments.push({
+        text,
+        start,
+        end,
+        isMarkdownHeading: false,
+        isListItem: blockIsListItem,
+        canBeHeading: spans.length === 1 && !blockIsListItem
+      });
+    }
+
+    block = [];
+    blockIsListItem = false;
+  };
+
+  for (const line of sourceLines(content)) {
+    const trimmed = line.text.trim();
+    const start = line.start + line.text.indexOf(trimmed);
+
+    if (trimmed.length === 0) {
+      flushBlock();
+      continue;
+    }
+
+    if (/^#{1,6}\s/u.test(trimmed)) {
+      flushBlock();
+      segments.push({
+        text: trimmed,
+        start,
+        end: start + trimmed.length,
+        isMarkdownHeading: true,
+        isListItem: false,
+        canBeHeading: true
+      });
+      continue;
+    }
+
+    const isListItem = /^(?:[-*+]|\d+\.)\s+/u.test(trimmed);
+
+    // A list item and a label line ("Requirements:") each begin their own unit, so they never
+    // absorb the line beneath them.
+    if (isListItem || /:$/u.test(trimmed)) {
+      flushBlock();
+      blockIsListItem = isListItem;
+    }
+
+    block.push({ text: trimmed, start });
+
+    if (/:$/u.test(trimmed)) {
+      flushBlock();
+    }
+  }
+
+  flushBlock();
+
+  return segments;
+}
+
+/**
+ * Join a block's lines with single spaces, recording the source offset of every joined character
+ * so segment spans can be mapped back to exact positions in the original text.
+ */
+function joinBlockLines(lines: Array<{ text: string; start: number }>): {
+  text: string;
+  positions: number[];
+} {
+  let text = "";
+  const positions: number[] = [];
+
+  for (const line of lines) {
+    if (text.length > 0) {
+      positions.push(line.start);
+      text += " ";
+    }
+
+    for (let index = 0; index < line.text.length; index += 1) {
+      positions.push(line.start + index);
+    }
+
+    text += line.text;
+  }
+
+  return { text, positions };
+}
+
+const nonTerminalAbbreviations = new Set([
+  "e.g",
+  "i.e",
+  "etc",
+  "vs",
+  "cf",
+  "approx",
+  "no",
+  "fig",
+  "al",
+  "mr",
+  "mrs",
+  "ms",
+  "dr",
+  "st",
+  "jr",
+  "sr",
+  "inc",
+  "ltd",
+  "co"
+]);
+
+/**
+ * Locate sentence (and independent-clause) spans within a joined block.
+ *
+ * A boundary is a terminator followed by whitespace and the start of a new sentence, which keeps
+ * decimals ("10.5"), version numbers ("1.0.0") and file extensions ("src/cart.ts so ...") intact
+ * because none of those are followed by whitespace plus a capital. Semicolons separate
+ * independent clauses and are treated as boundaries too, so "must stream rows; may not buffer"
+ * yields one requirement and one prohibition rather than a single ambiguous unit.
+ */
+function sentenceSpans(text: string): Array<{ start: number; end: number }> {
+  const spans: Array<{ start: number; end: number }> = [];
+  const boundary = /([.!?])(["'’)\]]*)\s+(?=[A-Z0-9([{"'`])|(;)\s+(?=\S)/gu;
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = boundary.exec(text)) !== null) {
+    if (match[1] !== undefined && isAbbreviationBoundary(text, match.index)) {
+      continue;
+    }
+
+    const terminatorLength =
+      match[3] !== undefined ? 1 : (match[1]?.length ?? 0) + (match[2]?.length ?? 0);
+    const end = match.index + terminatorLength;
+
+    if (end > cursor) {
+      spans.push({ start: cursor, end });
+    }
+
+    cursor = boundary.lastIndex;
+  }
+
+  if (cursor < text.length) {
+    spans.push({ start: cursor, end: text.length });
+  }
+
+  return spans;
+}
+
+function isAbbreviationBoundary(text: string, terminatorIndex: number): boolean {
+  const word = /([A-Za-z][A-Za-z.]*)$/u.exec(text.slice(0, terminatorIndex))?.[1];
+
+  if (word === undefined) {
+    return false;
+  }
+
+  const normalized = word.toLowerCase().replace(/\.$/u, "");
+
+  return normalized.length === 1 || nonTerminalAbbreviations.has(normalized);
+}
+
+/**
+ * Whether the text instructs an action.
+ *
+ * Many of these words are also ordinary nouns, so matching them anywhere turned background
+ * narration into mandatory requirements: "This *document* is the full task contract" and
+ * "*Support* has asked for a way to export orders" were both recorded as obligations. Task
+ * instructions are written in the imperative, so an ambiguous word only counts when it opens the
+ * clause and is not followed by an auxiliary verb ("Support **has** asked" is narration;
+ * "Document **the** new endpoint" is an instruction).
+ */
+function hasActionableRequirementVerb(text: string): boolean {
+  const unambiguous =
+    /\b(?:implement|supersede|refactor|reimplement|deprecate)\b|\bmake sure\b/iu.test(text);
+  const imperative =
+    /^(?:update|fix|add|remove|preserve|support|verify|validate|run|prepare|document|replace|create|delete|rename|migrate|return|stream|expose|handle|emit|register|extend|enable|disable|move|split|extract|resolve|address|apply|complete|correct|adjust|convert|restore|harden|simplify|refactor|port|upgrade|wire|rewrite|introduce|drop|allow|prevent|reject|accept|print|report|store|load|parse|render|check)\s+(?!has\b|have\b|had\b|is\b|are\b|was\b|were\b|will\b|would\b|can\b|could\b|should\b|may\b|must\b|might\b)/iu.test(
+      text
+    );
+
+  return unambiguous || imperative;
 }
 
 function sourceLines(content: string): Array<{ text: string; start: number }> {
@@ -1603,12 +2019,36 @@ function classifyRequirementObligation(
   text: string,
   sectionContext: RequirementObligation | undefined
 ): RequirementObligation {
-  if (/\b(?:must not|do not|don't|never|prohibit(?:ed)?|no)\b/iu.test(text)) {
+  // Explicit negative modals are prohibitions wherever they appear. "may not" and "cannot" are
+  // prohibitions too -- they were previously read as permissions because the optional branch
+  // matched "may" before the prohibition branch was consulted.
+  if (
+    /\b(?:must not|may not|shall not|will not|cannot|can not|do not|don't|doesn't|never|prohibit(?:ed)?)\b/iu.test(
+      text
+    )
+  ) {
+    return "prohibited";
+  }
+
+  // A leading "No ..." states a prohibition ("No other customer's data is reachable"). A bare
+  // "no" mid-sentence does not: "confirm no regressions" is a verification step, and "has no
+  // export capability" is background narration. Matching it anywhere inverted both.
+  if (/^no\b/iu.test(text) && sectionContext !== "required") {
     return "prohibited";
   }
 
   if (sectionContext === "prohibited") {
     return "prohibited";
+  }
+
+  // An explicit section heading outranks a line-level keyword, so an acceptance criterion is not
+  // downgraded by an incidental "may" or promoted by an incidental "no".
+  if (sectionContext === "required") {
+    return "required";
+  }
+
+  if (/\b(?:must|required|requires?|ensure)\b/iu.test(text)) {
+    return "required";
   }
 
   if (/\b(?:optional|may|could|nice to have)\b/iu.test(text)) {
@@ -1624,9 +2064,8 @@ function classifyRequirementObligation(
   }
 
   if (
-    /\b(?:must|required|requires?|ensure|acceptance criteria|before completion|expected result|implement|update|fix|add|preserve|support|verify|validate|run|prepare|document|replace|supersede)\b/iu.test(
-      text
-    )
+    /\b(?:acceptance criteria|before completion|expected result)\b/iu.test(text) ||
+    hasActionableRequirementVerb(text)
   ) {
     return "required";
   }
@@ -2681,6 +3120,14 @@ function analyzeTaskScope(task: string, additionalContextFiles: string[] = []): 
     contextFiles.delete(path);
   }
 
+  // A file the task requires work on is never read-only context, whatever phrasing produced the
+  // context match. Requiring a change and forbidding one are contradictory instructions, and the
+  // requirement is the one the user stated directly -- so it wins. This keeps the two path lists
+  // disjoint by construction rather than by the accuracy of clause segmentation.
+  for (const path of requiredRequirementPaths(task)) {
+    contextFiles.delete(path);
+  }
+
   return {
     contextFiles: [...contextFiles].sort(comparePaths),
     declaredPaths: declaredScope.paths,
@@ -2688,7 +3135,8 @@ function analyzeTaskScope(task: string, additionalContextFiles: string[] = []): 
     hasBroadScopeSignal: declaredScope.hasBroadScopeSignal,
     explicitEditTargets: [...explicitEditTargets].sort(comparePaths),
     explicitOutputTargets: [...explicitOutputTargets].sort(comparePaths),
-    explicitOnlyTargets: [...explicitOnlyTargets].sort(comparePaths)
+    explicitOnlyTargets: [...explicitOnlyTargets].sort(comparePaths),
+    declaredModuleAreas: declaredScope.moduleAreas
   };
 }
 
@@ -2709,6 +3157,7 @@ function extractExplicitOutputTargets(task: string): string[] {
 function extractDeclaredTaskScope(task: string): DeclaredTaskScope {
   const paths = new Set<string>();
   const labels = new Set<string>();
+  const moduleAreas = new Set<string>();
   const hasBroadScopeSignal =
     /\b(?:spanning|across)\b|\b(?:broad patch|full implementation|multi-area|multiple workstreams?|large patch)\b|\b(?:touch(?:es|ing)?|cover(?:s|ing)?|involv(?:es|ing))\s+(?:multiple|several)\s+(?:areas|modules|packages|components|subsystems|workstreams)\b/iu.test(
       task
@@ -2862,21 +3311,56 @@ function extractDeclaredTaskScope(task: string): DeclaredTaskScope {
       labels
     );
 
+    // Module names are inferred from prose and are frequently wrong -- "covering the happy path,
+    // an empty result set, and an unauthenticated request" yielded a module called
+    // "empty-result". Their path forms are therefore deferred until they can be checked against
+    // the scanned repository (see moduleScopePaths).
     for (const moduleName of extractNamedScopeAreas(categoryText)) {
       labels.add(`module:${moduleName}`);
-      paths.add(moduleName);
-      paths.add(`src/${moduleName}`);
-      paths.add(`packages/${moduleName}`);
-      paths.add(`**/${moduleName}/**`);
-      paths.add(`**/${moduleName}.*`);
+      moduleAreas.add(moduleName);
     }
   }
 
   return {
     paths: [...paths].sort(comparePaths),
     labels: [...labels].sort(comparePaths),
-    hasBroadScopeSignal
+    hasBroadScopeSignal,
+    moduleAreas: [...moduleAreas].sort(comparePaths)
   };
+}
+
+/**
+ * Path forms for an inferred module area, admitted only when the area names something that
+ * actually exists in the repository. Inventing paths for a module that does not exist inflates
+ * expected scope until it excludes almost nothing -- which is how an explicitly forbidden file
+ * passed a scope check unnoticed.
+ */
+function moduleScopePaths(moduleAreas: string[], knownPaths: string[]): string[] {
+  const known = new Set(knownPaths.map(normalizePath));
+  const paths = new Set<string>();
+  // No scan information means "unknown", not "absent" -- callers without a repository context
+  // still get the inferred paths.
+  const canVerify = known.size > 0;
+
+  for (const moduleName of moduleAreas) {
+    const candidates = [moduleName, `src/${moduleName}`, `packages/${moduleName}`];
+    const resolved = canVerify
+      ? candidates.filter((candidate) => known.has(candidate))
+      : candidates;
+
+    if (resolved.length === 0) {
+      continue;
+    }
+
+    for (const path of resolved) {
+      paths.add(path);
+    }
+
+    paths.add(`**/${moduleName}/**`);
+    paths.add(`**/${moduleName}.*`);
+  }
+
+  return [...paths];
 }
 
 function splitTaskScopeSegments(task: string): string[] {
@@ -3097,6 +3581,22 @@ function stripPathTokens(value: string): string {
   return stripped;
 }
 
+/**
+ * Paths that an active, mandatory requirement names as work to be done.
+ */
+function requiredRequirementPaths(task: string): string[] {
+  return extractRequirementLedger(task)
+    .requirements.filter(
+      (requirement) =>
+        requirement.status === "active" &&
+        (requirement.obligation === "required" || requirement.obligation === "suggestion") &&
+        // A requirement inferred from position rather than stated must not override an explicit
+        // read-only marking; only what the task actually asks for outranks context.
+        requirement.confidence !== "low"
+    )
+    .flatMap((requirement) => requirement.relatedPaths);
+}
+
 function extractExplicitEditTargets(text: string): string[] {
   const targets = new Set<string>();
   const phraseContextPaths = new Set(extractPhraseContextPaths(text));
@@ -3190,8 +3690,12 @@ function extractPhraseContextPaths(text: string): string[] {
   const contextPaths = new Set<string>();
 
   for (const clause of splitIntentClauses(text)) {
-    if (hasNegativeEditIntent(clause)) {
-      addExtractedPaths(contextPaths, clause);
+    const negation = negativeEditIntentMatch(clause);
+
+    if (negation !== undefined) {
+      // Only what the prohibition actually covers is read-only. In "Fix src/cart.ts but do not
+      // change the public contract", the file named before the negation is the edit target.
+      addExtractedPaths(contextPaths, clause.slice(negation.index + negation.length));
       continue;
     }
 
@@ -3223,23 +3727,44 @@ function addExtractedPaths(paths: Set<string>, value: string): void {
 }
 
 function splitIntentClauses(text: string): string[] {
-  return text
-    .split(
-      /\r?\n|[;,]|\bthen\b|\band\s+(?=(?:modify|update|create|add|edit|change|touch|implement)\b)/iu
+  // Sentences first, so a trailing guardrail ("... . Do not change X.") is its own clause and
+  // cannot claim the paths named by the instruction before it. Splitting only on newlines and
+  // punctuation meant a two-sentence single-line task was treated as one clause, and every path
+  // in it -- including the file the user asked to edit -- was filed as read-only context.
+  return requirementSourceSegments(text)
+    .filter((segment) => !segment.isMarkdownHeading)
+    .flatMap((segment) =>
+      segment.text.split(
+        /[;,]|\bthen\b|\band\s+(?=(?:modify|update|create|add|edit|change|touch|implement)\b)/iu
+      )
     )
     .map((clause) => clause.trim())
     .filter((clause) => clause.length > 0);
 }
 
+// Verbs that name an edit. "fix" was absent, so the most ordinary bug-report phrasing --
+// "Fix the discount function in src/cart.ts" -- produced no explicit edit target at all, and the
+// file the user asked to change could then be captured as read-only context instead.
+const editIntentVerbs =
+  "modify|update|create|add|edit|change|touch|implement|fix|repair|correct|refactor|rename|remove|delete|migrate";
+
 function hasAffirmativeEditIntent(value: string): boolean {
   return (
-    !hasNegativeEditIntent(value) &&
-    /\b(?:modify|update|create|add|edit|change|touch|implement)\b/iu.test(value)
+    !hasNegativeEditIntent(value) && new RegExp(`\\b(?:${editIntentVerbs})\\b`, "iu").test(value)
   );
 }
 
 function hasNegativeEditIntent(value: string): boolean {
-  return /\b(?:do not|don't|must not|never)\s+(?:modify|update|edit|change|touch)\b/iu.test(value);
+  return negativeEditIntentMatch(value) !== undefined;
+}
+
+function negativeEditIntentMatch(value: string): { index: number; length: number } | undefined {
+  const match = new RegExp(
+    `\\b(?:do not|don't|must not|never)\\s+(?:${editIntentVerbs})\\b`,
+    "iu"
+  ).exec(value);
+
+  return match === null ? undefined : { index: match.index, length: match[0].length };
 }
 
 function isContextFileName(path: string): boolean {
@@ -3514,6 +4039,10 @@ function isFileLikePlanPath(
     return false;
   }
 
+  if (isNonRepositoryToken(value)) {
+    return false;
+  }
+
   const normalizedValue = normalizePath(value);
   const fileName = basename(normalizedValue);
   const hasPathSyntax = normalizedValue.includes("/");
@@ -3534,6 +4063,24 @@ function isFileLikePlanPath(
     normalizedValue.startsWith("../") ||
     (hasPathSyntax && (hasStrongWrapper || options.structuredPathContext === true))
   );
+}
+
+/**
+ * Reject tokens that look like paths but can never name a file in the repository.
+ *
+ * A backticked `text/csv` or `/orders/export` in a task spec has path syntax and a strong
+ * wrapper, so both were admitted as repository paths and then classified as plan targets.
+ */
+function isNonRepositoryToken(value: string): boolean {
+  const isMimeType =
+    /^(?:text|application|image|audio|video|font|model|multipart|message)\/[a-z0-9][a-z0-9.+-]*$/iu.test(
+      value
+    );
+  // A rooted token with no file extension is a URL route, not a repository path. Repository
+  // paths in task text are written relative to the root.
+  const isUrlRoute = value.startsWith("/") && !/\.[a-z0-9]+$/iu.test(value);
+
+  return isMimeType || isUrlRoute;
 }
 
 function extractPlanDependencies(planText: string, proposedFiles: string[]): string[] {
@@ -5317,7 +5864,12 @@ function buildAllowedPaths(
     return [...paths].filter((path) => path !== ".").sort(comparePaths);
   }
 
-  for (const path of taskScopeHints.declaredPaths) {
+  const declaredPaths = [
+    ...taskScopeHints.declaredPaths,
+    ...moduleScopePaths(taskScopeHints.declaredModuleAreas, repoContext.knownPaths ?? [])
+  ];
+
+  for (const path of declaredPaths) {
     if (
       explicitTargets.length > 0 &&
       explicitTargets.some(isNonExecutableDocumentationPath) &&
@@ -5326,7 +5878,11 @@ function buildAllowedPaths(
       continue;
     }
 
-    if (!isGeneratedOrContextPath(path, taskScopeHints.contextFiles)) {
+    if (
+      !isGeneratedOrContextPath(path, taskScopeHints.contextFiles) &&
+      !isGleipGeneratedFile(path) &&
+      isPlausibleDeclaredPath(path, repoContext.knownPaths)
+    ) {
       paths.add(path);
     }
   }

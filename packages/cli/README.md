@@ -243,7 +243,7 @@ The `.gitignore` block added by `gleip init` ignores `.gleip/`. This local-only 
 - Gleip does not replace tests, security review, or human review.
 - Scope, report, and efficiency estimates are approximate local signals.
 - Compression is limited to selected execution-evidence classes.
-- Source code and active task-contract artifacts are not compressed in 1.0.0.
+- Source code and active task-contract artifacts are not compressed in 1.1.0.
 - Net savings can be zero when retrieval overhead cancels the compact display gain.
 - Missing artifacts or git evidence reduce report confidence.
 
@@ -271,6 +271,6 @@ pnpm pack:cli
 
 ## Status
 
-- Current release: `1.0.0`
+- Current release: `1.1.0`
 - License: Apache-2.0
 - Local-only developer preview

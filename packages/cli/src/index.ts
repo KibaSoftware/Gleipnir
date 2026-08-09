@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { dirname, join, relative, resolve } from "node:path";
+import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { Command } from "commander";
@@ -274,7 +274,16 @@ interface GleipState {
 }
 
 interface GleipConfigLike {
+  allowed_paths?: string[];
   approval_required_for?: string[];
+  checks?: {
+    skipped_tests?: boolean;
+    deleted_tests?: boolean;
+    dependency_bloat?: boolean;
+    ci_weakening?: boolean;
+    risky_files?: boolean;
+    secrets?: boolean;
+  };
   compression?: {
     allowed_classes?: string[];
     audit_only?: boolean;
@@ -356,6 +365,7 @@ interface DetectScopeDriftInput {
   scopeBudget: ScopeBudget;
   gitDiffContext: GitDiffContext;
   config: GleipConfigLike;
+  requirementLedger?: RequirementLedger;
 }
 
 interface GitDiffContext {
@@ -1314,6 +1324,17 @@ async function detectScopeDriftFromPackage(input: DetectScopeDriftInput): Promis
   return detectBundledScopeDrift(input);
 }
 
+/**
+ * The canonical requirement ledger for drift detection, when a canonical task exists.
+ */
+function requirementLedgerInput(
+  cwd: string
+): Pick<DetectScopeDriftInput, "requirementLedger"> | Record<string, never> {
+  const canonical = readCanonicalTaskArtifact(cwd);
+
+  return canonical === undefined ? {} : { requirementLedger: canonical.requirementLedger };
+}
+
 async function generateSessionReportFromPackage(
   input: GenerateSessionReportInput
 ): Promise<SessionReport> {
@@ -1542,9 +1563,45 @@ async function finalizeEvidence(
       : await runtime.detectScopeDrift({
           scopeBudget,
           gitDiffContext: filtered.diff,
-          config
+          config,
+          ...(canonical === undefined
+            ? {}
+            : { requirementLedger: canonical.requirementLedger })
         });
-  const hazards = completionHazards(driftResult.findings);
+  // `finalize` is the designated completion authority, so it must see everything `report` sees.
+  // It previously derived hazards from a fixed list of drift codes alone and never consulted the
+  // requirement ledger, verification evidence, or plan validation -- so it could report
+  // "complete, 0 hazards, exit 0" on the same state where `report` found a HIGH prohibited
+  // violation and 25/100 readiness. Both surfaces now read one computation rather than two.
+  const completionAttempt = latestValidationAttempt(session);
+  const completionAccepted = latestSuccessfulPlanValidation(session);
+  const completionReport =
+    scopeBudget === undefined
+      ? undefined
+      : await runtime.generateSessionReport({
+          version: GLEIP_VERSION,
+          schemaVersion: REPORT_SCHEMA_VERSION,
+          sessionId: session?.sessionId ?? null,
+          generatedAt: runtime.now().toISOString(),
+          phase: "final",
+          repositoryFingerprint: context.repositoryFingerprint,
+          scopeBudget,
+          diff: filtered.diff,
+          driftResult,
+          baseline: filtered.baseline,
+          ...(completionAttempt === undefined ? {} : { planValidation: completionAttempt }),
+          ...(completionAccepted === undefined
+            ? {}
+            : { acceptedPlanValidation: completionAccepted }),
+          ...(canonical === undefined
+            ? {}
+            : { requirementLedger: canonical.requirementLedger }),
+          missingArtifacts: []
+        });
+  const hazards = [
+    ...completionHazards(driftResult.findings),
+    ...requirementCompletionHazards(completionReport)
+  ];
   const requiredCommands: RequiredCommand[] = (config.required_commands ?? []).map((command) => ({
     id: command.id,
     description: command.description,
@@ -1603,7 +1660,8 @@ function completionHazards(findings: DriftFinding[]): CompletionHazard[] {
     "APPROVAL_REQUIRED_PATH_CHANGED",
     "DEPENDENCY_FILE_CHANGED",
     "LOCKFILE_CHANGED",
-    "CI_FILE_CHANGED"
+    "CI_FILE_CHANGED",
+    "CANONICAL_PROHIBITION_CONFLICT"
   ]);
   const approvalCodes = new Set([
     "APPROVAL_REQUIRED_PATH_CHANGED",
@@ -1625,6 +1683,60 @@ function completionHazards(findings: DriftFinding[]): CompletionHazard[] {
       evidenceIds: [],
       approvalRequired: approvalCodes.has(finding.code)
     }));
+}
+
+/**
+ * Completion hazards drawn from the shared session report: unresolved mandatory requirements,
+ * violated prohibitions, and missing verification evidence. These are the obligations the
+ * requirement ledger exists to track, and the completion surface has to see them.
+ */
+function requirementCompletionHazards(report: SessionReport | undefined): CompletionHazard[] {
+  if (report === undefined) {
+    return [];
+  }
+
+  const hazards: CompletionHazard[] = [];
+  const { summary } = report.requirements;
+
+  if (summary.prohibitedViolated > 0) {
+    hazards.push({
+      id: "hazard-requirements-prohibited",
+      code: "CANONICAL_PROHIBITION_CONFLICT",
+      message: `${summary.prohibitedViolated} prohibited canonical requirement(s) appear violated.`,
+      blocking: true,
+      evidenceIds: [],
+      approvalRequired: true
+    });
+  }
+
+  if (summary.mandatoryUnresolved > 0) {
+    hazards.push({
+      id: "hazard-requirements-unresolved",
+      code: "CANONICAL_REQUIREMENT_MISSING",
+      message: `${summary.mandatoryUnresolved} mandatory canonical requirement(s) are unresolved.`,
+      blocking: true,
+      evidenceIds: [],
+      approvalRequired: false
+    });
+  }
+
+  for (const warning of report.warnings) {
+    if (
+      warning.id === "review.verification-evidence-missing" ||
+      warning.id === "output.tests-missing"
+    ) {
+      hazards.push({
+        id: `hazard-${warning.id}`,
+        code: "MISSING_TEST_STRATEGY",
+        message: warning.message,
+        blocking: true,
+        evidenceIds: [],
+        approvalRequired: false
+      });
+    }
+  }
+
+  return hazards;
 }
 
 function recordStatusEvidence(
@@ -1725,6 +1837,112 @@ async function compressCliContent(
   runtime.rawStdout(result.output);
 }
 
+/**
+ * Resolve an executable name to a concrete path, honouring Windows PATHEXT.
+ *
+ * On Windows every npm-installed tool (`npm`, `npx`, `pnpm`, `tsc`, `eslint`, `vitest`, ...) is
+ * a `.cmd` shim that a bare `spawnSync(name, ...)` cannot find, so the command fails with ENOENT.
+ *
+ * Returns the original name when nothing resolves, so spawn reports its usual ENOENT.
+ */
+function resolveExecutable(commandName: string, cwd: string): string {
+  if (commandName.includes("/") || commandName.includes("\\")) {
+    const direct = isAbsolute(commandName) ? commandName : resolve(cwd, commandName);
+    return existsSync(direct) ? direct : commandName;
+  }
+
+  const extensions =
+    process.platform === "win32"
+      ? (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD")
+          .split(";")
+          .map((extension) => extension.trim())
+          .filter((extension) => extension.length > 0)
+      : [];
+  // Windows never executes an extensionless file. `C:\Program Files\nodejs\npm` exists as a
+  // POSIX sh shim next to `npm.cmd`, so matching the bare name first would resolve to a file
+  // that cannot be spawned. Mirror cmd.exe: only try the bare name when it already carries a
+  // PATHEXT extension, otherwise append each extension in PATHEXT order.
+  const alreadyExecutable =
+    extensions.length === 0 ||
+    extensions.some((extension) => commandName.toLowerCase().endsWith(extension.toLowerCase()));
+  const candidateNames = alreadyExecutable
+    ? [commandName]
+    : extensions.map((extension) => `${commandName}${extension}`);
+  const searchDirectories = (process.env.PATH ?? "")
+    .split(delimiter)
+    .map((entry) => entry.trim().replace(/^"|"$/gu, ""))
+    .filter((entry) => entry.length > 0);
+
+  for (const directory of searchDirectories) {
+    for (const candidateName of candidateNames) {
+      const candidate = join(directory, candidateName);
+
+      try {
+        if (statSync(candidate).isFile()) {
+          return candidate;
+        }
+      } catch {
+        // Unreadable or missing PATH entry: keep searching.
+      }
+    }
+  }
+
+  return commandName;
+}
+
+/**
+ * Escaping for a `cmd.exe /c` command line built with `windowsVerbatimArguments`.
+ *
+ * Node refuses to spawn `.cmd`/`.bat` files with `shell: false` (the CVE-2024-27980 mitigation),
+ * so batch shims must go through `cmd.exe`. We do not use `shell: true`: that hands a raw string
+ * to the shell and mangles arguments containing spaces or quotes. Instead we build the command
+ * line with the escaping rules cmd.exe actually implements, which keeps argument boundaries
+ * exact and metacharacters inert.
+ *
+ * The executable and its arguments need different treatment. The executable cannot be wrapped in
+ * quotes (cmd strips the outer pair of the whole line under `/s`), so every metacharacter —
+ * including the space in `C:\Program Files\nodejs\npm.CMD` — is caret-escaped instead.
+ */
+function escapeWindowsShimCommand(value: string): string {
+  return value.replace(/[()[\]%!^"`<>&|;, *?]/gu, "^$&");
+}
+
+function escapeWindowsShimArgument(value: string): string {
+  return (
+    `"${value.replace(/(\\*)"/gu, '$1$1\\"').replace(/(\\*)$/u, "$1$1")}"`
+      // Neutralise cmd.exe metacharacters so they cannot start a new command.
+      .replace(/[<>"^|&%!()]/gu, "^$&")
+  );
+}
+
+function isWindowsBatchShim(executablePath: string): boolean {
+  return process.platform === "win32" && /\.(?:cmd|bat)$/iu.test(executablePath);
+}
+
+/**
+ * Build the spawn target for a resolved executable, routing batch shims through cmd.exe.
+ */
+function spawnTarget(
+  executablePath: string,
+  childArgs: string[]
+): { command: string; args: string[]; verbatim: boolean } {
+  if (!isWindowsBatchShim(executablePath)) {
+    return { command: executablePath, args: childArgs, verbatim: false };
+  }
+
+  const commandLine = [
+    escapeWindowsShimCommand(executablePath),
+    ...childArgs.map(escapeWindowsShimArgument)
+  ].join(" ");
+
+  return {
+    command: process.env.ComSpec ?? "cmd.exe",
+    // /d skips AutoRun scripts, /s makes the outer quoting rule predictable, /c runs and exits.
+    args: ["/d", "/s", "/c", `"${commandLine}"`],
+    verbatim: true
+  };
+}
+
 async function runWrappedLocalCommand(
   runtime: CommandRuntime,
   commandAndArgs: string[],
@@ -1758,10 +1976,12 @@ async function runWrappedLocalCommand(
     });
   }
 
-  const result = spawnSync(commandName, childArgs, {
+  const target = spawnTarget(resolveExecutable(commandName, runtime.cwd), childArgs);
+  const result = spawnSync(target.command, target.args, {
     cwd: runtime.cwd,
     encoding: "utf8",
-    shell: false
+    shell: false,
+    ...(target.verbatim ? { windowsVerbatimArguments: true } : {})
   });
 
   const sourceCommand = args.join(" ");
@@ -2571,6 +2791,12 @@ async function validatePlan(
     contextFiles: planInput.planFile === undefined ? [] : [planInput.planFile]
   });
   const result = passivePlanValidationResult(rawResult, scopeBudget);
+  // Passive mode softens how a verdict is *presented*; it must not change what the verdict
+  // grants. Gating scope promotion on the downgraded status let a plan that conflicted with a
+  // user prohibition be recorded as the latest successful validation, and its targets then
+  // replaced expectedPaths and were stripped out of readOnlyContextPaths -- so re-running
+  // validate-plan quietly converted a rejected plan into accepted scope.
+  const planAccepted = isSuccessfulPlanValidationStatus(rawResult.status);
 
   if (evidenceContext !== undefined) {
     recordRunEvidence(
@@ -2589,9 +2815,7 @@ async function validatePlan(
           findings: result.findings
         }
       },
-      isSuccessfulPlanValidationStatus(result.status)
-        ? "plan_validation_completed"
-        : "plan_validation_rejected"
+      planAccepted ? "plan_validation_completed" : "plan_validation_rejected"
     );
   }
 
@@ -2601,7 +2825,7 @@ async function validatePlan(
       ...result,
       validatedAt: updatedAt
     };
-    const refinedScopeBudget = isSuccessfulPlanValidationStatus(result.status)
+    const refinedScopeBudget = planAccepted
       ? scopeBudgetWithValidatedPlanScope(scopeBudget, validationRecord)
       : scopeBudget;
     const refinedClassification =
@@ -2615,7 +2839,7 @@ async function validatePlan(
             workflowProfile: refinedScopeBudget.workflowProfile
           };
     ensureGleipGitignore(runtime.cwd);
-    if (isSuccessfulPlanValidationStatus(result.status)) {
+    if (planAccepted) {
       writeAtomicText(
         join(runtime.cwd, ".gleip", "scope-budget.json"),
         scopeBudgetContent(refinedScopeBudget)
@@ -2636,7 +2860,7 @@ async function validatePlan(
       scopeBudgetSummary: summarizeScopeBudget(refinedScopeBudget),
       latestValidationAttempt: validationRecord,
       latestPlanValidation: validationRecord,
-      ...(isSuccessfulPlanValidationStatus(result.status)
+      ...(planAccepted
         ? {
             latestSuccessfulValidation: validationRecord,
             latestSuccessfulPlanValidation: validationRecord
@@ -2815,7 +3039,8 @@ async function printStatus(
         await runtime.detectScopeDrift({
           scopeBudget,
           gitDiffContext: filtered.diff,
-          config
+          config,
+          ...requirementLedgerInput(runtime.cwd)
         })
       );
   const nextAction = nextActionForReport(driftResult);
@@ -2923,7 +3148,8 @@ async function printStatus(
             options.commandName ?? "status",
             driftResult,
             nextAction,
-            filtered.baseline
+            filtered.baseline,
+            config
           ),
       state,
       options.disabledSuffix ?? "Status can still be checked manually.",
@@ -3005,7 +3231,8 @@ async function printReport(runtime: CommandRuntime, options: ReportOptions): Pro
           await runtime.detectScopeDrift({
             scopeBudget,
             gitDiffContext: filtered.diff,
-            config: config ?? {}
+            config: config ?? {},
+            ...requirementLedgerInput(runtime.cwd)
           })
         );
   const latestAttempt = latestValidationAttempt(sessionResult.value);
@@ -3088,7 +3315,8 @@ async function printCheckWithoutSession(
         await runtime.detectScopeDrift({
           scopeBudget,
           gitDiffContext,
-          config
+          config,
+          ...requirementLedgerInput(runtime.cwd)
         })
       );
   const nextAction = nextActionForReport(driftResult);
@@ -3116,7 +3344,8 @@ async function printCheckWithoutSession(
             options.commandName ?? "check",
             driftResult,
             nextAction,
-            baseline
+            baseline,
+            config
           ),
       state,
       options.disabledSuffix ?? "Check can still be run manually.",
@@ -4102,15 +4331,21 @@ function defaultConfigContent(): string {
 # advisory, strict, and enterprise are reserved compatibility aliases with no extra enforcement.
 mode: passive
 
+# Documentation only: principles are recorded for human readers and are not enforced.
 principles:
   - Keep generated code lean, scoped, tested, and merge-ready.
   - Avoid speculative refactors and unnecessary dependencies.
 
 limits:
+  # Narrows the plan validation file ceiling.
   max_files_changed_warning: 12
+  # Line limits size the scope budget and appear in the brief. They are reported as
+  # metrics and do not emit drift findings on their own.
   max_lines_added_warning: 500
   max_lines_deleted_warning: 250
 
+# Setting a check to false turns that detection off. Disabled checks are named in
+# \`gleip check\` output so a weakened posture stays visible to reviewers.
 checks:
   skipped_tests: true
   deleted_tests: true
@@ -4153,6 +4388,7 @@ compression:
     - git_diff
   envelope_format: human
 
+# Documentation only: these describe the intended working style and are not enforced.
 agent_behavior:
   minimal_scoped_changes: true
   avoid_speculative_refactors: true
@@ -4293,6 +4529,11 @@ function createCanonicalTaskRevision(input: {
   };
 }
 
+/**
+ * Schema version stamped on the compact on-disk form. Reads accept both this and "1.0.0".
+ */
+const CANONICAL_TASK_COMPACT_SCHEMA_VERSION = "1.1.0";
+
 function canonicalTaskArtifactFromRevisions(input: {
   createdAt: string;
   provenance: CanonicalTaskArtifact["provenance"];
@@ -4336,7 +4577,13 @@ function canonicalTaskArtifactFromRevisions(input: {
 function readCanonicalTaskArtifact(cwd: string): CanonicalTaskArtifact | undefined {
   const result = readJsonFile<unknown>(canonicalTaskPath(cwd));
 
-  return isValidCanonicalTaskArtifact(result.value) ? result.value : undefined;
+  if (!isRecord(result.value)) {
+    return undefined;
+  }
+
+  const expanded = expandCanonicalTaskArtifact(result.value);
+
+  return isValidCanonicalTaskArtifact(expanded) ? expanded : undefined;
 }
 
 function isValidCanonicalTaskArtifact(value: unknown): value is CanonicalTaskArtifact {
@@ -4465,7 +4712,147 @@ function requirementLedgerSummary(ledger: RequirementLedger): RequirementLedgerS
 
 function writeCanonicalTaskArtifact(cwd: string, artifact: CanonicalTaskArtifact): void {
   ensureGleipDirectory(cwd);
-  writeAtomicJson(canonicalTaskPath(cwd), artifact);
+  writeAtomicJson(canonicalTaskPath(cwd), compactCanonicalTaskArtifact(artifact));
+}
+
+/**
+ * Drop everything the artifact can reconstruct before writing it.
+ *
+ * The agent instructions tell the agent to read this file first and treat it as authoritative,
+ * so its size is a direct token cost on every task. It stored the task text twice --
+ * `effectiveContent` is the revisions concatenated -- and repeated each requirement's text
+ * alongside the offsets that already locate it, which together accounted for roughly four fifths
+ * of a large spec's artifact.
+ *
+ * `sourceText` is kept for any requirement whose span does not reproduce it exactly (a sentence
+ * wrapped across lines is stored with its newline in the source but normalized in the ledger),
+ * so nothing is ever lost to a lossy round-trip.
+ */
+function compactCanonicalTaskArtifact(artifact: CanonicalTaskArtifact): unknown {
+  const revisions = new Map(
+    artifact.revisions.map((revision) => [revision.revisionId, revision.content])
+  );
+  const defaultRevisionId = artifact.revisions.at(-1)?.revisionId;
+  const rest: Omit<CanonicalTaskArtifact, "effectiveContent"> & { effectiveContent?: string } = {
+    ...artifact
+  };
+  delete rest.effectiveContent;
+
+  return {
+    ...rest,
+    schemaVersion: CANONICAL_TASK_COMPACT_SCHEMA_VERSION,
+    requirementLedger: {
+      ...artifact.requirementLedger,
+      requirements: artifact.requirementLedger.requirements.map((requirement) => {
+        const { sourceText, ...withoutText } = requirement;
+        const source = revisions.get(requirement.canonicalRevisionId);
+        const recoverable =
+          source !== undefined &&
+          normalizeRequirementText(
+            source.slice(requirement.sourceStart, requirement.sourceEnd)
+          ) === sourceText;
+        const compact: Record<string, unknown> = recoverable
+          ? { ...withoutText }
+          : { ...requirement };
+
+        // Drop what the ledger root already states or what the reader defaults to. At a few
+        // hundred requirements these repeated constants are a large share of the file.
+        if (compact.offsetEncoding === artifact.requirementLedger.offsetEncoding) {
+          delete compact.offsetEncoding;
+        }
+
+        if (compact.canonicalRevisionId === defaultRevisionId) {
+          delete compact.canonicalRevisionId;
+        }
+
+        if (compact.status === "active") {
+          delete compact.status;
+        }
+
+        if (compact.explicit === false) {
+          delete compact.explicit;
+        }
+
+        if (Array.isArray(compact.relatedPaths) && compact.relatedPaths.length === 0) {
+          delete compact.relatedPaths;
+        }
+
+        return compact;
+      })
+    }
+  };
+}
+
+/**
+ * Restore the fields `compactCanonicalTaskArtifact` removed. Artifacts written before the
+ * compact form still carry them, so both shapes read identically.
+ */
+function expandCanonicalTaskArtifact(value: Record<string, unknown>): Record<string, unknown> {
+  const revisionValues = Array.isArray(value.revisions) ? value.revisions : [];
+  const revisions = new Map(
+    revisionValues
+      .filter(isCanonicalTaskRevision)
+      .map((revision) => [revision.revisionId, revision.content])
+  );
+  const defaultRevisionId = revisionValues.filter(isCanonicalTaskRevision).at(-1)?.revisionId;
+  const effectiveContent =
+    typeof value.effectiveContent === "string"
+      ? value.effectiveContent
+      : revisionValues
+          .filter(isCanonicalTaskRevision)
+          .map((revision) => revision.content)
+          .join("\n\n");
+  const ledger = isRecord(value.requirementLedger) ? value.requirementLedger : undefined;
+  const requirements = Array.isArray(ledger?.requirements) ? ledger.requirements : [];
+
+  return {
+    ...value,
+    schemaVersion: "1.0.0",
+    effectiveContent,
+    ...(ledger === undefined
+      ? {}
+      : {
+          requirementLedger: {
+            ...ledger,
+            requirements: requirements.map((requirement) => {
+              if (!isRecord(requirement)) {
+                return requirement;
+              }
+
+              // Restore the fields the compact form omits as redundant or defaulted.
+              const canonicalRevisionId =
+                typeof requirement.canonicalRevisionId === "string"
+                  ? requirement.canonicalRevisionId
+                  : (defaultRevisionId ?? "");
+              const source = revisions.get(canonicalRevisionId);
+
+              return {
+                status: "active",
+                explicit: false,
+                relatedPaths: [],
+                offsetEncoding: ledger.offsetEncoding ?? "utf16",
+                ...requirement,
+                canonicalRevisionId,
+                sourceText:
+                  typeof requirement.sourceText === "string"
+                    ? requirement.sourceText
+                    : source === undefined
+                      ? ""
+                      : normalizeRequirementText(
+                          source.slice(
+                            Number(requirement.sourceStart),
+                            Number(requirement.sourceEnd)
+                          )
+                        )
+              };
+            })
+          }
+        })
+  };
+}
+
+function normalizeRequirementText(value: string): string {
+  return value.replace(/\s+/gu, " ").trim();
 }
 
 function hashCanonicalContent(content: string): string {
@@ -5126,6 +5513,31 @@ function scopeBudgetFromSummary(
   };
 }
 
+/**
+ * Name the files behind findings that ask for action. A finding the agent must act on is not
+ * actionable if the output does not say which file it is about.
+ */
+function formatBlockingFindingLines(findings: DriftFinding[]): string[] {
+  const actionable = orderFindings(findings).filter(
+    (finding) =>
+      severityRank(finding.severity) >= severityRank("action_required") &&
+      (finding.examples ?? []).length > 0
+  );
+
+  if (actionable.length === 0) {
+    return [];
+  }
+
+  return actionable.map(
+    (finding) =>
+      `- ${finding.title}: ${(finding.examples ?? []).join(", ")}${
+        finding.count !== undefined && finding.count > (finding.examples ?? []).length
+          ? ` (+${finding.count - (finding.examples ?? []).length} more)`
+          : ""
+      }`
+  );
+}
+
 function formatScopeTargetLines(findings: DriftFinding[]): string[] {
   const targets = findings.flatMap((finding) => finding.targetClassifications ?? []);
 
@@ -5142,11 +5554,36 @@ function formatScopeTargetLines(findings: DriftFinding[]): string[] {
   ];
 }
 
+/**
+ * Name the `.gleip.yml` checks that are switched off.
+ *
+ * Wiring `checks.*` makes the config real, but a disabled detector is silent by nature: a repo
+ * with secret detection off looks exactly like one with it on. Stating it in the output keeps
+ * the weakened posture visible to whoever reads the result.
+ */
+function disabledChecksNotice(config: GleipConfigLike | undefined): string[] {
+  const checks = config?.checks;
+
+  if (checks === undefined) {
+    return [];
+  }
+
+  const disabled = Object.entries(checks)
+    .filter(([, enabled]) => enabled === false)
+    .map(([name]) => name)
+    .sort();
+
+  return disabled.length === 0
+    ? []
+    : [`Checks disabled by .gleip.yml: ${disabled.join(", ")}`];
+}
+
 function statusInteractionSummary(
   commandName: "check" | "status",
   driftResult: DriftResult,
   nextAction: string,
-  baseline: BaselineContext
+  baseline: BaselineContext,
+  config?: GleipConfigLike
 ): string {
   const lines = [
     `Gleip ${commandName} complete · status: ${driftResult.status}`,
@@ -5160,9 +5597,16 @@ function statusInteractionSummary(
         highestFinding === undefined ? "review required" : formatFindingLabel(highestFinding)
       }`
     );
+    for (const line of formatBlockingFindingLines(driftResult.findings)) {
+      lines.push(line);
+    }
     for (const line of formatScopeTargetLines(driftResult.findings)) {
       lines.push(line);
     }
+  }
+
+  for (const line of disabledChecksNotice(config)) {
+    lines.push(line);
   }
 
   if (baseline.possiblyPreExistingFiles.length > 0) {
@@ -5189,10 +5633,20 @@ function planValidationInteractionSummary(result: PlanValidationResult): string 
       ? "aligned with declared task scope"
       : `${result.status.replace(/_/gu, " ")} · ${result.findings.length} finding(s)`;
   const lines = [`Gleip plan check ${phase}`];
-  const firstFinding = orderPlanFindings(result.findings)[0];
 
-  if (firstFinding !== undefined) {
-    lines.push(`Finding: ${formatFindingLabel(firstFinding)} · ${firstFinding.message}`);
+  // Print every finding that asks for something, with the evidence behind it. Printing only
+  // findings[0] and never its evidence meant the agent was told "one or more mandatory
+  // requirements are missing" and not which ones -- while the requirement ids were already
+  // computed and sitting in the finding. Counting findings the output never shows is worse
+  // than terse; it is a dead end.
+  for (const finding of orderPlanFindings(result.findings).filter(
+    (candidate) => planSeverityRank(candidate.severity) >= planSeverityRank("warn")
+  )) {
+    lines.push(`Finding: ${formatFindingLabel(finding)} · ${finding.message}`);
+
+    for (const evidence of finding.evidence ?? []) {
+      lines.push(`  - ${evidence}`);
+    }
   }
 
   const scopeTargets = (result.targetClassifications ?? []).filter(
@@ -5220,6 +5674,7 @@ function planValidationJson(result: PlanValidationResult): {
   nextAction: string;
   parsedPlan: AgentPlan;
   targetClassifications?: ScopeTargetClassification[];
+  requirementCoverage?: PlanRequirementCoverage;
 } {
   return {
     status: result.status,
@@ -5228,7 +5683,12 @@ function planValidationJson(result: PlanValidationResult): {
     parsedPlan: result.parsedPlan,
     ...(result.targetClassifications === undefined
       ? {}
-      : { targetClassifications: result.targetClassifications })
+      : { targetClassifications: result.targetClassifications }),
+    // The per-requirement coverage analysis was computed on every run and then dropped from the
+    // JSON contract, leaving it unreachable for any caller using --json.
+    ...(result.requirementCoverage === undefined
+      ? {}
+      : { requirementCoverage: result.requirementCoverage })
   };
 }
 
@@ -5730,7 +6190,11 @@ function compactStatusSummary(input: {
 
   return [
     `Session: ${input.session?.sessionId ?? "none"} | Task: ${input.task}`,
-    `Repository changed: ${input.repositoryChanged ? "yes" : "no"}`,
+    // "Repository changed" meant "changed since the cached check fingerprint" here and "differs
+    // from the baseline" in `check`. Both readings are defensible; wearing the same wording in
+    // two commands the generated instructions run back-to-back is not, because the pair can
+    // report "6 files changed" and "Repository changed: no" one after the other.
+    `Changed since last check: ${input.repositoryChanged ? "yes" : "no"}`,
     `Findings: ${warningCount} warning, ${blockingCount} blocking`,
     `Check necessary: ${input.checkNecessary ? "yes" : "no"}`,
     `Next: ${

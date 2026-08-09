@@ -478,6 +478,87 @@ describe("createScopeBudget", () => {
     expect(budget.allowedPaths).toContain("src/features/users");
   });
 
+  // C1: a single-line task carrying both an instruction and a trailing guardrail used to be read
+  // as one prohibition, and the file the user asked to fix was filed as read-only context and
+  // dropped from expected scope. Gleip then told the agent not to edit it.
+  describe("a task with a trailing guardrail keeps its edit target in scope", () => {
+    const task =
+      "Fix the discount function in src/cart.ts so SAVE10 applies 10 percent off only once. Do not change persistence or the public contract.";
+
+    const budgetFor = (taskText: string): ScopeBudget =>
+      createScopeBudget({
+        task: taskText,
+        classification: classifyTask(taskText),
+        repoContext: repoContextWith({
+          likelyRelevantFiles: [{ path: "src/cart.ts", score: 10, reasons: ["match"] }]
+        })
+      });
+
+    it("puts the named file in expected scope, not read-only context", () => {
+      const budget = budgetFor(task);
+
+      expect(budget.expectedPaths).toContain("src/cart.ts");
+      expect(budget.readOnlyContextPaths ?? []).not.toContain("src/cart.ts");
+    });
+
+    it("keeps expected scope and read-only context disjoint", () => {
+      // Structural invariant: requiring a change and forbidding one are contradictory, so a path
+      // must never appear in both lists regardless of how the task was phrased.
+      for (const phrasing of [
+        task,
+        task.replace(". Do not", ".\nDo not"),
+        "Fix src/cart.ts but do not change the public contract."
+      ]) {
+        const budget = budgetFor(phrasing);
+        const overlap = (budget.expectedPaths ?? []).filter((path) =>
+          (budget.readOnlyContextPaths ?? []).includes(path)
+        );
+
+        expect(overlap).toEqual([]);
+      }
+    });
+  });
+
+  // S2: every checks.* key was read by no product code, so `secrets: false` was a silent no-op
+  // and `secrets: true` guaranteed nothing. GLEIP.md calls configuration a user-facing API.
+  it("wires the .gleip.yml checks toggles into the hard gates", () => {
+    const task = "Add CSV export to users table";
+    const enabled = createScopeBudget({
+      task,
+      classification: classifyTask(task),
+      repoContext: emptyRepoContext()
+    });
+
+    expect(enabled.hardGates).toMatchObject({
+      skippedTestsAllowed: false,
+      deletedTestsAllowed: false,
+      secretsAllowed: false
+    });
+
+    const disabled = createScopeBudget({
+      task,
+      classification: classifyTask(task),
+      repoContext: emptyRepoContext(),
+      config: {
+        checks: {
+          skipped_tests: false,
+          deleted_tests: false,
+          secrets: false,
+          ci_weakening: false,
+          dependency_bloat: false
+        }
+      }
+    });
+
+    expect(disabled.hardGates).toMatchObject({
+      skippedTestsAllowed: true,
+      deletedTestsAllowed: true,
+      secretsAllowed: true,
+      ciChangesAllowed: true,
+      newDependenciesAllowed: true
+    });
+  });
+
   it("includes likely test files when tests are relevant", () => {
     const budget = createScopeBudget({
       task: "Add CSV export to users table",
@@ -798,6 +879,41 @@ describe("createScopeBudget", () => {
     expect(budget.softLimits.maxFilesChanged).toBeGreaterThan(6);
   });
 
+  it("drops inferred module paths that do not exist in the scanned repository", () => {
+    // "an empty result set" in a verification sentence was parsed as a module named
+    // "empty-result", inventing five path patterns for something that does not exist and
+    // inflating expected scope until it excluded almost nothing.
+    const task =
+      "Add tests in tests/orders.test.ts covering the happy path, an empty result set, and an unauthenticated request.";
+    const budget = createScopeBudget({
+      task,
+      classification: classifyTask(task),
+      repoContext: repoContextWith({
+        knownPaths: ["tests", "tests/orders.test.ts", "src", "src/api", "src/api/orders.ts"]
+      })
+    });
+
+    for (const fabricated of [
+      "empty-result",
+      "src/empty-result",
+      "packages/empty-result",
+      "**/empty-result/**",
+      "**/empty-result.*"
+    ]) {
+      expect(budget.allowedPaths).not.toContain(fabricated);
+    }
+  });
+
+  it("does not let a forbidden area escalate the task into that area", () => {
+    // Naming CI in order to forbid it used to classify the task as an infra/CI change, applying
+    // the sensitive_change profile and high risk to a routine feature.
+    const task =
+      "Add a GET /orders/export endpoint that streams order history.\n\n## Out of scope\n- Do not touch CI configuration.\n- Do not modify the authentication middleware.";
+
+    expect(classifyTask(task).taskType).not.toBe("infra_ci_change");
+    expect(classifyTask(task).taskType).not.toBe("auth_security_change");
+  });
+
   it("does not treat release wording alone as package metadata scope", () => {
     const task = "Update docs for a release.";
     const budget = createScopeBudget({
@@ -991,6 +1107,166 @@ describe("canonical requirement ledger", () => {
     ).toBe("prohibited");
   });
 
+  // The same task expressed three ways must produce the same obligations. Requirement
+  // extraction used to segment on newlines only, so phrasing decided meaning: two sentences on
+  // one line merged into a single inverted prohibition, and one sentence hard-wrapped across two
+  // lines split into fragments.
+  describe("requirement segmentation is independent of line breaks", () => {
+    const oneLine =
+      "Fix the discount function in src/cart.ts so SAVE10 applies 10 percent off only once. Do not change persistence or the public contract.";
+    const twoLines =
+      "Fix the discount function in src/cart.ts so SAVE10 applies 10 percent off only once.\nDo not change persistence or the public contract.";
+    const hardWrapped =
+      "Fix the discount function in src/cart.ts so SAVE10 applies 10 percent\noff only once. Do not change persistence or the public\ncontract.";
+
+    const obligationsOf = (task: string): string[] =>
+      extractRequirementLedger(task).requirements.map((requirement) => requirement.obligation);
+
+    it("keeps an instruction and its guardrail as separate requirements on one line", () => {
+      const ledger = extractRequirementLedger(oneLine);
+
+      expect(ledger.requirements).toHaveLength(2);
+      expect(ledger.requirements[0]?.obligation).toBe("required");
+      expect(ledger.requirements[0]?.relatedPaths).toContain("src/cart.ts");
+      expect(ledger.requirements[1]?.obligation).toBe("prohibited");
+    });
+
+    it("produces identical obligations for one-line, multi-line, and hard-wrapped forms", () => {
+      expect(obligationsOf(oneLine)).toEqual(["required", "prohibited"]);
+      expect(obligationsOf(twoLines)).toEqual(["required", "prohibited"]);
+      expect(obligationsOf(hardWrapped)).toEqual(["required", "prohibited"]);
+    });
+
+    it("does not split a hard-wrapped sentence into fragments", () => {
+      for (const requirement of extractRequirementLedger(hardWrapped).requirements) {
+        // A fragment is a requirement that does not start a sentence.
+        expect(requirement.sourceText).toMatch(/^[A-Z]/u);
+        expect(requirement.sourceText).toMatch(/[.!?]$/u);
+      }
+    });
+  });
+
+  describe("obligation classification on ordinary English", () => {
+    const obligationOf = (text: string): string | undefined =>
+      extractRequirementLedger(text).requirements[0]?.obligation;
+
+    it("does not treat a bare 'no' as a prohibition", () => {
+      // A verification step, not a prohibition.
+      expect(obligationOf("Run the existing test suite and confirm no regressions.")).toBe(
+        "required"
+      );
+    });
+
+    it("treats 'may not' as a prohibition rather than a permission", () => {
+      const ledger = extractRequirementLedger(
+        "The response must stream rows; it may not buffer the whole result set."
+      );
+
+      expect(ledger.requirements[0]?.obligation).toBe("required");
+      expect(ledger.requirements.at(-1)?.obligation).toBe("prohibited");
+    });
+
+    it("lets an acceptance-criteria heading outrank a leading 'No'", () => {
+      const ledger = extractRequirementLedger(
+        ["## Acceptance criteria", "- No other customer's data is reachable."].join("\n")
+      );
+
+      expect(ledger.requirements[0]?.obligation).toBe("required");
+    });
+
+    it("never emits a Markdown heading as a requirement", () => {
+      const ledger = extractRequirementLedger(
+        ["## Verification", "- Run the suite.", "## Notes", "- Ordering is unspecified."].join("\n")
+      );
+
+      expect(ledger.requirements.map((requirement) => requirement.sourceText)).not.toContain(
+        "## Notes"
+      );
+      // An unrecognised heading must also reset section context rather than leaking the
+      // previous section's category onto everything beneath it.
+      expect(
+        ledger.requirements.find((requirement) =>
+          requirement.sourceText.startsWith("Ordering")
+        )?.category
+      ).not.toBe("verification");
+    });
+
+    it("keeps both clauses of a semicolon-joined list item", () => {
+      // The clause loses its terminal punctuation when split, which must not let the
+      // "short line without punctuation" heading heuristic swallow it as a section marker.
+      const requirements = extractRequirementLedger(
+        ["## Out of scope", "- Do not add new dependencies; use the standard library only."].join(
+          "\n"
+        )
+      ).requirements;
+
+      expect(requirements.map((requirement) => requirement.sourceText)).toEqual([
+        "Do not add new dependencies",
+        "use the standard library only."
+      ]);
+      expect(requirements.every((requirement) => requirement.obligation === "prohibited")).toBe(
+        true
+      );
+    });
+
+    it("does not treat nouns as instruction verbs", () => {
+      // Background narration, not obligations -- "document" and "support" here are nouns.
+      expect(extractRequirementLedger("This document is the full task contract.").requirements)
+        .toHaveLength(0);
+      expect(
+        extractRequirementLedger("Support has asked for a way to export order history.")
+          .requirements
+      ).toHaveLength(0);
+      // The same words in imperative position are instructions.
+      expect(
+        extractRequirementLedger("Document the new endpoint in `docs/api.md`.").requirements[0]
+          ?.obligation
+      ).toBe("required");
+    });
+
+    it("never reduces a task to prohibitions alone", () => {
+      // Instruction verbs are a closed vocabulary, so a task phrased outside it -- "Resolve ..."
+      // rather than "Fix ..." -- could contribute nothing but its guardrail, leaving a ledger
+      // that says only what not to do. Caught by running Gleip on its own audit task.
+      const ledger = extractRequirementLedger(
+        "Resolve the audit findings in `packages/planner/src/index.ts`. Do not weaken existing tests."
+      );
+      const required = ledger.requirements.filter(
+        (requirement) => requirement.obligation === "required"
+      );
+
+      expect(required.length).toBeGreaterThan(0);
+      expect(required[0]?.sourceText).toContain("Resolve the audit findings");
+      expect(required[0]?.relatedPaths).toContain("packages/planner/src/index.ts");
+      expect(
+        ledger.requirements.some((requirement) => requirement.obligation === "prohibited")
+      ).toBe(true);
+    });
+
+    it("marks a positionally inferred requirement as low confidence", () => {
+      const ledger = extractRequirementLedger(
+        "Sort out the flaky suite somehow. Do not disable it."
+      );
+      const required = ledger.requirements.find(
+        (requirement) => requirement.obligation === "required"
+      );
+
+      // Inferred from position, not stated, so it must not carry the weight of an explicit one.
+      expect(required?.confidence).toBe("low");
+      expect(required?.explicit).toBe(false);
+    });
+
+    it("rejects non-path tokens as related paths", () => {
+      const ledger = extractRequirementLedger(
+        "Return the report as text/csv from the /orders/export route."
+      );
+      const paths = ledger.requirements.flatMap((requirement) => requirement.relatedPaths);
+
+      expect(paths).not.toContain("text/csv");
+      expect(paths).not.toContain("/orders/export");
+    });
+  });
+
   it("detects brief omissions without treating the brief as canonical", () => {
     const ledger = extractRequirementLedger(
       [
@@ -1091,7 +1367,12 @@ describe("canonical requirement ledger", () => {
     );
 
     expect(required).toBeDefined();
-    expect(task.slice(required?.sourceStart, required?.sourceEnd)).toBe("- Must preserve café output.");
+    // The span locates the requirement text exactly -- it no longer includes the list marker
+    // that sourceText strips. Offsets are the authoritative locator, so they must round-trip.
+    expect(task.slice(required?.sourceStart, required?.sourceEnd)).toBe(required?.sourceText);
+    expect(task.slice(required?.sourceStart, required?.sourceEnd)).toBe(
+      "Must preserve café output."
+    );
     expect(optional?.obligation).toBe("optional");
   });
 });

@@ -1,0 +1,66 @@
+name: CI
+
+# Gleipnir ships a CLI that wraps local toolchains, so platform differences are product bugs,
+# not environment noise. `gleip run` was broken on Windows for the entire JS/TS toolchain
+# without anything catching it, because the repository had no CI at all. Both platforms are
+# therefore required, not optional.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: verify (${{ matrix.os }}, node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: ["20", "22"]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Release bookkeeping checks compare tags against package versions.
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+      - name: Smoke test the CLI
+        run: pnpm smoke:cli
+
+      # Direct C2 guard. `npm` and `npx` are .cmd shims on Windows; a regression in executable
+      # resolution disables context compression and command attestation at their documented
+      # entry point. Assert the wrapper can run them on every platform.
+      - name: Verify wrapped command execution
+        shell: bash
+        run: |
+          node --import tsx packages/cli/src/index.ts run -- npm --version
+          node --import tsx packages/cli/src/index.ts run -- npx --version
+          node --import tsx packages/cli/src/index.ts run -- node --version
