@@ -121,12 +121,12 @@ const report = JSON.parse(reportJson);
 const replay = JSON.parse(replayJson);
 const finalization = JSON.parse(finalizeJson);
 
-if (version !== "1.2.0") {
-  throw new Error(`Expected Gleip 1.2.0, received: ${version}`);
+if (version !== "1.2.1") {
+  throw new Error(`Expected Gleip 1.2.1, received: ${version}`);
 }
 
-if (report.schemaVersion !== "1.3.0" || report.version !== "1.2.0") {
-  throw new Error(`Expected Gleip 1.2.0 report schema 1.3.0, received:\n${reportJson}`);
+if (report.schemaVersion !== "1.3.0" || report.version !== "1.2.1") {
+  throw new Error(`Expected Gleip 1.2.1 report schema 1.3.0, received:\n${reportJson}`);
 }
 
 if (!report.finalResponse?.markdown?.includes("### Gleip")) {

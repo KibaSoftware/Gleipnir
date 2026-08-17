@@ -2,11 +2,9 @@
 
 Use this checklist for the local-only 1.2 release candidate.
 
-Current release target: `1.2.0`.
+Current release target: `1.2.1`.
 
-Release focus: a read-only `--plan-mode` surface for agents that cannot write yet,
-classification and requirement-extraction accuracy for short and long prompts, and a
-completion gate that reads recorded command attestations.
+Release focus: restore a green continuous-integration run on a clean checkout.
 
 ## Signal Quality Gates
 
@@ -40,7 +38,7 @@ completion gate that reads recorded command attestations.
 
 ## Packed Install
 
-- Install `dist-pack/gleip-1.2.0.tgz` into a clean external temp repo.
+- Install `dist-pack/gleip-1.2.1.tgz` into a clean external temp repo.
 - Verify:
   - `npx gleip --help`
   - `npx gleip --version`

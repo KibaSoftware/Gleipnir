@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.2.1] - 2026-08-17
+
+### Fixed
+
+- Made continuous integration build before typechecking. Workspace packages resolve each other through their published entry points, so `@gleip/core` types come from `dist/`, and on a clean checkout the typecheck step failed with `Cannot find module '@gleip/core'` before reaching any step it was meant to run. The order now matches the sequence `CONTRIBUTING.md` documents.
+
+### Compatibility
+
+- No source, schema, dependency, or command behavior changed. This release contains a continuous-integration configuration fix and the version metadata for it.
+- The defect predates 1.2.0 and reproduces identically on the 1.1.0 commit, where cross-platform CI was introduced. Released builds were unaffected, since the published package is produced by `pnpm build` and verified by the packed smoke test.
+
 ## [1.2.0] - 2026-08-17
 
 ### Added

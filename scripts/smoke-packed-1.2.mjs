@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const tarball = join(root, "dist-pack", "gleip-1.2.0.tgz");
+const tarball = join(root, "dist-pack", "gleip-1.2.1.tgz");
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 const npxCommand = process.platform === "win32" ? "npx.cmd" : "npx";
 
@@ -140,7 +140,7 @@ writeRepoFile(
   ].join("\n")
 );
 
-assertEqual(runGleip(["--version"], repo).trim(), "1.2.0", "packed version");
+assertEqual(runGleip(["--version"], repo).trim(), "1.2.1", "packed version");
 runGleip(["init"], repo);
 
 // Plan mode runs before any session exists and must leave the repository untouched. Assert that
@@ -338,7 +338,7 @@ if (!hazardCodes.includes("CANONICAL_REQUIREMENT_MISSING")) {
   );
 }
 
-console.log(`Packed Gleip 1.2.0 smoke test passed in ${repo}`);
+console.log(`Packed Gleip 1.2.1 smoke test passed in ${repo}`);
 
 function runGleip(args, cwd, input) {
   return run(npxCommand, ["--no-install", "gleip", ...args], cwd, input);
