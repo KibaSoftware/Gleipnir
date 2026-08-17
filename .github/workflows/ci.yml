@@ -40,6 +40,13 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Build first, matching the order CONTRIBUTING.md documents. Workspace packages resolve each
+      # other through their published entry points -- `@gleip/core` types come from `dist/` -- so on
+      # a clean checkout every later step needs the build to have run. Typechecking first meant CI
+      # failed on `Cannot find module '@gleip/core'` before reaching anything it was meant to check.
+      - name: Build
+        run: pnpm build
+
       - name: Typecheck
         run: pnpm typecheck
 
@@ -48,9 +55,6 @@ jobs:
 
       - name: Test
         run: pnpm test
-
-      - name: Build
-        run: pnpm build
 
       - name: Smoke test the CLI
         run: pnpm smoke:cli
