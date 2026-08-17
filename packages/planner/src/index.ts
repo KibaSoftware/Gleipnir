@@ -1035,6 +1035,8 @@ export function classifyTask(task: string): TaskClassification {
   // profile and high risk. Writing a spec responsibly should not raise its own risk rating.
   const classificationText = taskTextWithoutProhibitions(normalizedTask);
 
+  const scored: Array<{ rule: ClassificationRule; matches: string[] }> = [];
+
   for (const rule of rules) {
     if (rule.taskType === "test_only") {
       continue;
@@ -1044,9 +1046,36 @@ export function classifyTask(task: string): TaskClassification {
       continue;
     }
 
-    if (findMatches(rule.patterns, classificationText).length > 0) {
-      return buildClassification(rule, classificationText);
+    const matches = findMatches(rule.patterns, classificationText);
+
+    if (matches.length > 0) {
+      scored.push({ rule, matches });
     }
+  }
+
+  if (scored.length > 0) {
+    // Rule order is a risk hierarchy, not a preference list: dependency, migration, auth and CI
+    // rules lead so that a task touching them inherits the sensitive profile even when it reads
+    // mostly like ordinary work. Over-triggering there is the safe direction, so those rules keep
+    // first-match precedence and are never outvoted.
+    const sensitive = scored.find((candidate) => isSensitiveTaskType(candidate.rule.taskType));
+
+    if (sensitive !== undefined) {
+      return buildClassification(sensitive.rule, classificationText);
+    }
+
+    // Below that tier, rank by how much of the task each rule actually matched. Declaration order
+    // alone used to decide, so one incidental word beat a rule the task matched repeatedly -- and
+    // the longer the task, the likelier an early rule caught a passing mention. Order still breaks
+    // ties, so a task that matches a single rule classifies exactly as it did before.
+    const ranked = [...scored].sort((left, right) => right.matches.length - left.matches.length);
+    const best = ranked[0]!;
+    const runnerUp = ranked[1];
+
+    return buildClassification(best.rule, classificationText, {
+      matchCount: best.matches.length,
+      runnerUpMatchCount: runnerUp?.matches.length ?? 0
+    });
   }
 
   const semanticLocalClassification = classifyComposedLocalBehaviorTask(normalizedTask);
@@ -1083,7 +1112,12 @@ function taskTextWithoutProhibitions(task: string): string {
     result = `${result.slice(0, sourceStart)}${" ".repeat(sourceEnd - sourceStart)}${result.slice(sourceEnd)}`;
   }
 
-  return result;
+  // Blanking every prohibition can consume the whole task when the only sentence carries both the
+  // work and its guardrail: "Refactor the parser and do not change the public API." is one segment,
+  // so the prohibition's span is the entire text and nothing is left to classify. An empty string
+  // classifies as `unknown` -- strictly worse than classifying on text that includes a prohibition,
+  // which is the case this function exists to improve. Keep the original when that happens.
+  return result.trim().length === 0 ? task : result;
 }
 
 export function extractTaskTerms(task: string): string[] {
@@ -1208,8 +1242,20 @@ function knownRepositoryPaths(files: string[]): string[] {
 }
 
 export function createScopeBudget(input: CreateScopeBudgetInput): ScopeBudget {
-  const defaults = scopeBudgetDefaults[input.classification.taskType];
   const taskScopeHints = analyzeTaskScope(input.task, input.repoContext.contextFiles);
+  const taskBreadth = inferTaskBreadth(input.task, input.classification, taskScopeHints);
+  const workflowProfile = deriveWorkflowProfile(input.classification, taskBreadth, taskScopeHints);
+  // A documentation_update classification only earns documentation-sized budgets when the profile
+  // agrees. When no documentation path was named, deriveWorkflowProfile falls through to
+  // local_behavior_change while taskType stays documentation_update -- which produced a budget of
+  // "max 2 files" over a scope of every lexically related source path. Neither number was wrong on
+  // its own; together they were unusable. Fall back to the unknown defaults and say so.
+  const contradictoryDocumentationClassification =
+    input.classification.taskType === "documentation_update" &&
+    workflowProfile !== "documentation_only";
+  const defaults = contradictoryDocumentationClassification
+    ? scopeBudgetDefaults.unknown
+    : scopeBudgetDefaults[input.classification.taskType];
   const newDependenciesAllowed = isNewDependencyAllowed(input.classification, input.task);
   const ciChangesAllowed = isCiChangeAllowed(input.classification, input.task);
   const dependencyMetadataChangesAllowed =
@@ -1221,7 +1267,6 @@ export function createScopeBudget(input: CreateScopeBudgetInput): ScopeBudget {
     input.classification.taskType === "test_only"
       ? false
       : defaults.requiredTests || input.classification.likelyRequiresTests;
-  const taskBreadth = inferTaskBreadth(input.task, input.classification, taskScopeHints);
   const expectedFilesChanged = expectedFileRange(defaults.expectedFilesChanged, taskScopeHints);
   const softLimits = narrowSoftLimits(
     applyConfigLimits(defaults.softLimits, input.config),
@@ -1274,8 +1319,21 @@ export function createScopeBudget(input: CreateScopeBudgetInput): ScopeBudget {
     taskScopeHints.explicitOnlyTargets.some(isContextDocsPath) ||
     (taskScopeHints.declaredScopeLabels.includes("context_docs") &&
       taskScopeHints.contextFiles.length === 0);
-  const workflowProfile = deriveWorkflowProfile(input.classification, taskBreadth, taskScopeHints);
-  const planRequired = workflowProfile === "broad_change" || workflowProfile === "sensitive_change";
+  // Breadth is counted from paths and scope labels the task names, so it measures how verbose the
+  // prompt was, not how much work it implies. "Rewrite the parser" names nothing, scores `local`,
+  // and skipped plan validation entirely -- and terse prompts are exactly what a planning-mode
+  // agent starts from. Ask for a plan when the classification itself is shaky, or when open-ended
+  // restructuring work arrives with no target named to bound it.
+  const unboundedRestructuring =
+    input.classification.taskType === "refactor" &&
+    taskScopeHints.explicitEditTargets.length === 0 &&
+    taskScopeHints.explicitOnlyTargets.length === 0 &&
+    taskScopeHints.declaredPaths.length === 0;
+  const planRequired =
+    workflowProfile === "broad_change" ||
+    workflowProfile === "sensitive_change" ||
+    input.classification.confidence === "low" ||
+    unboundedRestructuring;
   const effectiveAllowedPaths =
     workflowProfile === "documentation_only"
       ? documentationOnlyScope(taskScopeHints)
@@ -1332,7 +1390,13 @@ export function createScopeBudget(input: CreateScopeBudgetInput): ScopeBudget {
         : stopConditions,
     contextDocsTouchAllowed,
     readOnlyContextPaths: taskScopeHints.contextFiles,
-    reasons: buildBudgetReasons(input, defaults, allowedPaths, blockedWithoutApproval)
+    reasons: buildBudgetReasons(
+      input,
+      defaults,
+      allowedPaths,
+      blockedWithoutApproval,
+      contradictoryDocumentationClassification
+    )
   };
 }
 
@@ -1756,8 +1820,17 @@ function requirementSourceSegments(content: string): RequirementSourceSegment[] 
 
     const joined = joinBlockLines(block);
     const spans = sentenceSpans(joined.text);
+    const units: Array<{ start: number; end: number }> = [];
 
     for (const span of spans) {
+      const sentence = joined.text.slice(span.start, span.end);
+
+      for (const clause of clauseSpans(sentence)) {
+        units.push({ start: span.start + clause.start, end: span.start + clause.end });
+      }
+    }
+
+    for (const span of units) {
       const raw = joined.text.slice(span.start, span.end);
       const leading = raw.length - raw.trimStart().length;
       const text = raw.trim().replace(/;$/u, "");
@@ -1775,7 +1848,7 @@ function requirementSourceSegments(content: string): RequirementSourceSegment[] 
         end,
         isMarkdownHeading: false,
         isListItem: blockIsListItem,
-        canBeHeading: spans.length === 1 && !blockIsListItem
+        canBeHeading: units.length === 1 && !blockIsListItem
       });
     }
 
@@ -1913,6 +1986,90 @@ function sentenceSpans(text: string): Array<{ start: number; end: number }> {
   return spans;
 }
 
+/**
+ * Split one sentence into independent instruction clauses.
+ *
+ * The sentence was the smallest unit a requirement could occupy, which meant a single sentence
+ * carrying several deliverables became a single requirement: "...: finalize CHANGELOG.md, update
+ * release version metadata, create a git commit, and validate the package" recorded one obligation
+ * spanning all four, and a prohibition anywhere inside would have flipped all four at once.
+ * Semicolons were already clause boundaries (see `sentenceSpans`); commas and `and` were not.
+ *
+ * Splitting is deliberately conservative: every resulting piece must stand on its own as an
+ * instruction or a guardrail, so a comma list of nouns ("Fix the login, signup, and reset flows")
+ * stays one requirement. Offsets remain exact against the sentence, which keeps the caller's
+ * mapping back into the original source unchanged.
+ */
+function clauseSpans(text: string): Array<{ start: number; end: number }> {
+  const whole = [{ start: 0, end: text.length }];
+  // A colon introduces an enumeration; the text before it is the first clause.
+  const colon = /:[ \t]+/u.exec(text);
+  const bodyStart = colon === null ? 0 : colon.index + colon[0].length;
+  const parts: Array<{ start: number; end: number }> = [];
+
+  if (colon !== null) {
+    parts.push({ start: 0, end: colon.index });
+  }
+
+  const body = text.slice(bodyStart);
+  // The last alternative consumes only the whitespace before a trailing constraint, so "validate
+  // the package without publishing it" separates the action from its guardrail instead of typing
+  // the whole clause as a prohibition and losing the action.
+  const separator =
+    /,[ \t]+(?:and[ \t]+|then[ \t]+)?|[ \t]+and[ \t]+(?=\S)|[ \t]+(?=(?:without|rather than|instead of)[ \t]+\w+ing\b)/gu;
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = separator.exec(body)) !== null) {
+    parts.push({ start: bodyStart + cursor, end: bodyStart + match.index });
+    cursor = separator.lastIndex;
+  }
+
+  parts.push({ start: bodyStart + cursor, end: text.length });
+
+  const trimmed = parts
+    .map((part) => trimSpan(text, part))
+    .filter((part) => part.end > part.start);
+
+  if (trimmed.length < 2) {
+    return whole;
+  }
+
+  const standalone = trimmed.every((part) => {
+    const clause = text.slice(part.start, part.end);
+
+    return (
+      hasActionableRequirementVerb(clause) ||
+      hasExplicitRequirementSignal(clause) ||
+      isTrailingConstraintClause(clause)
+    );
+  });
+
+  return standalone ? trimmed : whole;
+}
+
+/** A clause that only constrains the instruction before it, such as "without publishing it". */
+function isTrailingConstraintClause(text: string): boolean {
+  return /^(?:without|rather than|instead of)[ \t]+\w+ing\b/iu.test(text.trim());
+}
+
+function trimSpan(
+  text: string,
+  span: { start: number; end: number }
+): { start: number; end: number } {
+  let { start, end } = span;
+
+  while (start < end && /\s/u.test(text[start] ?? "")) {
+    start += 1;
+  }
+
+  while (end > start && /\s/u.test(text[end - 1] ?? "")) {
+    end -= 1;
+  }
+
+  return { start, end };
+}
+
 function isAbbreviationBoundary(text: string, terminatorIndex: number): boolean {
   const word = /([A-Za-z][A-Za-z.]*)$/u.exec(text.slice(0, terminatorIndex))?.[1];
 
@@ -1939,7 +2096,7 @@ function hasActionableRequirementVerb(text: string): boolean {
   const unambiguous =
     /\b(?:implement|supersede|refactor|reimplement|deprecate)\b|\bmake sure\b/iu.test(text);
   const imperative =
-    /^(?:update|fix|add|remove|preserve|support|verify|validate|run|prepare|document|replace|create|delete|rename|migrate|return|stream|expose|handle|emit|register|extend|enable|disable|move|split|extract|resolve|address|apply|complete|correct|adjust|convert|restore|harden|simplify|refactor|port|upgrade|wire|rewrite|introduce|drop|allow|prevent|reject|accept|print|report|store|load|parse|render|check)\s+(?!has\b|have\b|had\b|is\b|are\b|was\b|were\b|will\b|would\b|can\b|could\b|should\b|may\b|must\b|might\b)/iu.test(
+    /^(?:update|fix|add|remove|preserve|support|verify|validate|run|prepare|document|replace|create|delete|rename|migrate|return|stream|expose|handle|emit|register|extend|enable|disable|move|split|extract|resolve|address|apply|complete|correct|adjust|convert|restore|harden|simplify|refactor|port|upgrade|wire|rewrite|introduce|drop|allow|prevent|reject|accept|print|report|store|load|parse|render|check|finalize|finalise|bump|generate|configure)\s+(?!has\b|have\b|had\b|is\b|are\b|was\b|were\b|will\b|would\b|can\b|could\b|should\b|may\b|must\b|might\b)/iu.test(
       text
     );
 
@@ -2028,6 +2185,19 @@ function classifyRequirementObligation(
     )
   ) {
     return "prohibited";
+  }
+
+  // A constraint stated as "... without publishing it" carries no negative modal, so it used to be
+  // absorbed into the deliverable beside it and disappear. Clause splitting now isolates it, and
+  // recording it as a suggestion keeps it visible.
+  //
+  // It is deliberately not `prohibited`: "validate the package without publishing it" forbids an
+  // action, while "add a surface so agents get guidance without writing" describes the purpose of
+  // the work, and no deterministic test separates them. Prohibitions produce blocking conflicts, so
+  // claiming one here would fail closed on ordinary descriptive text. Advisory matches what the
+  // evidence supports -- the same stance the docs take on every other ambiguous requirement.
+  if (isTrailingConstraintClause(text)) {
+    return "suggestion";
   }
 
   // A leading "No ..." states a prohibition ("No other customer's data is reachable"). A bare
@@ -2447,10 +2617,12 @@ function requirementEvidence(
     }
   }
 
-  if (requirement.category === "verification") {
-    return planStructure.hasVerification
-      ? { coverage: "addressed", evidence: ["verification wording"] }
-      : { coverage: "missing", evidence: [] };
+  // Verification wording confirms coverage, but its absence does not disprove it. Returning
+  // `missing` outright skipped the token-overlap fallback every other category gets, so a
+  // requirement that only happened to mention "validate" was judged solely on whether the plan
+  // said "test" -- and a plan that addressed the actual work scored as missing it.
+  if (requirement.category === "verification" && planStructure.hasVerification) {
+    return { coverage: "addressed", evidence: ["verification wording"] };
   }
 
   if (
@@ -2573,7 +2745,11 @@ function formatTaskReference(
     `- Canonical task: ${canonicalTask.artifactPath}`,
     `- Canonical revision: ${canonicalTask.activeRevisionId}`,
     `- Canonical hash: ${canonicalTask.contentHash}`,
-    `- Task preview: ${preview}`
+    `- Task preview: ${preview}`,
+    // Nothing else in the artifact set says which task it belongs to. An agent that cannot re-run
+    // preflight -- the read-only planning case -- would otherwise follow a previous task's scope
+    // with no signal that it had gone stale.
+    "- If this is not the task you are working on, these artifacts are stale: re-run preflight."
   ].join("\n");
 }
 
@@ -2636,10 +2812,16 @@ function formatBriefCoverageSection(
 
   return [
     "## Canonical requirement coverage",
-    `- Coverage status: ${coverage.coverageStatus}`,
+    // This measures the brief against the requirement ledger, never the ledger against the task.
+    // Reported as bare "Coverage status: complete" it read as "the task was fully understood", and
+    // a task whose four deliverables collapsed into one requirement still reported complete with
+    // nothing omitted. Say what is being compared, and show what the ledger actually holds.
+    `- Brief coverage of extracted requirements: ${coverage.coverageStatus}`,
+    `- Requirements extracted from the canonical task: ${ledger.requirements.length}`,
     `- Mandatory/prohibited requirements checked: ${coverage.requirements.length}`,
     `- Omitted from navigation body: ${coverage.omittedRequirementCount}`,
     `- Ambiguous coverage: ${coverage.ambiguousRequirementCount}`,
+    "- This compares the brief with the extracted requirements. It does not measure whether extraction captured the whole task; read the canonical task for that.",
     "",
     "Canonical requirements not repeated in this brief:",
     ...(omitted.length === 0
@@ -3107,9 +3289,10 @@ function analyzeTaskScope(task: string, additionalContextFiles: string[] = []): 
     }
   }
 
+  const readOnlyPhrasePaths = new Set(extractReadOnlyContextPaths(task));
   const contextFiles = new Set([
     ...additionalContextFiles.map(normalizePath),
-    ...extractReadOnlyContextPaths(task)
+    ...readOnlyPhrasePaths
   ]);
 
   for (const path of explicitEditTargets) {
@@ -3124,8 +3307,19 @@ function analyzeTaskScope(task: string, additionalContextFiles: string[] = []): 
   // context match. Requiring a change and forbidding one are contradictory instructions, and the
   // requirement is the one the user stated directly -- so it wins. This keeps the two path lists
   // disjoint by construction rather than by the accuracy of clause segmentation.
+  //
+  // The requirement ledger and the edit-target extractor are two path readers over one task, and
+  // they disagreed: "finalize CHANGELOG.md, update version metadata, ..." put CHANGELOG.md in the
+  // ledger's relatedPaths but left explicitScope empty, so the one file the user named by name was
+  // indistinguishable from the lexical guesses. Promote those paths -- except where the task marks
+  // the path as reference material, since relatedPaths spans a whole requirement and would
+  // otherwise turn "based on README.md" into an edit target.
   for (const path of requiredRequirementPaths(task)) {
     contextFiles.delete(path);
+
+    if (!readOnlyPhrasePaths.has(path) && !explicitOnlyTargets.has(path)) {
+      explicitEditTargets.add(path);
+    }
   }
 
   return {
@@ -6310,11 +6504,19 @@ function buildBudgetReasons(
   input: CreateScopeBudgetInput,
   defaults: ScopeBudgetDefault,
   allowedPaths: string[],
-  blockedWithoutApproval: string[]
+  blockedWithoutApproval: string[],
+  documentationFallbackApplied = false
 ): string[] {
   const reasons = [
     `Classified as ${input.classification.taskType} with ${input.classification.confidence} confidence.`,
-    `Using ${input.classification.taskType} default expected file range ${defaults.expectedFilesChanged.min}-${defaults.expectedFilesChanged.max}.`,
+    ...(documentationFallbackApplied
+      ? [
+          "Classified as documentation_update but no documentation-only scope was named; using unknown defaults instead.",
+          `Using unknown default expected file range ${defaults.expectedFilesChanged.min}-${defaults.expectedFilesChanged.max}.`
+        ]
+      : [
+          `Using ${input.classification.taskType} default expected file range ${defaults.expectedFilesChanged.min}-${defaults.expectedFilesChanged.max}.`
+        ]),
     `Repo context scanned ${input.repoContext.scannedFileCount} files.`
   ];
 
@@ -6897,8 +7099,12 @@ function isDocumentationOnlyTask(task: string): boolean {
   const hasDocSignal =
     /\b(?:docs?|documentation|readme|changelog|guide|markdown|context)\b/iu.test(task) ||
     /\.md\b/iu.test(task);
+  // Release work mentions a changelog, so it reads as documentation until you notice it also bumps
+  // package metadata and a lockfile. Matching only the exact bigrams "package metadata"/"package
+  // version" let "release version metadata" and "npm package" through, and a release task was
+  // classified documentation_update: low risk, no plan required, a two-file budget.
   const hasSensitiveSignal =
-    /\b(?:dependency|dependencies|package metadata|package version|ci|workflow|pipeline|auth|security|payment|migration|schema|infrastructure|config)\b/iu.test(
+    /\b(?:dependency|dependencies|package metadata|package version|version metadata|version bump|release|releasing|publish|publishing|npm|lockfile|lock file|package\.json|ci|workflow|pipeline|auth|security|payment|migration|schema|infrastructure|config)\b/iu.test(
       task
     );
   const hasCodeSignal =
@@ -6918,18 +7124,55 @@ function isDocumentationOnlyTask(task: string): boolean {
   );
 }
 
-function buildClassification(rule: ClassificationRule, task: string): TaskClassification {
+function buildClassification(
+  rule: ClassificationRule,
+  task: string,
+  margin?: { matchCount: number; runnerUpMatchCount: number }
+): TaskClassification {
   const matches = findMatches(rule.patterns, task);
 
   return {
     taskType: rule.taskType,
-    confidence: matches.length > 1 ? "high" : rule.confidence,
+    confidence: classificationConfidence(rule, matches.length, margin),
     riskLevel: rule.riskLevel,
     reasons: matches.map((match) => `Matched "${match}" task signal.`),
     likelyRequiresTests: rule.likelyRequiresTests,
     likelyAllowsNewDependencies: rule.likelyAllowsNewDependencies,
     workflowProfile: workflowProfileForTaskType(rule.taskType, task)
   };
+}
+
+/**
+ * Confidence is how clearly this rule beat the alternatives, not how many words it matched.
+ *
+ * Counting matches alone reported `high` for a task that hit one rule twice by coincidence -- the
+ * release task matched documentation_update on "CHANGELOG" and ".md" and was published as a
+ * high-confidence documentation update. A rule that another rule matched just as often has not
+ * established anything, so it stays at or below the rule's own baseline.
+ */
+function classificationConfidence(
+  rule: ClassificationRule,
+  matchCount: number,
+  margin?: { matchCount: number; runnerUpMatchCount: number }
+): TaskClassification["confidence"] {
+  // A tie means declaration order alone picked the winner, so nothing was established. Anything
+  // else keeps the original behaviour: a rule the task matched more than once reads as high.
+  if (margin !== undefined && margin.matchCount === margin.runnerUpMatchCount) {
+    return "low";
+  }
+
+  return matchCount > 1 ? "high" : rule.confidence;
+}
+
+const sensitiveTaskTypes = new Set<TaskType>([
+  "dependency_upgrade",
+  "migration",
+  "auth_security_change",
+  "infra_ci_change"
+]);
+
+function isSensitiveTaskType(taskType: TaskType): boolean {
+  return sensitiveTaskTypes.has(taskType);
 }
 
 function classifyComposedLocalBehaviorTask(task: string): TaskClassification | undefined {

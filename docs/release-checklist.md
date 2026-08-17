@@ -1,11 +1,12 @@
 # Release Checklist
 
-Use this checklist for the local-only 1.1 release candidate.
+Use this checklist for the local-only 1.2 release candidate.
 
-Current release target: `1.1.0`.
+Current release target: `1.2.0`.
 
-Release focus: audit hardening for canonical requirement parsing, scope and
-completion enforcement, Windows command execution, and compression metrics.
+Release focus: a read-only `--plan-mode` surface for agents that cannot write yet,
+classification and requirement-extraction accuracy for short and long prompts, and a
+completion gate that reads recorded command attestations.
 
 ## Signal Quality Gates
 
@@ -39,7 +40,7 @@ completion enforcement, Windows command execution, and compression metrics.
 
 ## Packed Install
 
-- Install `dist-pack/gleip-1.1.0.tgz` into a clean external temp repo.
+- Install `dist-pack/gleip-1.2.0.tgz` into a clean external temp repo.
 - Verify:
   - `npx gleip --help`
   - `npx gleip --version`
@@ -57,6 +58,10 @@ completion enforcement, Windows command execution, and compression metrics.
   - `npx gleip check --incremental --force`
   - `npx gleip check --incremental --ci`
   - `npx gleip status --compact`
+  - `npx gleip preflight --plan-mode "<task>"` and confirm the working tree is unchanged
+  - `npx gleip validate-plan --plan-mode --task "<task>" "<plan>"` with no active session
+  - `npx gleip check --plan-mode`
+  - `npx gleip run -- npm test` followed by `npx gleip finalize`, and confirm the attested run satisfies verification
   - `npx gleip replay`
   - `npx gleip finalize`
   - `npx --no-install gleip uninstall --dry-run`

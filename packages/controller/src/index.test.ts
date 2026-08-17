@@ -364,6 +364,27 @@ describe("detectScopeDrift", () => {
     );
   });
 
+  // Substring matching read a `process.exit` call as the `xit` marker, so ordinary Node code was
+  // reported as adding a skipped test -- at action_required severity.
+  it.each([
+    ["+  process.exit(0);\n"],
+    ["+const done = await client.exit(1);\n"],
+    ["+  awaiting(callback);\n"],
+    ["+// suspending() is unrelated\n"]
+  ])("does not read %j as a skipped test", (rawDiff) => {
+    const result = detectScopeDrift({
+      scopeBudget: budget(),
+      gitDiffContext: diff({
+        changedFiles: ["src/users/runner.ts"],
+        fileStats: [{ path: "src/users/runner.ts", added: 1, deleted: 0 }],
+        rawDiff,
+        totalLinesAdded: 1
+      })
+    });
+
+    expect(result.findings.map((finding) => finding.code)).not.toContain("TEST_SKIPPED");
+  });
+
   it("requires cleanup when env files change", () => {
     const result = detectScopeDrift({
       scopeBudget: budget(),
@@ -1106,6 +1127,91 @@ describe("session reports", () => {
     expect(report.summary.risksMentioned).toBe(false);
     expect(report.warnings.map((warning) => warning.id)).toContain("output.repeated-narration");
     expect(report.efficiency.breakdown.outputWasteAvoided).toBeGreaterThan(0);
+  });
+
+  // An attested command carries an exit code and the fingerprint it ran against; status prose
+  // carries only the agent's account. The gate read the prose and ignored the attestation.
+  describe("verification evidence from command attestations", () => {
+    const reportWithVerification = (
+      verificationEvidence?: Parameters<typeof generateSessionReport>[0]["verificationEvidence"]
+    ) =>
+      generateSessionReport({
+        version: "1.2.0",
+        schemaVersion: "1.2.0",
+        generatedAt: "2026-08-17T00:00:00.000Z",
+        scopeBudget: {
+          softLimits: { maxFilesChanged: 5, maxLinesAdded: 100, maxLinesDeleted: 100 },
+          allowedPaths: ["src/runtime.ts"],
+          expectedPaths: ["src/runtime.ts"],
+          requiredTests: true,
+          verificationExpected: true,
+          workflowProfile: "local_behavior_change",
+          planRequired: false
+        },
+        diff: reportDiff({
+          changedFiles: ["src/runtime.ts"],
+          fileStats: [{ path: "src/runtime.ts", added: 2, deleted: 0 }],
+          totalLinesAdded: 2
+        }),
+        driftResult: { status: "clean", findings: [] },
+        statusContent: "# Gleip Status\n\n- Session files changed: 1\n",
+        ...(verificationEvidence === undefined ? {} : { verificationEvidence })
+      });
+
+    const warningIds = (report: ReturnType<typeof generateSessionReport>) =>
+      report.warnings.map((warning) => warning.id);
+
+    it("accepts a passing attested command as verification", () => {
+      const report = reportWithVerification({
+        state: "satisfied",
+        evidenceIds: ["evidence-1"],
+        commands: ["pnpm test"]
+      });
+
+      expect(report.summary.testsMentioned).toBe(true);
+      expect(warningIds(report)).not.toContain("review.verification-evidence-missing");
+    });
+
+    it("still reports missing verification when no attestation exists", () => {
+      const report = reportWithVerification({ state: "missing", evidenceIds: [], commands: [] });
+
+      // With no attestation the status artifact is the only place verification could have been
+      // reported, so the output-discipline warning remains the right diagnosis.
+      expect(warningIds(report)).toContain("output.tests-missing");
+      expect(report.summary.testsMentioned).toBe(false);
+    });
+
+    it("distinguishes a failed run from a missing one", () => {
+      const report = reportWithVerification({
+        state: "failed",
+        evidenceIds: ["evidence-1"],
+        commands: ["pnpm test"]
+      });
+      const warning = report.warnings.find(
+        (item) => item.id === "review.verification-evidence-missing"
+      );
+
+      expect(warning?.message).toBe("Recorded verification failed.");
+      expect(warning?.suggestedAction).toContain("Fix the failure");
+    });
+
+    it("distinguishes a stale run from a missing one", () => {
+      const report = reportWithVerification({
+        state: "stale",
+        evidenceIds: ["evidence-1"],
+        commands: ["pnpm test"]
+      });
+      const warning = report.warnings.find(
+        (item) => item.id === "review.verification-evidence-missing"
+      );
+
+      expect(warning?.message).toBe("Recorded verification ran against a different repository state.");
+      expect(warning?.suggestedAction).toContain("Re-run");
+    });
+
+    it("keeps reading status wording when no evidence is supplied", () => {
+      expect(reportWithVerification().summary.testsMentioned).toBe(false);
+    });
   });
 
   it("keeps review readiness below 100 when required verification evidence is missing", () => {

@@ -330,6 +330,117 @@ export function revokeApprovalRecord(approval: ApprovalRecord, revokedAt: string
   };
 }
 
+export interface VerificationEvidenceSummary {
+  /**
+   * `satisfied` only when a verification command ran to success against the exact repository state
+   * being reported on. `failed` and `stale` are distinct because the actions they call for differ:
+   * fix the failure, or re-run against the current state.
+   */
+  state: "satisfied" | "failed" | "stale" | "missing";
+  evidenceIds: string[];
+  commands: string[];
+}
+
+/**
+ * Classify recorded command attestations as verification evidence for one repository state.
+ *
+ * `gleip run -- pnpm test` records an exact-state attestation with an exit code and the repository
+ * fingerprint before and after the run, but the completion gate asked a different question --
+ * whether `.gleip/status.md` prose mentioned tests. A real, passing, attested test run therefore
+ * left `finalize` reporting "Required verification evidence is missing", while narration alone
+ * satisfied it. This reads the attestations instead, so the strongest evidence class Gleip records
+ * is the one the gate consults.
+ */
+export function summarizeVerificationEvidence(
+  evidenceItems: EvidenceItem[],
+  repositoryFingerprint: string,
+  taskRevision: number,
+  checkedAt: string
+): VerificationEvidenceSummary {
+  const attestations = evidenceItems
+    .map((item) => evidenceAtRepositoryState(item, repositoryFingerprint, taskRevision, checkedAt))
+    .filter(
+      (item): item is EvidenceItem & { payload: CommandAttestationPayload } =>
+        item.evidenceClass === "command_attestation"
+    )
+    .filter((item) => isVerificationCommand(item.payload));
+
+  const summarize = (
+    state: VerificationEvidenceSummary["state"],
+    items: Array<EvidenceItem & { payload: CommandAttestationPayload }>
+  ): VerificationEvidenceSummary => ({
+    state,
+    evidenceIds: items.map((item) => item.id),
+    commands: items.map((item) => describeCommand(item.payload))
+  });
+
+  const current = attestations.filter((item) => item.staleness.state !== "stale");
+  // A failing run followed by a passing one is the ordinary fix-then-re-run loop, so any current
+  // success satisfies the requirement rather than the most recent attestation deciding alone.
+  const passed = current.filter((item) => item.payload.exitCode === 0);
+
+  if (passed.length > 0) {
+    return summarize("satisfied", passed);
+  }
+
+  if (current.length > 0) {
+    return summarize("failed", current);
+  }
+
+  return attestations.length > 0
+    ? summarize("stale", attestations)
+    : { state: "missing", evidenceIds: [], commands: [] };
+}
+
+/**
+ * Whether an attested command verifies the repository.
+ *
+ * Deliberately a closed vocabulary of runners and script names: `gleip run` wraps any command, and
+ * treating every wrapped command as verification would let `gleip run -- ls` clear the gate.
+ */
+export function isVerificationCommand(payload: CommandAttestationPayload): boolean {
+  const executable = normalizeExecutableName(payload.executable);
+  const argumentText = payload.arguments.join(" ").toLowerCase();
+
+  // Runners that verify by virtue of being invoked at all.
+  if (
+    /^(?:vitest|jest|mocha|ava|pytest|tox|nox|rspec|phpunit|eslint|ruff|tsc|mypy|flake8|pylint|golangci-lint|clippy-driver)$/u.test(
+      executable
+    )
+  ) {
+    return true;
+  }
+
+  // Toolchains where a subcommand decides.
+  if (/^(?:go|cargo|dotnet|mvn|gradle|swift|bun|deno|make|just|task)$/u.test(executable)) {
+    return /\b(?:test|check|vet|lint|build|verify|clippy|typecheck)\b/u.test(argumentText);
+  }
+
+  // Package managers and script runners: the script name decides.
+  if (/^(?:npm|pnpm|yarn|npx|pnpx|bunx)$/u.test(executable)) {
+    return /\b(?:test|tests|lint|typecheck|type-check|tsc|build|check|checks|verify|smoke|coverage|e2e|ci)\b/u.test(
+      argumentText
+    );
+  }
+
+  if (executable === "python" || executable === "python3") {
+    return /\b(?:pytest|unittest|-m\s+tox)\b/u.test(argumentText);
+  }
+
+  return false;
+}
+
+/** Strip a directory prefix, a Windows `.cmd`/`.exe` shim suffix, and case. */
+function normalizeExecutableName(executable: string): string {
+  const base = executable.replace(/\\/gu, "/").split("/").pop() ?? executable;
+
+  return base.toLowerCase().replace(/\.(?:cmd|bat|exe|ps1)$/u, "");
+}
+
+function describeCommand(payload: CommandAttestationPayload): string {
+  return [normalizeExecutableName(payload.executable), ...payload.arguments].join(" ").trim();
+}
+
 export function createFinalEvidenceBundle(
   input: CreateFinalEvidenceBundleInput
 ): FinalEvidenceBundle {

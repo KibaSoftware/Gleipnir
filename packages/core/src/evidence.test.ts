@@ -7,8 +7,10 @@ import {
   createEvidenceItem,
   createFinalEvidenceBundle,
   evidenceAtRepositoryState,
+  isVerificationCommand,
   revokeApprovalRecord,
   sha256Digest,
+  summarizeVerificationEvidence,
   verifyEvidenceItem,
   type CommandAttestationPayload,
   type EvidenceClass
@@ -188,6 +190,72 @@ describe("final evidence bundle", () => {
         approvals: [approval]
       }).completionStatus
     ).toBe("blocked_completion");
+  });
+});
+
+// `gleip run -- pnpm test` records an exact-state attestation with an exit code, but the completion
+// gate asked whether status prose mentioned tests, so a real passing run counted for nothing.
+describe("verification evidence", () => {
+  const summarize = (items: ReturnType<typeof evidence>[], fingerprint = "repo-final") =>
+    summarizeVerificationEvidence(items, fingerprint, 1, now);
+
+  it("treats a passing verification command at the current state as satisfied", () => {
+    const summary = summarize([
+      evidence("command_attestation", "repo-final", 1, { ...commandPayload(0) })
+    ]);
+
+    expect(summary.state).toBe("satisfied");
+    expect(summary.commands).toEqual(["pnpm test"]);
+  });
+
+  it("does not let a failing verification command satisfy the requirement", () => {
+    expect(
+      summarize([evidence("command_attestation", "repo-final", 1, { ...commandPayload(1) })]).state
+    ).toBe("failed");
+  });
+
+  it("does not let a run against a different repository state satisfy the requirement", () => {
+    expect(
+      summarize([evidence("command_attestation", "repo-old", 1, { ...commandPayload(0) })]).state
+    ).toBe("stale");
+  });
+
+  it("accepts a passing re-run after an earlier failure", () => {
+    expect(
+      summarize([
+        evidence("command_attestation", "repo-final", 1, { ...commandPayload(1) }),
+        evidence("command_attestation", "repo-final", 1, { ...commandPayload(0) })
+      ]).state
+    ).toBe("satisfied");
+  });
+
+  it("ignores attested commands that do not verify anything", () => {
+    const listing = { ...commandPayload(0), executable: "ls", arguments: ["-la"] };
+
+    expect(summarize([evidence("command_attestation", "repo-final", 1, listing)]).state).toBe(
+      "missing"
+    );
+  });
+
+  it("reports missing when no command was attested", () => {
+    expect(summarize([evidence("observed_fact", "repo-final", 1)]).state).toBe("missing");
+  });
+
+  it.each([
+    ["pnpm.cmd", ["test"], true],
+    ["pnpm", ["run", "typecheck"], true],
+    ["/usr/local/bin/npm", ["run", "lint"], true],
+    ["vitest", ["run"], true],
+    ["cargo", ["test"], true],
+    ["go", ["test", "./..."], true],
+    ["python3", ["-m", "pytest"], true],
+    ["npm", ["install"], false],
+    ["git", ["status"], false],
+    ["ls", ["-la"], false]
+  ])("classifies %s %j as verification=%s", (executable, args, expected) => {
+    expect(isVerificationCommand({ ...commandPayload(0), executable, arguments: args })).toBe(
+      expected
+    );
   });
 });
 

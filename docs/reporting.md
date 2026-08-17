@@ -17,6 +17,16 @@ The final bundle separates:
 
 Only a successful, current `command_attestation` can satisfy a configured required command. Status prose such as “tests passed” remains an `agent_claim`. Repository or task changes make bound attestations and approvals stale or invalid.
 
+## Verification Evidence
+
+When the workflow profile expects verification, `gleip finalize` and `gleip report` read the run's command attestations before falling back to the status artifact. An attestation satisfies the requirement only when all three hold:
+
+- the command is a recognized verification command — a test runner, linter, type checker, or a package-manager script named `test`, `lint`, `typecheck`, `build`, `check`, `smoke`, `coverage`, `e2e`, or `ci`. `gleip run -- ls` does not qualify;
+- it exited zero. A failing run followed by a passing one is satisfied, since that is the ordinary fix-and-re-run loop;
+- it ran against the repository state being reported on. Changing a file after the run makes the evidence stale.
+
+Verification that failed, that went stale, and that was never recorded are reported separately, because the action each calls for differs. Status prose remains accepted as a fallback and remains an `agent_claim`; an attestation outranks it because it carries an exit code and the fingerprint it ran against.
+
 ## Completion Status
 
 - `complete`: canonical authority and all configured required command attestations are current, with no unresolved blocking hazard.

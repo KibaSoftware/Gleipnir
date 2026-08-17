@@ -1146,6 +1146,157 @@ describe("canonical requirement ledger", () => {
     });
   });
 
+  describe("multi-clause sentences", () => {
+    // The sentence used to be the smallest unit a requirement could occupy, so this task recorded
+    // one obligation spanning all four deliverables and dropped the constraint entirely.
+    const release =
+      "Prepare the patch for publishing as version 1.1: finalize CHANGELOG.md, update release version metadata, create an appropriate git commit, and validate the npm package without publishing it.";
+
+    it("records each deliverable in a colon-introduced list as its own requirement", () => {
+      const ledger = extractRequirementLedger(release);
+      const required = ledger.requirements.filter(
+        (requirement) => requirement.obligation === "required"
+      );
+
+      expect(required.length).toBeGreaterThanOrEqual(4);
+      expect(required.map((requirement) => requirement.sourceText)).toContain(
+        "finalize CHANGELOG.md"
+      );
+      expect(required.map((requirement) => requirement.sourceText)).toContain(
+        "update release version metadata"
+      );
+    });
+
+    it("records a without-clause as its own advisory constraint", () => {
+      // Previously absorbed into the deliverable beside it and lost. Advisory rather than
+      // prohibited, because the same phrasing also states purpose rather than forbidding anything.
+      const ledger = extractRequirementLedger(release);
+      const constraint = ledger.requirements.find((requirement) =>
+        requirement.sourceText.startsWith("without publishing it")
+      );
+
+      expect(constraint).toBeDefined();
+      expect(constraint?.obligation).toBe("suggestion");
+      expect(
+        ledger.requirements.filter((requirement) => requirement.sourceText.includes("npm package"))
+      ).toHaveLength(1);
+    });
+
+    it("keeps requirement spans exact against the source", () => {
+      const ledger = extractRequirementLedger(release);
+
+      for (const requirement of ledger.requirements) {
+        expect(release.slice(requirement.sourceStart, requirement.sourceEnd)).toBe(
+          requirement.sourceText
+        );
+      }
+    });
+
+    it("splits an instruction from its guardrail joined by and", () => {
+      const ledger = extractRequirementLedger(
+        "Refactor the parser and do not change the public API."
+      );
+
+      expect(ledger.requirements.map((requirement) => requirement.obligation)).toEqual([
+        "required",
+        "prohibited"
+      ]);
+    });
+
+    it("does not read a descriptive without-clause as a prohibition", () => {
+      // The phrase states what the feature does, not something forbidden. Matching it anywhere in
+      // the unit marked the entire request prohibited and buried the work being asked for.
+      const ledger = extractRequirementLedger(
+        "Add a --plan-mode surface so agents can get scope guidance without writing."
+      );
+
+      expect(ledger.requirements.map((requirement) => requirement.obligation)).not.toContain(
+        "prohibited"
+      );
+    });
+
+    it("does not split a comma list of nouns into separate requirements", () => {
+      const ledger = extractRequirementLedger("Fix the login, signup, and reset flows.");
+
+      expect(ledger.requirements).toHaveLength(1);
+    });
+  });
+
+  describe("classification of tasks that read like documentation", () => {
+    const release =
+      "Prepare the patch for publishing as version 1.1: finalize CHANGELOG.md, update release version metadata, create an appropriate git commit, and validate the npm package.";
+
+    it("does not classify release work as a documentation update", () => {
+      // "CHANGELOG" and ".md" made this a low-risk documentation_update with plan validation off,
+      // while the work bumps package metadata and a lockfile.
+      expect(classifyTask(release).taskType).not.toBe("documentation_update");
+    });
+
+    it("does not pair a documentation-sized budget with a code-sized scope", () => {
+      const budget = createScopeBudget({
+        task: release,
+        classification: { ...classifyTask(release), taskType: "documentation_update" },
+        repoContext: emptyRepoContext()
+      });
+
+      if (budget.workflowProfile !== "documentation_only") {
+        expect(budget.expectedFilesChanged.max).toBeGreaterThan(2);
+        expect(budget.reasons.join(" ")).toContain("no documentation-only scope was named");
+      }
+    });
+
+    it("keeps a task classified only by a prohibition out of unknown", () => {
+      // Blanking the prohibition consumed the whole one-sentence task, leaving nothing to classify.
+      expect(classifyTask("Refactor the parser and do not change the public API.").taskType).toBe(
+        "refactor"
+      );
+    });
+  });
+
+  describe("scope budget for terse prompts", () => {
+    it("promotes a path named in a requirement into explicit scope", () => {
+      const task = "Prepare the release: finalize CHANGELOG.md and update the version.";
+      const budget = createScopeBudget({
+        task,
+        classification: classifyTask(task),
+        repoContext: emptyRepoContext()
+      });
+
+      expect(budget.explicitScope).toContain("CHANGELOG.md");
+    });
+
+    it("does not score a verification requirement as missing without verification wording", () => {
+      // The verification branch returned `missing` outright, skipping the token-overlap fallback
+      // every other category gets, so a plan that addressed the work still scored as missing it.
+      const task = "Validate the release package.";
+      const result = validateAgentPlan({
+        planText: "Validate the release package by inspecting the packed tarball contents.",
+        scopeBudget: createScopeBudget({
+          task,
+          classification: classifyTask(task),
+          repoContext: emptyRepoContext()
+        }),
+        taskText: task,
+        requirementLedger: extractRequirementLedger(task)
+      });
+
+      expect(
+        result.findings.some((finding) => finding.code === "CANONICAL_REQUIREMENT_MISSING")
+      ).toBe(false);
+    });
+
+    it("still asks for a plan when open-ended restructuring names no target", () => {
+      const task = "Rewrite the parser.";
+      const budget = createScopeBudget({
+        task,
+        classification: classifyTask(task),
+        repoContext: emptyRepoContext()
+      });
+
+      expect(budget.planRequired).toBe(true);
+    });
+  });
+
   describe("obligation classification on ordinary English", () => {
     const obligationOf = (text: string): string | undefined =>
       extractRequirementLedger(text).requirements[0]?.obligation;

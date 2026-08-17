@@ -1,6 +1,6 @@
 {
   "name": "@gleip/github-action",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Reserved compatibility placeholder; no GitHub Action runtime is implemented.",
   "license": "Apache-2.0",
   "type": "module",

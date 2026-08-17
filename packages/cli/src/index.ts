@@ -45,6 +45,7 @@ import {
   revokeApproval,
   retrieveContextOriginal,
   sha256Digest,
+  summarizeVerificationEvidence,
   synchronizeEvidenceRun,
   writeAtomicJson,
   writeAtomicText,
@@ -53,7 +54,8 @@ import {
   type CompressionContentClass,
   type CompressionLifecycle,
   type CompressionPolicy,
-  type RequiredCommand
+  type RequiredCommand,
+  type VerificationEvidenceSummary
 } from "../../core/src/index.js";
 import {
   classifyTask as classifyBundledTask,
@@ -214,16 +216,22 @@ interface StatusCommandOptions {
   includeBaseline?: boolean;
   incremental?: boolean;
   json?: boolean;
+  planMode?: boolean;
 }
 
 interface ValidatePlanOptions {
   file?: string;
   json?: boolean;
+  planMode?: boolean;
+  task?: string;
+  taskFile?: string;
 }
 
 interface PreflightOptions {
   amend?: boolean;
   file?: string;
+  json?: boolean;
+  planMode?: boolean;
 }
 
 interface ReportOptions {
@@ -610,6 +618,7 @@ interface GenerateSessionReportInput {
   planValidation?: PlanValidationResult;
   acceptedPlanValidation?: PlanValidationResult;
   statusContent?: string;
+  verificationEvidence?: VerificationEvidenceSummary;
   missingArtifacts?: string[];
   requirementLedger?: RequirementLedger;
 }
@@ -983,13 +992,19 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
     .argument("[task...]", "Task the coding agent is about to implement.")
     .option("--file <path>", "Read the full task text from a file.")
     .option("--amend", "Append this task text as an ordered amendment to the active session.")
+    .option(
+      "--plan-mode",
+      "Print the brief and scope budget without writing any file. For agents that cannot write yet."
+    )
+    .option("--json", "Print the preflight result as JSON.")
     .addHelpText(
       "after",
       [
         "",
         "Examples:",
         '  $ gleip preflight "Fix the checkout discount calculation bug without changing payment provider integration or checkout routing"',
-        "  $ gleip preflight --file task.md"
+        "  $ gleip preflight --file task.md",
+        '  $ gleip preflight --plan-mode "<task>"'
       ].join("\n")
     )
     .action(async (task: string[] | undefined, commandOptions: PreflightOptions) => {
@@ -1019,6 +1034,12 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
     .argument("[planText...]", "Plan text to validate; omit to read from stdin.")
     .option("--file <path>", "Read the plan text from a file.")
     .option("--json", "Print validation result as JSON.")
+    .option(
+      "--plan-mode",
+      "Validate without writing any file. Works without an active session when --task is given."
+    )
+    .option("--task <text>", "Task text to validate against; --plan-mode only.")
+    .option("--task-file <path>", "Read the task text from a file; --plan-mode only.")
     .addHelpText(
       "after",
       [
@@ -1026,7 +1047,8 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
         "Examples:",
         '  $ gleip validate-plan "Update the discount calculation and its focused checkout tests"',
         "  $ gleip validate-plan --file plan.md",
-        "  $ Get-Content plan.md | gleip validate-plan"
+        "  $ Get-Content plan.md | gleip validate-plan",
+        '  $ gleip validate-plan --plan-mode --task "<task>" "<plan>"'
       ].join("\n")
     )
     .action(async (planText: string[] | undefined, commandOptions: ValidatePlanOptions) => {
@@ -1090,6 +1112,7 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
     )
     .option("--ci", "Exit non-zero only for documented high-confidence action findings.")
     .option("--json", "Print check result as JSON.")
+    .option("--plan-mode", "Check without writing the incremental cache or any evidence.")
     .action(async (commandOptions: StatusCommandOptions) => {
       await printStatus(runtime, {
         allowMissingSession: true,
@@ -1100,6 +1123,7 @@ export function createGleipCommand(options: CreateGleipCommandOptions = {}): Com
         incremental: commandOptions.incremental === true,
         force: commandOptions.force === true,
         json: commandOptions.json === true,
+        planMode: commandOptions.planMode === true,
         writeStatusFile: false,
         updateSession: false
       });
@@ -1575,6 +1599,11 @@ async function finalizeEvidence(
   // violation and 25/100 readiness. Both surfaces now read one computation rather than two.
   const completionAttempt = latestValidationAttempt(session);
   const completionAccepted = latestSuccessfulPlanValidation(session);
+  // `finalize` never passed the status artifact, so the verification gate read an empty string and
+  // could not pass for any profile that expects verification. Read the attested commands as the
+  // primary signal and the status artifact as the fallback, matching what `report` does.
+  const completionVerification = verificationEvidenceForRun(runtime, context);
+  const completionStatusContent = currentStatusContent(runtime, context.repositoryFingerprint);
   const completionReport =
     scopeBudget === undefined
       ? undefined
@@ -1596,6 +1625,12 @@ async function finalizeEvidence(
           ...(canonical === undefined
             ? {}
             : { requirementLedger: canonical.requirementLedger }),
+          ...(completionStatusContent === undefined
+            ? {}
+            : { statusContent: completionStatusContent }),
+          ...(completionVerification === undefined
+            ? {}
+            : { verificationEvidence: completionVerification }),
           missingArtifacts: []
         });
   const hazards = [
@@ -2436,6 +2471,13 @@ async function runPreflightCommand(
     return;
   }
 
+  // An amendment revises stored session state, which plan mode exists precisely to avoid.
+  if (options.planMode === true && options.amend === true) {
+    runtime.stdout("--amend records a canonical revision and cannot run with --plan-mode.");
+    runtime.setExitCode(1);
+    return;
+  }
+
   if (options.file !== undefined) {
     const taskPath = resolve(runtime.cwd, options.file);
 
@@ -2460,7 +2502,9 @@ async function runPreflightCommand(
     }
 
     await preflight(runtime, task, normalizeRepoRelativePath(runtime.cwd, taskPath), {
-      amend: options.amend === true
+      amend: options.amend === true,
+      planMode: options.planMode === true,
+      json: options.json === true
     });
     return;
   }
@@ -2473,14 +2517,18 @@ async function runPreflightCommand(
     return;
   }
 
-  await preflight(runtime, inlineTask, undefined, { amend: options.amend === true });
+  await preflight(runtime, inlineTask, undefined, {
+    amend: options.amend === true,
+    planMode: options.planMode === true,
+    json: options.json === true
+  });
 }
 
 async function preflight(
   runtime: CommandRuntime,
   task: string,
   taskFile?: string,
-  options: { amend?: boolean } = {}
+  options: { amend?: boolean; planMode?: boolean; json?: boolean } = {}
 ): Promise<void> {
   const state = loadGleipState(runtime.cwd);
   const createdAt = runtime.now().toISOString();
@@ -2567,6 +2615,26 @@ async function preflight(
   const brief = addBaselineNote(implementationBrief, baseline);
   const repositoryFingerprint = fingerprintRepositoryState(baselineDiff);
   const taskRevision = canonicalTask.revisions.length;
+
+  // Plan mode stops here, before the first write. Everything above is pure computation, so the
+  // guidance an agent gets while it cannot write is the same guidance the persisting run records.
+  if (options.planMode === true) {
+    runtime.stdout(
+      formatCommandOutput(
+        options.json === true
+          ? JSON.stringify(
+              planModePreflightJson(canonicalTask, scopeBudget, brief, classification),
+              null,
+              2
+            )
+          : planModePreflightSummary(brief, scopeBudget),
+        state,
+        "Manual preflight still ran.",
+        options.json === true
+      )
+    );
+    return;
+  }
 
   ensureGleipGitignore(runtime.cwd);
   ensureGleipDirectory(runtime.cwd);
@@ -2720,13 +2788,45 @@ async function validatePlan(
 ): Promise<void> {
   const sessionPath = join(runtime.cwd, ".gleip", "session.json");
   const state = loadGleipState(runtime.cwd);
+  const planMode = options.planMode === true;
 
-  if (!existsSync(sessionPath)) {
+  if (!planMode && (options.task !== undefined || options.taskFile !== undefined)) {
+    runtime.stdout("--task and --task-file require --plan-mode.");
+    runtime.setExitCode(1);
+    return;
+  }
+
+  if (options.task !== undefined && options.taskFile !== undefined) {
+    runtime.stdout("Provide either --task or --task-file, not both.");
+    runtime.setExitCode(1);
+    return;
+  }
+
+  // A plan exists before the session that would normally hold it: in a read-only planning mode the
+  // agent cannot run preflight first. Given --task, derive the same canonical task and scope budget
+  // preflight would have written, in memory, so the verdict does not depend on prior persistence.
+  const ephemeral = planMode
+    ? await ephemeralPlanContext(runtime, options)
+    : { ok: true as const, context: undefined };
+
+  if (!ephemeral.ok) {
+    return;
+  }
+
+  if (ephemeral.context === undefined && !existsSync(sessionPath)) {
+    if (planMode) {
+      runtime.stdout(
+        'No active Gleip session. In plan mode, pass the task: `gleip validate-plan --plan-mode --task "<task>" "<plan>"`.'
+      );
+      runtime.setExitCode(1);
+      return;
+    }
+
     reportNoActiveSession(runtime);
     return;
   }
 
-  const scopeBudget = readScopeBudget(runtime.cwd);
+  const scopeBudget = ephemeral.context?.scopeBudget ?? readScopeBudget(runtime.cwd);
 
   if (scopeBudget === undefined) {
     runtime.stdout(
@@ -2752,6 +2852,7 @@ async function validatePlan(
   const config = (await runtime.loadConfig(runtime.cwd)) as GleipConfigLike;
   const session = readJsonFile<GleipSession>(sessionPath);
   const compatibilityCanonical =
+    ephemeral.context?.canonicalTask ??
     readCanonicalTaskArtifact(runtime.cwd) ??
     canonicalTaskFromCompatibleSession(
       session.value,
@@ -2760,6 +2861,7 @@ async function validatePlan(
     );
 
   if (
+    !planMode &&
     compatibilityCanonical !== undefined &&
     readCanonicalTaskArtifact(runtime.cwd) === undefined
   ) {
@@ -2767,7 +2869,8 @@ async function validatePlan(
     writeCanonicalTaskArtifact(runtime.cwd, compatibilityCanonical);
   }
 
-  const evidenceContext = await activeEvidenceContext(runtime);
+  // activeEvidenceContext synchronizes the run, which takes the write lock and can append events.
+  const evidenceContext = planMode ? undefined : await activeEvidenceContext(runtime);
 
   if (evidenceContext !== undefined) {
     appendRunEvent(runtime.cwd, evidenceContext.runId, {
@@ -2819,7 +2922,7 @@ async function validatePlan(
     );
   }
 
-  if (session.value !== undefined) {
+  if (session.value !== undefined && !planMode) {
     const updatedAt = runtime.now().toISOString();
     const validationRecord = {
       ...result,
@@ -2871,8 +2974,19 @@ async function validatePlan(
   }
   const output =
     options.json === true
-      ? JSON.stringify(planValidationJson(result), null, 2)
-      : planValidationInteractionSummary(result);
+      ? JSON.stringify(
+          planMode
+            ? { ...planValidationJson(result), mode: "plan_mode", persisted: false }
+            : planValidationJson(result),
+          null,
+          2
+        )
+      : planMode
+        ? [
+            planValidationInteractionSummary(result),
+            "Gleip plan mode · nothing was written. Re-run without --plan-mode to record this validation."
+          ].join("\n")
+        : planValidationInteractionSummary(result);
 
   runtime.stdout(
     formatCommandOutput(
@@ -2882,6 +2996,71 @@ async function validatePlan(
       options.json === true
     )
   );
+}
+
+/**
+ * Build the canonical task and scope budget a plan-mode validation needs when no session exists.
+ *
+ * This deliberately reuses the same runtime entry points `preflight` uses, so a plan-mode verdict
+ * cannot drift from the verdict the persisting run would produce.
+ */
+async function ephemeralPlanContext(
+  runtime: CommandRuntime,
+  options: ValidatePlanOptions
+): Promise<
+  | { ok: true; context: { canonicalTask: CanonicalTaskArtifact; scopeBudget: ScopeBudget } }
+  | { ok: true; context: undefined }
+  | { ok: false }
+> {
+  let taskText = options.task;
+
+  if (options.taskFile !== undefined) {
+    const taskPath = resolve(runtime.cwd, options.taskFile);
+
+    if (!existsSync(taskPath) || !statSync(taskPath).isFile()) {
+      runtime.stdout(`Task file not found: ${options.taskFile}.`);
+      runtime.setExitCode(1);
+      return { ok: false };
+    }
+
+    taskText = readFileSync(taskPath, "utf8");
+  }
+
+  if (taskText === undefined || taskText.trim().length === 0) {
+    if (options.task !== undefined || options.taskFile !== undefined) {
+      runtime.stdout("Task text is empty.");
+      runtime.setExitCode(1);
+      return { ok: false };
+    }
+
+    return { ok: true, context: undefined };
+  }
+
+  const createdAt = runtime.now().toISOString();
+  const canonicalTask = createCanonicalTaskArtifact({
+    content: taskText,
+    createdAt,
+    sessionId: createSessionId(createdAt),
+    source: options.taskFile === undefined ? "inline" : "file"
+  });
+  const effectiveTask = canonicalTask.effectiveContent;
+  const config = (await runtime.loadConfig(runtime.cwd)) as GleipConfigLike;
+  const classification = await runtime.classifyTask(effectiveTask);
+  const repoContext = await runtime.discoverRepoContext({
+    cwd: runtime.cwd,
+    task: effectiveTask,
+    contextFiles: options.taskFile === undefined ? [] : [normalizePlanPath(options.taskFile)],
+    config,
+    classification
+  });
+  const scopeBudget = await runtime.createScopeBudget({
+    task: effectiveTask,
+    classification,
+    repoContext,
+    config
+  });
+
+  return { ok: true, context: { canonicalTask, scopeBudget } };
 }
 
 function readPlanText(
@@ -2966,6 +3145,7 @@ interface PrintStatusOptions {
   incremental?: boolean;
   force?: boolean;
   json?: boolean;
+  planMode?: boolean;
   writeStatusFile?: boolean;
   updateSession?: boolean;
 }
@@ -3078,7 +3258,10 @@ async function printStatus(
     writeAtomicText(join(runtime.cwd, ".gleip", "status.md"), status);
   }
 
-  if (session.evidenceRunId !== undefined) {
+  // Evidence recording sat outside both write guards, so `check` -- which passes
+  // writeStatusFile:false and updateSession:false -- still appended to the run ledger. Plan mode
+  // has to mean no write at all, so this is now guarded like every other write on this path.
+  if (session.evidenceRunId !== undefined && options.planMode !== true) {
     recordStatusEvidence(runtime, session.evidenceRunId, {
       createdAt: updatedAt,
       repositoryFingerprint,
@@ -3237,6 +3420,17 @@ async function printReport(runtime: CommandRuntime, options: ReportOptions): Pro
         );
   const latestAttempt = latestValidationAttempt(sessionResult.value);
   const acceptedValidation = latestSuccessfulPlanValidation(sessionResult.value);
+  const reportRunId = readJsonFile<{ runId: string }>(
+    join(runtime.cwd, ".gleip", "active-run.json")
+  ).value?.runId;
+  const reportVerification =
+    reportRunId === undefined
+      ? undefined
+      : verificationEvidenceForRun(runtime, {
+          runId: reportRunId,
+          repositoryFingerprint,
+          taskRevision: canonicalTask?.revisions.length ?? 1
+        });
   const report = await runtime.generateSessionReport({
     version: GLEIP_VERSION,
     schemaVersion: REPORT_SCHEMA_VERSION,
@@ -3254,6 +3448,8 @@ async function printReport(runtime: CommandRuntime, options: ReportOptions): Pro
     ...(statusResult === undefined || !isCurrentStatusContent(statusResult, repositoryFingerprint)
       ? {}
       : { statusContent: statusResult }),
+    // `report` and `finalize` must agree on what counts as verification, so both read attestations.
+    ...(reportVerification === undefined ? {} : { verificationEvidence: reportVerification }),
     missingArtifacts
   });
   const markdown = await runtime.renderSessionReportMarkdown(report);
@@ -4209,6 +4405,9 @@ function gleipSectionContent(target: AgentInstructionTarget): string {
 - If the local package command cannot be run, report that Gleip evidence is unavailable and continue only within the user's existing authority.
 - Before editing code, check \`.gleip/state.json\`. If \`enabled\` is false, treat Gleip guidance as inactive without creating a mandatory confirmation prompt.
 - If enabled, run \`npx --no-install gleip preflight "<user task>"\`.
+- In a read-only planning mode, where you must not write files or run mutating commands, do not run the commands above. Use \`npx --no-install gleip preflight --plan-mode "<user task>"\` and \`npx --no-install gleip validate-plan --plan-mode --task "<user task>" "<plan>"\` instead. Both compute the same guidance and write nothing.
+- \`gleip brief\`, \`gleip state\`, \`gleip status --compact\`, \`gleip check --plan-mode\`, and \`gleip stats\` are also safe to run without writing.
+- Once you are authorized to write, re-run \`preflight\` and \`validate-plan\` without \`--plan-mode\` so the evidence is recorded.
 - Read \`.gleip/canonical-task.json\` first. Treat it as the authoritative task contract.
 - Read \`.gleip/brief.md\` as a derived navigation aid and \`.gleip/scope-budget.json\` as scope guidance.
 - If the brief omits or conflicts with the canonical task, follow the canonical task.
@@ -4287,7 +4486,7 @@ For multi-step tasks, state a brief plan in this format:
 ### Gleip checklist for every coding task
 
 - [ ] Check \`.gleip/state.json\`
-- [ ] Run \`npx --no-install gleip preflight "<task>"\`
+- [ ] Run \`npx --no-install gleip preflight "<task>"\`, or \`preflight --plan-mode\` while you cannot write
 - [ ] Read \`.gleip/canonical-task.json\`
 - [ ] Use \`.gleip/brief.md\` as an index, not a replacement
 - [ ] Validate broad or sensitive plans with \`npx --no-install gleip validate-plan\`
@@ -4887,6 +5086,42 @@ function readTextFile(path: string): string | undefined {
   }
 }
 
+/** The status artifact, only when it describes the repository state being reported on. */
+function currentStatusContent(
+  runtime: CommandRuntime,
+  repositoryFingerprint: string
+): string | undefined {
+  const content = readTextFile(join(runtime.cwd, ".gleip", "status.md"));
+
+  return content !== undefined && isCurrentStatusContent(content, repositoryFingerprint)
+    ? content
+    : undefined;
+}
+
+/**
+ * Classify the run's command attestations as verification evidence for the current state.
+ *
+ * Returns `undefined` when the ledger cannot be read, which the report treats as "not consulted"
+ * and falls back to the status artifact -- the behaviour before attestations were consulted at all.
+ */
+function verificationEvidenceForRun(
+  runtime: CommandRuntime,
+  context: { runId: string; repositoryFingerprint: string; taskRevision: number }
+): VerificationEvidenceSummary | undefined {
+  try {
+    return summarizeVerificationEvidence(
+      replayRun(runtime.cwd, context.runId).evidence,
+      context.repositoryFingerprint,
+      context.taskRevision,
+      runtime.now().toISOString()
+    );
+  } catch {
+    // A corrupt or partially written ledger must not stop completion reporting; the status
+    // artifact remains available as the fallback signal.
+    return undefined;
+  }
+}
+
 function isCurrentStatusContent(content: string, repositoryFingerprint: string): boolean {
   const fingerprintMatch = /^- Repository fingerprint:\s*(.+)$/imu.exec(content);
 
@@ -5345,6 +5580,71 @@ function normalizePlanPath(path: string): string {
   return path.replace(/\\/gu, "/").replace(/^\.\//u, "");
 }
 
+/**
+ * The scope budget an agent reads in plan mode, with the compatibility aliases collapsed.
+ *
+ * `expectedPaths`/`allowedPaths`/`derivedScope`, `protectedChecks`/`hardGates`,
+ * `approvalRequiredChanges`/`blockedWithoutApproval` and
+ * `pauseAndClarifyConditions`/`stopConditions` are the same values under different keys. The
+ * persisted artifact keeps them for schema compatibility; repeating them to a reader that has no
+ * other way to consume Gleip is pure cost, so the plan-mode view emits each value once.
+ */
+function planModeScopeView(scopeBudget: ScopeBudget): Record<string, unknown> {
+  return {
+    taskType: scopeBudget.taskType,
+    confidence: scopeBudget.confidence,
+    riskLevel: scopeBudget.riskLevel,
+    workflowProfile: scopeBudget.workflowProfile,
+    planRequired: scopeBudget.planRequired,
+    taskBreadth: scopeBudget.taskBreadth,
+    expectedFilesChanged: scopeBudget.expectedFilesChanged,
+    softLimits: scopeBudget.softLimits,
+    hardGates: scopeBudget.hardGates,
+    expectedPaths: scopeBudget.expectedPaths,
+    explicitScope: scopeBudget.explicitScope,
+    suspiciousPaths: scopeBudget.suspiciousPaths,
+    approvalRequiredFor: scopeBudget.approvalRequiredFor,
+    blockedWithoutApproval: scopeBudget.blockedWithoutApproval,
+    requiredTests: scopeBudget.requiredTests,
+    stopConditions: scopeBudget.stopConditions,
+    readOnlyContextPaths: scopeBudget.readOnlyContextPaths ?? [],
+    reasons: scopeBudget.reasons
+  };
+}
+
+function planModePreflightJson(
+  canonicalTask: CanonicalTaskArtifact,
+  scopeBudget: ScopeBudget,
+  brief: string,
+  classification: TaskClassification
+): Record<string, unknown> {
+  return {
+    mode: "plan_mode",
+    persisted: false,
+    canonicalTask: {
+      contentHash: canonicalTask.contentHash,
+      byteCount: canonicalTask.byteCount,
+      characterCount: canonicalTask.characterCount,
+      requirementLedger: canonicalTask.requirementLedger
+    },
+    classification,
+    scopeBudget: planModeScopeView(scopeBudget),
+    brief
+  };
+}
+
+function planModePreflightSummary(brief: string, scopeBudget: ScopeBudget): string {
+  return [
+    brief.trimEnd(),
+    "",
+    "---",
+    "Gleip plan mode · nothing was written. Re-run `gleip preflight` without --plan-mode to record evidence.",
+    scopeBudget.planRequired === true
+      ? "Next: draft a plan and check it with `gleip validate-plan --plan-mode --task \"<task>\" \"<plan>\"`."
+      : "Next: implement the scoped change once you are authorized to write."
+  ].join("\n");
+}
+
 function summarizeScopeBudget(scopeBudget: ScopeBudget): ScopeBudgetSummary {
   return {
     expectedFilesChanged: scopeBudget.expectedFilesChanged,
@@ -5785,7 +6085,7 @@ function printEfficiencyMode(
     );
     const baselineRun = input.cached === undefined;
 
-    if (!input.reused) {
+    if (!input.reused && options.planMode !== true) {
       writeCheckCache(runtime.cwd, {
         schemaVersion: CHECK_CACHE_SCHEMA_VERSION,
         gleipVersion: GLEIP_VERSION,
@@ -6188,8 +6488,14 @@ function compactStatusSummary(input: {
     );
   }).length;
 
+  // The capture date is the only way to tell that this session belongs to an earlier task. An
+  // agent that cannot re-run preflight has to be able to spot a stale brief from the status line.
+  const capturedAt = input.session?.created_at;
+
   return [
-    `Session: ${input.session?.sessionId ?? "none"} | Task: ${input.task}`,
+    `Session: ${input.session?.sessionId ?? "none"} | Task: ${input.task}${
+      capturedAt === undefined ? "" : ` | Captured: ${capturedAt}`
+    }`,
     // "Repository changed" meant "changed since the cached check fingerprint" here and "differs
     // from the baseline" in `check`. Both readings are defensible; wearing the same wording in
     // two commands the generated instructions run back-to-back is not, because the pair can

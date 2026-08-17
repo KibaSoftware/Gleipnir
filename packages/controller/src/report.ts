@@ -261,8 +261,20 @@ export interface GenerateSessionReportInput {
   planValidation?: ReportPlanValidation;
   acceptedPlanValidation?: ReportPlanValidation;
   statusContent?: string;
+  /**
+   * Verification recorded as command attestations, classified against the exact repository state.
+   * Supplied by the caller because the ledger lives outside this package; absent means "not
+   * consulted", which falls back to reading verification wording out of the status artifact.
+   */
+  verificationEvidence?: ReportVerificationEvidence;
   requirementLedger?: ReportRequirementLedger;
   missingArtifacts?: string[];
+}
+
+export interface ReportVerificationEvidence {
+  state: "satisfied" | "failed" | "stale" | "missing";
+  evidenceIds: string[];
+  commands: string[];
 }
 
 interface ScoreDeductions {
@@ -341,7 +353,11 @@ export function generateSessionReport(input: GenerateSessionReportInput): Sessio
   const statusContent = input.statusContent ?? "";
   const hasStatusContent = input.statusContent !== undefined && input.statusContent.trim() !== "";
   const changedFilesMentioned = hasChangedFilesEvidence(statusContent);
-  const testsMentioned = hasVerificationEvidence(statusContent);
+  // An attested command outranks narration about one: it carries an exit code and the repository
+  // fingerprint it ran against, where the status artifact carries only the agent's account.
+  const verificationEvidence = input.verificationEvidence;
+  const testsMentioned =
+    verificationEvidence?.state === "satisfied" || hasVerificationEvidence(statusContent);
   const risksMentioned = hasEvidenceSection(statusContent, "risks?");
   const repeatedOutput = repeatedNarration(statusContent);
   const repeatedPlanOutput = repeatedPlanNarration(
@@ -477,17 +493,9 @@ export function generateSessionReport(input: GenerateSessionReportInput): Sessio
   }
   if (verificationRequired && !testsMentioned) {
     if (!warnings.some((warning) => warning.id === "output.tests-missing")) {
-      addWarning(warnings, {
-        id: "review.verification-evidence-missing",
-        type: "review_readiness",
-        severity: "medium",
-        message: "Required verification evidence is missing.",
-        reason:
-          "The active workflow profile requires verification evidence before review readiness can be complete.",
-        evidence: ["No status Tests section with concrete content was available."],
-        files: [],
-        suggestedAction: "Run or report focused verification for the changed behavior."
-      });
+      // "Missing", "ran and failed", and "ran against different code" call for different actions,
+      // so they are not collapsed into one message.
+      addWarning(warnings, verificationWarning(verificationEvidence));
     }
     deductions.reviewReadiness += 15;
   }
@@ -1065,8 +1073,15 @@ function addOutputWarnings(
     deductions.outputDiscipline += 10;
   }
 
+  // When a verification command was actually attested, "the status output does not mention tests"
+  // is the wrong diagnosis -- verification ran and either failed or went stale, and the review
+  // warning states which. Only one of the two is emitted, so this keeps the accurate one.
+  const verificationAttested =
+    input.verificationEvidence !== undefined && input.verificationEvidence.state !== "missing";
+
   if (
     !testsMentioned &&
+    !verificationAttested &&
     (input.scopeBudget?.verificationExpected ?? input.scopeBudget?.requiredTests) === true
   ) {
     addWarning(warnings, {
@@ -1769,6 +1784,54 @@ function hasEditIntentForPath(text: string, path: string): boolean {
   return /\b(?:add|change|connect|edit|extend|implement|migrate|modify|patch|refactor|synchronize|touch|update|wire)\b/iu.test(
     prefix
   );
+}
+
+/**
+ * Build the verification warning for the evidence state actually observed.
+ *
+ * Keeping the `review.verification-evidence-missing` id stable across states matters: the CLI maps
+ * that id onto the blocking `MISSING_TEST_STRATEGY` completion hazard, and all three states are
+ * genuinely blocking. Only the message, evidence, and suggested action differ.
+ */
+function verificationWarning(evidence: ReportVerificationEvidence | undefined): ReportWarning {
+  const base = {
+    id: "review.verification-evidence-missing",
+    type: "review_readiness" as const,
+    severity: "medium" as const,
+    reason:
+      "The active workflow profile requires verification evidence before review readiness can be complete.",
+    files: []
+  };
+
+  if (evidence?.state === "failed") {
+    return {
+      ...base,
+      message: "Recorded verification failed.",
+      evidence: evidence.commands.map((command) => `${command} exited non-zero.`),
+      suggestedAction: "Fix the failure and re-run the verification command."
+    };
+  }
+
+  if (evidence?.state === "stale") {
+    return {
+      ...base,
+      message: "Recorded verification ran against a different repository state.",
+      evidence: evidence.commands.map(
+        (command) => `${command} was attested before the current changes.`
+      ),
+      suggestedAction: "Re-run the verification command against the current repository state."
+    };
+  }
+
+  return {
+    ...base,
+    message: "Required verification evidence is missing.",
+    evidence: [
+      "No verification command attestation and no status Tests section with concrete content was available."
+    ],
+    suggestedAction:
+      "Run focused verification through `gleip run -- <command>`, or report it in the status artifact."
+  };
 }
 
 function addWarning(warnings: ReportWarning[], warning: ReportWarning): void {

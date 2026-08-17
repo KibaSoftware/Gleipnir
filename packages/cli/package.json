@@ -1,6 +1,6 @@
 {
   "name": "gleip",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Passive-first local evidence ledger and precision risk observer for coding-agent work.",
   "license": "Apache-2.0",
   "repository": {

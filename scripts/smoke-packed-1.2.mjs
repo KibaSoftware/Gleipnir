@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const tarball = join(root, "dist-pack", "gleip-1.1.0.tgz");
+const tarball = join(root, "dist-pack", "gleip-1.2.0.tgz");
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 const npxCommand = process.platform === "win32" ? "npx.cmd" : "npx";
 
@@ -140,8 +140,43 @@ writeRepoFile(
   ].join("\n")
 );
 
-assertEqual(runGleip(["--version"], repo).trim(), "1.1.0", "packed version");
+assertEqual(runGleip(["--version"], repo).trim(), "1.2.0", "packed version");
 runGleip(["init"], repo);
+
+// Plan mode runs before any session exists and must leave the repository untouched. Assert that
+// against the installed package, since the guarantee is what a read-only agent relies on.
+const planModeTask =
+  "Prepare the release: finalize CHANGELOG.md and update the version without publishing it.";
+const planModePreflight = JSON.parse(
+  runGleip(["preflight", "--plan-mode", "--json", planModeTask], repo)
+);
+assertEqual(planModePreflight.persisted, false, "plan-mode preflight is not persisted");
+assertEqual(existsSync(join(repo, ".gleip", "session.json")), false, "plan-mode writes no session");
+assertEqual(existsSync(join(repo, ".gleip", "brief.md")), false, "plan-mode writes no brief");
+// The trailing constraint is recorded as its own advisory requirement rather than being absorbed
+// into the deliverable beside it, which is where it used to disappear.
+assertIncludes(
+  planModePreflight.canonicalTask.requirementLedger.requirements.map(
+    (requirement) => requirement.obligation
+  ),
+  "suggestion",
+  "plan-mode ledger records the without-clause constraint"
+);
+runGleip(
+  [
+    "validate-plan",
+    "--plan-mode",
+    "--task",
+    planModeTask,
+    "Files: CHANGELOG.md. Implementation: add the release entry. Verification: run the packed smoke test."
+  ],
+  repo
+);
+assertEqual(
+  existsSync(join(repo, ".gleip", "session.json")),
+  false,
+  "plan-mode validate-plan writes no session"
+);
 const largeOutput = [
   ...Array.from({ length: 180 }, (_, index) => `PASS packed-${index % 5}.test.ts`),
   "FAIL packed.test.ts > keeps diagnostics",
@@ -303,7 +338,7 @@ if (!hazardCodes.includes("CANONICAL_REQUIREMENT_MISSING")) {
   );
 }
 
-console.log(`Packed Gleip 1.1.0 smoke test passed in ${repo}`);
+console.log(`Packed Gleip 1.2.0 smoke test passed in ${repo}`);
 
 function runGleip(args, cwd, input) {
   return run(npxCommand, ["--no-install", "gleip", ...args], cwd, input);

@@ -171,13 +171,18 @@ const LOCKFILES = new Set([
   "composer.lock"
 ]);
 
+/**
+ * Substring matching read a `process.exit` call as the skipped-test `xit` marker, so any added
+ * line calling `process.exit` was reported as "the diff adds a skipped or pending test" -- an
+ * action-required finding on ordinary Node code. Each marker must start its own identifier.
+ */
 const SKIPPED_TEST_PATTERNS = [
-  "test.skip",
-  "it.skip",
-  "describe.skip",
-  "xit(",
-  "xtest(",
-  "pending("
+  /(?<![\w$.])test\.skip\b/u,
+  /(?<![\w$.])it\.skip\b/u,
+  /(?<![\w$.])describe\.skip\b/u,
+  /(?<![\w$.])xit\s*\(/u,
+  /(?<![\w$.])xtest\s*\(/u,
+  /(?<![\w$.])pending\s*\(/u
 ];
 
 export function detectScopeDrift(input: DetectScopeDriftInput): DriftResult {
@@ -612,7 +617,7 @@ function addSkippedTestFindings(
     return (
       trimmed.startsWith("+") &&
       !trimmed.startsWith("+++") &&
-      SKIPPED_TEST_PATTERNS.some((pattern) => trimmed.includes(pattern))
+      SKIPPED_TEST_PATTERNS.some((pattern) => pattern.test(trimmed))
     );
   });
 

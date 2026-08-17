@@ -1,5 +1,43 @@
 # Changelog
 
+## [1.2.0] - 2026-08-17
+
+### Added
+
+- Added `--plan-mode` to `preflight`, `validate-plan`, and `check` so a coding agent in a read-only planning mode can obtain the same brief, scope budget, and plan verdict without writing any file, run, ledger event, or `.gitignore` change.
+- Added `--task` and `--task-file` to `validate-plan --plan-mode`, which derive the canonical task and scope budget in memory so a plan can be checked before a session exists.
+- Added `--json` to `preflight`, and a de-duplicated scope view in plan-mode output that emits each value once instead of repeating the schema's compatibility aliases.
+- Added a read-only planning branch to the generated agent instruction block, naming the commands that are safe to run without writing.
+- Added verification evidence from command attestations. A command recorded by `gleip run` now satisfies the completion verification requirement when it is a recognized verification command, exited zero, and ran against the repository state being reported on.
+
+### Changed
+
+- Ranked task classification rules by how much of the task each matched instead of returning on the first rule to match at all. Dependency, migration, auth, and CI rules keep first-match precedence so a passing mention of those areas still selects the sensitive profile.
+- Made classification confidence reflect the margin over the runner-up rule, so a tie broken by declaration order alone no longer reports high confidence.
+- Split a sentence into clauses when every clause reads as an instruction or a guardrail, so a multi-part instruction records each deliverable separately with exact source spans.
+- Required a plan for open-ended restructuring that names no target, and for low-confidence classifications, instead of keying only on breadth counted from named paths.
+- Reworded brief coverage to state that it compares the brief with the extracted requirements, and to report how many requirements were extracted.
+- Added the canonical task's capture date to `status --compact` and a staleness note to the brief, so an agent that cannot re-run preflight can tell that artifacts belong to an earlier task.
+
+### Fixed
+
+- Recorded a trailing `without <gerund>`, `rather than`, or `instead of` clause as its own advisory constraint instead of absorbing it into the deliverable beside it, where it disappeared. These stay advisory rather than prohibited: the same phrasing states purpose as often as it forbids an action, and no deterministic test separates the two.
+- Stopped the skipped-test detector from matching its markers as substrings. A `process.exit` call contains the `xit` marker, so ordinary code was reported as adding a skipped test at action-required severity.
+- Kept a task whose only sentence carries both the work and its guardrail from classifying as `unknown` when blanking the prohibition consumed the entire text.
+- Stopped `documentation_update` from pairing a documentation-sized file budget with a code-sized expected scope when no documentation-only scope was named, and recorded the fallback in the budget's reasons.
+- Widened the documentation-only guard so release, publishing, npm, version-metadata, and lockfile work is no longer classified as a low-risk documentation update with plan validation disabled.
+- Promoted paths named in a mandatory requirement into explicit scope, unless the task marks them as reference material, so a file the user named is no longer indistinguishable from a lexical guess.
+- Stopped a `verification` requirement from being scored as missing without verification wording; it now falls through to the same token-overlap check every other category uses.
+- Guarded evidence recording and the incremental cache write in `check`, which previously wrote to the run ledger despite the command's existing no-write configuration.
+- Made `gleip finalize` pass the current status artifact to the completion report. It never did, so the verification requirement read empty input and no task expecting verification could reach `complete`.
+- Distinguished verification that failed, that ran against a different repository state, and that was never recorded. All three previously reported the same "verification evidence is missing" message, and the status-output warning no longer competes with the more specific one when a command was actually attested.
+
+### Compatibility
+
+- Existing 1.0.0 and 1.1.0 artifacts and independently versioned evidence schemas remain compatible; no schema migration or dependency change is required. The `scope-budget.json` compatibility aliases are unchanged in the persisted artifact.
+- Classification and requirement extraction are deterministic and local. Tasks that matched a single classification rule classify exactly as before.
+- Gleip remains local-only. No telemetry, hosted service, provider integration, source upload, or automatic publication behavior was added. Gleip cannot detect a read-only planning mode; the agent declares it with `--plan-mode`.
+
 ## [1.1.0] - 2026-08-09
 
 ### Added

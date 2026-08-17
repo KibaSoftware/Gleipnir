@@ -1,6 +1,14 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -91,7 +99,7 @@ describe("createGleipCommand", () => {
   it("--version prints the package version", async () => {
     const output = (await runHelpCommand(["--version"])).join("\n");
 
-    expect(output).toBe("1.1.0");
+    expect(output).toBe("1.2.0");
   });
 
   it("command help shows important flags and stdin support", async () => {
@@ -163,7 +171,7 @@ describe("createGleipCommand", () => {
     expect(packageJson.exports["."].import).toBe("./dist/index.js");
     expect(packageJson.exports["."].types).toBe("./dist/index.d.ts");
     expect(packageJson.name).toBe("gleip");
-    expect(packageJson.version).toBe("1.1.0");
+    expect(packageJson.version).toBe("1.2.0");
     expect(packageJson.dependencies).toEqual({
       commander: "^12.0.0",
       yaml: "^2.0.0",
@@ -208,7 +216,7 @@ describe("createGleipCommand", () => {
     });
   });
 
-  it("release metadata uses version 1.1.0 across packages", () => {
+  it("release metadata uses version 1.2.0 across packages", () => {
     const packagePaths = [
       "package.json",
       "packages/cli/package.json",
@@ -224,7 +232,7 @@ describe("createGleipCommand", () => {
       const packageJson = JSON.parse(readFileSync(join(repoRoot, packagePath), "utf8")) as {
         version: string;
       };
-      expect(packageJson.version).toBe("1.1.0");
+      expect(packageJson.version).toBe("1.2.0");
     }
 
     const cliPackageJson = readFileSync(join(repoRoot, "packages", "cli", "package.json"), "utf8");
@@ -674,6 +682,13 @@ describe("createGleipCommand", () => {
     expect(agents).toContain("needs_approval");
     expect(agents).toContain("treat Gleip guidance as inactive");
     expect(agents).toContain("Gleip evidence is unavailable");
+    // A read-only planning mode has to be told what it may run; without this the block instructs
+    // an agent that cannot write to run two commands that write.
+    expect(agents).toContain("In a read-only planning mode");
+    expect(agents).toContain("gleip preflight --plan-mode");
+    expect(agents).toContain("gleip validate-plan --plan-mode");
+    expect(agents).toContain("are also safe to run without writing");
+    expect(agents).toContain("re-run `preflight` and `validate-plan` without `--plan-mode`");
     expect(agents).not.toContain("Do you want me to continue without Gleip guidance");
     expect(agents).toContain(
       "Before the final response, run `npx --no-install gleip status --compact`"
@@ -1017,7 +1032,7 @@ describe("createGleipCommand", () => {
     expect(report).toContain("WARN Missing .gleip.yml or GLEIP.md");
     expect(report).toContain("WARN Missing Gleip-managed agent instructions");
     expect(report).toContain("WARN Missing, incomplete, or overridden Gleip .gitignore block");
-    expect(report).toContain("OK   CLI version resolved (1.1.0)");
+    expect(report).toContain("OK   CLI version resolved (1.2.0)");
     expect(report).toContain("OK   Built-in init assets available");
     expect(report).toContain("Run: npx gleip init");
   });
@@ -1406,6 +1421,159 @@ describe("createGleipCommand", () => {
       "Next: implement the scoped change, run verification, then run status"
     );
     expect(preflightOutput.split("\n")).toHaveLength(3);
+  });
+
+  // Plan mode exists for agents that are not permitted to write yet. The whole guarantee is that
+  // nothing is written, so these assert on the filesystem rather than on the printed wording.
+  describe("plan mode", () => {
+    it("preflight --plan-mode prints the brief and writes nothing", async () => {
+      const repo = createGitRepo();
+      const before = snapshotTree(repo);
+
+      const output = await runCommand(repo, [
+        "preflight",
+        "--plan-mode",
+        "Fix the cart total rounding bug in src/cart.ts"
+      ]);
+      const text = output.join("\n");
+
+      expect(text).toContain("# Gleip Implementation Brief");
+      expect(text).toContain("Gleip plan mode · nothing was written");
+      expect(snapshotTree(repo)).toEqual(before);
+      expect(existsSync(join(repo, ".gleip", "session.json"))).toBe(false);
+      expect(existsSync(join(repo, ".gleip", "brief.md"))).toBe(false);
+      expect(existsSync(join(repo, ".gleip", "runs"))).toBe(false);
+    });
+
+    it("preflight --plan-mode --json matches the scope budget the persisting run writes", async () => {
+      const repo = createGitRepo();
+      const task = "Fix the cart total rounding bug in src/cart.ts";
+
+      const planModeOutput = await runCommand(repo, ["preflight", "--plan-mode", "--json", task]);
+      const planMode = JSON.parse(planModeOutput.join("\n")) as {
+        persisted: boolean;
+        scopeBudget: Record<string, unknown>;
+        canonicalTask: { contentHash: string };
+      };
+
+      await runCommand(repo, ["preflight", task]);
+      const persisted = JSON.parse(
+        readFileSync(join(repo, ".gleip", "scope-budget.json"), "utf8")
+      ) as Record<string, unknown>;
+
+      expect(planMode.persisted).toBe(false);
+
+      // A plan-mode verdict that could differ from the recorded one would be worse than none.
+      for (const [key, value] of Object.entries(planMode.scopeBudget)) {
+        expect([key, value]).toEqual([key, persisted[key]]);
+      }
+    });
+
+    it("preflight rejects --plan-mode with --amend", async () => {
+      const repo = createGitRepo();
+
+      const result = await runCommandResult(repo, [
+        "preflight",
+        "--plan-mode",
+        "--amend",
+        "Also preserve Windows compatibility."
+      ]);
+
+      expect(result.exitCode).toBe(1);
+      expect(result.output.join("\n")).toContain("cannot run with --plan-mode");
+    });
+
+    it("validate-plan --plan-mode validates against --task with no active session", async () => {
+      const repo = createGitRepo();
+      const before = snapshotTree(repo);
+
+      const result = await runCommandResult(repo, [
+        "validate-plan",
+        "--plan-mode",
+        "--task",
+        "Fix the cart total rounding bug in src/cart.ts",
+        "Files: src/cart.ts. Implementation: correct the rounding. Verification: run the focused cart tests."
+      ]);
+
+      expect(result.exitCode).toBe(0);
+      expect(result.output.join("\n")).toContain("Gleip plan mode · nothing was written");
+      expect(snapshotTree(repo)).toEqual(before);
+    });
+
+    it("validate-plan --plan-mode asks for the task when no session exists", async () => {
+      const repo = createGitRepo();
+
+      const result = await runCommandResult(repo, [
+        "validate-plan",
+        "--plan-mode",
+        "Update src/cart.ts"
+      ]);
+
+      expect(result.exitCode).toBe(1);
+      expect(result.output.join("\n")).toContain("In plan mode, pass the task");
+    });
+
+    it("validate-plan --plan-mode leaves an existing session untouched", async () => {
+      const repo = createGitRepo();
+      await runCommand(repo, ["preflight", "Fix the cart total rounding bug in src/cart.ts"]);
+      const before = snapshotTree(repo);
+
+      await runCommand(repo, [
+        "validate-plan",
+        "--plan-mode",
+        "Files: src/cart.ts. Implementation: correct the rounding. Verification: run the cart tests."
+      ]);
+
+      expect(snapshotTree(repo)).toEqual(before);
+    });
+
+    it("validate-plan rejects --task without --plan-mode", async () => {
+      const repo = createGitRepo();
+
+      const result = await runCommandResult(repo, [
+        "validate-plan",
+        "--task",
+        "Fix the bug",
+        "Update src/cart.ts"
+      ]);
+
+      expect(result.exitCode).toBe(1);
+      expect(result.output.join("\n")).toContain("--task and --task-file require --plan-mode");
+    });
+
+    it("check --plan-mode records no evidence and writes no cache", async () => {
+      const repo = createGitRepo();
+      await runCommand(repo, ["preflight", "Fix the cart total rounding bug in src/cart.ts"]);
+      const before = snapshotTree(repo);
+
+      await runCommand(repo, ["check", "--incremental", "--plan-mode"]);
+
+      expect(snapshotTree(repo)).toEqual(before);
+      expect(existsSync(join(repo, ".gleip", "check-cache.json"))).toBe(false);
+    });
+  });
+
+  // A terse prompt naming no path is the ordinary case for a planning-mode agent, and nothing
+  // covered it end to end: the closest existing tests stop at classification or at the brief.
+  it("preflight produces a usable budget for a short prompt that names no path", async () => {
+    const repo = createGitRepo();
+    writeRepoFile(repo, "src/login.ts", "export function login() {}\n");
+
+    await runCommand(repo, ["preflight", "fix the login bug"]);
+    const budget = JSON.parse(readFileSync(join(repo, ".gleip", "scope-budget.json"), "utf8")) as {
+      taskType: string;
+      riskLevel: string;
+      planRequired: boolean;
+      allowedPaths: string[];
+      expectedFilesChanged: { max: number };
+    };
+
+    expect(budget.taskType).toBe("auth_security_change");
+    expect(budget.riskLevel).toBe("high");
+    // Authentication work keeps the sensitive profile, so the plan check is not optional.
+    expect(budget.planRequired).toBe(true);
+    expect(budget.allowedPaths.length).toBeGreaterThan(0);
+    expect(budget.expectedFilesChanged.max).toBeGreaterThanOrEqual(budget.allowedPaths.length > 0 ? 1 : 0);
   });
 
   it("preflight stores baseline when no existing changes are present", async () => {
@@ -3585,7 +3753,7 @@ describe("createGleipCommand", () => {
     expect(output).toHaveLength(1);
     expect(output[0]?.trimStart().startsWith("{")).toBe(true);
     expect(output.join("\n")).not.toContain("Gleip report ready");
-    expect(report.version).toBe("1.1.0");
+    expect(report.version).toBe("1.2.0");
     expect(report.generatedAt).toBe("2026-05-30T00:00:00.000Z");
     expect(report.summary.filesChanged).toBe(0);
     expect(existsSync(join(repo, ".gleip", "report.json"))).toBe(true);
@@ -4008,6 +4176,98 @@ describe("createGleipCommand", () => {
     expect(finalizeResult.exitCode).toBe(1);
   });
 
+  // `gleip run` records an exact-state attestation with an exit code, but the completion gate read
+  // `.gleip/status.md` prose instead -- and `finalize` never passed that prose at all, so a passing
+  // attested test run left completion blocked on "Required verification evidence is missing".
+  describe("verification evidence at completion", () => {
+    const setupVerifiableChange = async (repo: string): Promise<void> => {
+      writeRepoFile(repo, "src/cart.ts", "export const discount = (total: number) => total;\n");
+      writeRepoFile(repo, "src/cart.test.ts", "export const covered = true;\n");
+      // Offline scripts, so the attested command's exit code is the only variable under test.
+      writeRepoFile(
+        repo,
+        "package.json",
+        `${JSON.stringify(
+          {
+            name: "fixture",
+            private: true,
+            version: "1.0.0",
+            scripts: {
+              test: "node -e \"process.exit(0)\"",
+              lint: "node -e \"process.exit(1)\""
+            }
+          },
+          null,
+          2
+        )}\n`
+      );
+      git(repo, ["add", "-A"]);
+      git(repo, ["commit", "-m", "base"]);
+      await runRealCommand(repo, ["preflight", "Fix the discount function in src/cart.ts."]);
+      writeRepoFile(
+        repo,
+        "src/cart.ts",
+        "export const discount = (total: number) => total * 0.9;\n"
+      );
+    };
+
+    const finalizeBundle = async (
+      repo: string
+    ): Promise<{ completionStatus: string; unresolvedHazards: Array<{ code: string }> }> => {
+      const result = await runRealCommandResult(repo, ["finalize", "--json"]);
+
+      return (
+        JSON.parse(result.output.join("\n")) as {
+          bundle: { completionStatus: string; unresolvedHazards: Array<{ code: string }> };
+        }
+      ).bundle;
+    };
+
+    it("accepts a passing attested verification command", async () => {
+      const repo = createGitRepo();
+      await setupVerifiableChange(repo);
+
+      await runRealCommand(repo, ["run", "--", "node", "-e", "process.exit(0)"]);
+      expect(
+        (await finalizeBundle(repo)).unresolvedHazards.map((hazard) => hazard.code)
+      ).toContain("MISSING_TEST_STRATEGY");
+
+      // A verification command, unlike the bare node invocation above.
+      await runRealCommand(repo, ["run", "--", "npm", "test"]);
+      const bundle = await finalizeBundle(repo);
+
+      expect(bundle.unresolvedHazards.map((hazard) => hazard.code)).not.toContain(
+        "MISSING_TEST_STRATEGY"
+      );
+    });
+
+    it("does not accept a failing attested verification command", async () => {
+      const repo = createGitRepo();
+      await setupVerifiableChange(repo);
+
+      await runRealCommandResult(repo, ["run", "--", "npm", "run", "lint"]);
+      const bundle = await finalizeBundle(repo);
+
+      expect(bundle.unresolvedHazards.map((hazard) => hazard.code)).toContain(
+        "MISSING_TEST_STRATEGY"
+      );
+    });
+
+    it("does not accept verification that ran before the current changes", async () => {
+      const repo = createGitRepo();
+      await setupVerifiableChange(repo);
+
+      await runRealCommand(repo, ["run", "--", "npm", "test"]);
+      // Change the repository after the attested run; the evidence no longer describes this state.
+      writeRepoFile(repo, "src/cart.ts", "export const discount = (total: number) => total * 0.8;\n");
+      const bundle = await finalizeBundle(repo);
+
+      expect(bundle.unresolvedHazards.map((hazard) => hazard.code)).toContain(
+        "MISSING_TEST_STRATEGY"
+      );
+    });
+  });
+
   // C4: passive mode rewrote a rejected plan's status to "advisory", which then promoted the
   // plan's targets into accepted scope and stripped them out of readOnlyContextPaths -- so
   // running validate-plan twice changed its own verdict.
@@ -4390,6 +4650,41 @@ function writeRepoFile(repo: string, path: string, content: string): void {
   const filePath = join(repo, path);
   mkdirSync(dirname(filePath), { recursive: true });
   writeFileSync(filePath, content);
+}
+
+/**
+ * Every file under the repo, excluding `.git`, as path -> content hash.
+ *
+ * Plan mode's guarantee is "no write", not "no write to `.gleip/`": `ensureGleipGitignore` edits
+ * the tracked `.gitignore`, and the evidence ledger lives in its own tree. Comparing the whole
+ * repository is the only assertion that covers all of it.
+ */
+function snapshotTree(repo: string): Record<string, string> {
+  const snapshot: Record<string, string> = {};
+
+  const walk = (directory: string, prefix: string): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true }).sort((left, right) =>
+      left.name.localeCompare(right.name)
+    )) {
+      if (entry.name === ".git") {
+        continue;
+      }
+
+      const absolute = join(directory, entry.name);
+      const relative = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
+
+      if (entry.isDirectory()) {
+        walk(absolute, relative);
+        continue;
+      }
+
+      snapshot[relative] = createHash("sha256").update(readFileSync(absolute)).digest("hex");
+    }
+  };
+
+  walk(repo, "");
+
+  return snapshot;
 }
 
 function readState(repo: string): {

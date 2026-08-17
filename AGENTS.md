@@ -21,6 +21,9 @@ When uncertain, prefer the smallest reversible change that preserves the reposit
 - If the local package command cannot be run, report that Gleip evidence is unavailable and continue only within the user's existing authority.
 - Before editing code, check `.gleip/state.json`. If `enabled` is false, treat Gleip guidance as inactive without creating a mandatory confirmation prompt.
 - If enabled, run `npx --no-install gleip preflight "<user task>"`.
+- In a read-only planning mode, where you must not write files or run mutating commands, do not run the commands above. Use `npx --no-install gleip preflight --plan-mode "<user task>"` and `npx --no-install gleip validate-plan --plan-mode --task "<user task>" "<plan>"` instead. Both compute the same guidance and write nothing.
+- `gleip brief`, `gleip state`, `gleip status --compact`, `gleip check --plan-mode`, and `gleip stats` are also safe to run without writing.
+- Once you are authorized to write, re-run `preflight` and `validate-plan` without `--plan-mode` so the evidence is recorded.
 - Read `.gleip/canonical-task.json` first. Treat it as the authoritative task contract.
 - Read `.gleip/brief.md` as a derived navigation aid and `.gleip/scope-budget.json` as scope guidance.
 - If the brief omits or conflicts with the canonical task, follow the canonical task.
@@ -99,7 +102,7 @@ For multi-step tasks, state a brief plan in this format:
 ### Gleip checklist for every coding task
 
 - [ ] Check `.gleip/state.json`
-- [ ] Run `npx --no-install gleip preflight "<task>"`
+- [ ] Run `npx --no-install gleip preflight "<task>"`, or `preflight --plan-mode` while you cannot write
 - [ ] Read `.gleip/canonical-task.json`
 - [ ] Use `.gleip/brief.md` as an index, not a replacement
 - [ ] Validate broad or sensitive plans with `npx --no-install gleip validate-plan`
@@ -111,3 +114,17 @@ For multi-step tasks, state a brief plan in this format:
 - [ ] Run `npx --no-install gleip finalize`
 - [ ] Include concise review evidence: changed files or summary, tests run, risks, and Gleip status
 <!-- GLEIP:END -->
+
+## Implementation Style
+
+For implementation requests, prioritize **doing the work over explaining the work**.
+
+* Use simple, direct language. Avoid overly complex or formal wording.
+* Stay focused on the requested implementation and avoid unrelated audits, refactors, or side investigations.
+* Do not create reports, logs, artifacts, Markdown summaries, or tracking files unless explicitly requested or technically required.
+* Reuse existing project patterns instead of introducing unnecessary abstractions or parallel systems.
+* Verify the relevant change, but keep testing proportional to the task.
+* Do not narrate every file read, command run, or intermediate step.
+* Final responses should normally be brief: **what changed, whether it was verified, and any real remaining issue.**
+
+Default priority: **implement → verify → briefly report.**

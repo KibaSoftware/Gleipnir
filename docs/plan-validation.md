@@ -16,6 +16,9 @@ out with rationale and no prohibited canonical action is planned.
 
 ## Agent Workflow
 
+If the agent is in a read-only planning mode, use the `--plan-mode` forms below instead
+of steps 1 and 4, then repeat them without `--plan-mode` once it can write.
+
 1. Run `npx --no-install gleip preflight "<task>"`.
 2. Read `.gleip/canonical-task.json` as authoritative and `.gleip/brief.md` as an index.
 3. Draft a short implementation plan that names likely files and tests.
@@ -24,6 +27,39 @@ out with rationale and no prohibited canonical action is planned.
 6. Clarify scope, canonical requirement coverage, or verification for `needs_clarification`.
 7. Clean accidental artifacts for `needs_cleanup`.
 8. Request approval or remove the relevant change for `needs_approval`.
+
+## Read-only planning mode
+
+Many coding agents draft a plan inside a read-only mode where the harness blocks file
+writes and mutating commands. The workflow above cannot run there: `preflight` creates
+the session, brief, scope budget, and evidence run, and `validate-plan` requires that
+session to exist. So the one check designed for the planning phase was unreachable
+during it.
+
+`--plan-mode` computes the same guidance and writes nothing:
+
+```sh
+npx --no-install gleip preflight --plan-mode "<task>"
+npx --no-install gleip validate-plan --plan-mode --task "<task>" "<plan>"
+```
+
+Plan validation needs a task to validate against. With an active session it reads the
+stored one; without a session, pass `--task <text>` or `--task-file <path>`, and Gleip
+derives the canonical task and scope budget in memory using the same code path
+`preflight` uses. The verdict is identical either way — `--plan-mode` changes what is
+persisted, not what is decided.
+
+`gleip brief`, `gleip state`, `gleip status --compact`, `gleip check --plan-mode`, and
+`gleip stats` are also safe to run without writing.
+
+Once implementation is authorized, re-run `preflight` and `validate-plan` without
+`--plan-mode` so the canonical task, scope budget, and evidence run are recorded.
+
+`--plan-mode` is distinct from the `--dry-run` flag on `gleip migrate` and
+`gleip uninstall`. Those preview a destructive maintenance action; `--plan-mode` states
+that the caller is an agent that is not yet permitted to write.
+
+Gleip cannot tell that an agent is in a read-only mode. The agent declares it.
 
 ## Testing the workflow manually
 
